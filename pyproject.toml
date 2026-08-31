@@ -1,0 +1,44 @@
+[project]
+name = "armnet-rlt"
+version = "0.1.0"
+description = "Standalone RL-Token actor and Modal learner for Armnet"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "grpcio>=1.73.1",
+    "numpy>=2.0,<2.3",
+    "torch==2.8.0",
+    "tqdm>=4.70.0",
+]
+
+[project.scripts]
+rlt-submit-actor = "armnet_rlt.submit_actor:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+submit = [
+    "armnet-client==0.3.3",
+    "modal>=1.5.4",
+    "python-dotenv>=1.2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/armnet_rlt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true
+default-groups = ["dev", "submit"]
+override-dependencies = [
+    "pynput>=0.0.0; sys_platform == 'never'",
+    "evdev>=0.0.0; sys_platform == 'never'",
+]

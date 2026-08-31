@@ -1,0 +1,98 @@
+# syntax=docker/dockerfile:1.7
+FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+
+ARG OPENPI_REVISION=e0eb11f08ffcef37809ba72d72b4ce5fb68ca0f7
+ARG LEROBOT_REVISION=4eecbad32b0380c64bd5574bbf74e56e5255bdea
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    UV_HTTP_TIMEOUT=600 \
+    UV_INDEX_STRATEGY=unsafe-best-match \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    HF_HOME=/tmp/huggingface \
+    XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    XLA_PYTHON_CLIENT_MEM_FRACTION=0.90
+
+WORKDIR /app
+
+# System dependencies first. Ubuntu 24.04 provides Python 3.12.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg git libgl1 libglib2.0-0 \
+        python3.12 python3.12-dev python3.12-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && python -m venv /opt/venv \
+    && python -m pip install --upgrade pip setuptools wheel uv
+
+# Headless cell containers never use Linux keyboard devices. Keep LeRobot's
+# optional input dependencies out rather than compiling/starting X11 packages.
+RUN printf '%s\n' \
+      'pynput>=0.0.0; sys_platform == "never"' \
+      'evdev>=0.0.0; sys_platform == "never"' \
+      'torch==2.8.0' \
+      'torchvision==0.23.0' \
+      'numpy>=2.0,<2.3' \
+      'grpcio==1.73.1' \
+      'protobuf>=6.33.5,<7' \
+      'setuptools>=71,<81' \
+      'fsspec>=2024.6.0,<=2026.2.0' \
+      'transformers>=4.57,<5.0' \
+      'huggingface-hub>=0.30,<1.0' \
+      > /tmp/overrides.txt
+
+# OpenPI/JAX and actor support packages. Torch is intentionally absent here and
+# installed last so no transitive dependency can replace it with a CPU wheel.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install \
+        --override /tmp/overrides.txt \
+        'transformers[vision]>=4.57,<5.0' 'huggingface-hub>=0.30,<1.0' \
+        accelerate datasets einops diffusers numpy pandas polars pyarrow scipy \
+        opencv-python-headless safetensors grpcio==1.73.1 \
+        'protobuf>=6.33.5,<7' \
+        'jax[cuda12]==0.5.3' jaxlib==0.5.3 flax==0.10.2 \
+        orbax-checkpoint==0.11.13 augmax dm-tree equinox flatbuffers \
+        'fsspec>=2024.6.0,<=2026.2.0' gcsfs imageio jaxtyping==0.2.36 \
+        ml_collections==1.0.0 'numpydantic>=1.6.6' sentencepiece \
+        'tqdm-loggable>=0.2' 'tyro>=0.9.5' wandb beartype==0.19.0 \
+        'treescope>=0.1.7' rich chex av pydantic \
+        feetech-servo-sdk pyserial termcolor draccus==0.10.0 deepdiff
+
+# LeRobot's RL transport is not in the 0.5.1 release used by normal Armnet
+# evals, so actor and learner intentionally share this exact commit.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps \
+        --override /tmp/overrides.txt \
+        "lerobot @ git+https://github.com/huggingface/lerobot.git@${LEROBOT_REVISION}"
+
+# Armnet is consumed exactly like an external customer project: published
+# wheels, never workspace source.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install \
+        --override /tmp/overrides.txt \
+        armnet-client==0.3.3 armnet-runtime==0.3.1 armnet-busybox==0.3.3
+
+# Clone the pravsels fork with its submodules. The pinned revision can be bumped
+# when a new single-arm RLT checkpoint/config is ready.
+RUN git clone --recurse-submodules https://github.com/pravsels/openpi /app/openpi \
+    && git -C /app/openpi checkout "${OPENPI_REVISION}" \
+    && git -C /app/openpi submodule update --init --recursive \
+    && python -m pip install --no-deps \
+        /app/openpi/packages/openpi-client /app/openpi
+
+COPY pyproject.toml README.md /app/rlt/
+COPY src /app/rlt/src
+RUN python -m pip install --no-deps /app/rlt
+
+# Torch last, with the CUDA index, is an invariant of Armnet GPU images.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --upgrade \
+        --override /tmp/overrides.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu129 \
+        torch==2.8.0 torchvision==0.23.0
+
+RUN python -c "import torch, jax, lerobot, armnet_runtime; from armnet_client.robot_telemetry.session import RobotTelemetrySession; from lerobot.datasets.lerobot_dataset import LeRobotDataset; from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig; from lerobot.motors.feetech import FeetechMotorsBus; import openpi.models.pi0_rl; import armnet_rlt.actor_job, armnet_rlt.dataset_recording; from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); import openpi.policies.policy_config; print('RLT actor imports OK')" \
+    && python -c "from armnet_core.environment import environment_for; environment_for('busybox'); print('BusyBox plugin OK')"
+
+CMD ["armnet-runtime", "/app/rlt/src/armnet_rlt/actor_job.py"]
