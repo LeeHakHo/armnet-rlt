@@ -7,12 +7,15 @@ import modal
 from armnet_rlt.resources import VOLUME_MOUNT, VOLUME_NAME, task_paths
 
 
-OPENPI_REVISION = "e0eb11f08ffcef37809ba72d72b4ce5fb68ca0f7"
+OPENPI_REVISION = "90490b9c42a1accafde514f7ee610fbd7bc53376"
 LEROBOT_VERSION = "0.5.1"
-CONFIG_NAME = "pi05_rlt_busybox_push_green_button"
-CHECKPOINT_REPO = "pravsels/pi05_rlt_busybox_push_green_button"
-DATASET_REPO = "villekuosmanen/busybox_push_green_button"
-PROMPT = "push the green button"
+GREEN_BUTTON_CONFIG = "pi05_rlt_busybox_push_green_button"
+GREEN_BUTTON_CHECKPOINT = "pravsels/pi05_rlt_busybox_push_green_button"
+GREEN_BUTTON_DATASET = "villekuosmanen/busybox_push_green_button"
+GREEN_BUTTON_PROMPT = "push the green button"
+MULTITASK_CONFIG = "pi05_rlt_busybox_multitask_singlearm_minmax"
+MULTITASK_CHECKPOINT = "pravsels/pi05_rlt_busybox_multitask_singlearm_minmax"
+MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface-secret")
@@ -84,7 +87,7 @@ image = (
         "python -c \"from armnet_rlt.openpi_rlt import _install_training_stubs; "
         "_install_training_stubs(); "
         "from openpi.training.config import get_config; "
-        f"get_config('{CONFIG_NAME}'); "
+        f"get_config('{MULTITASK_CONFIG}'); "
         "from lerobot.datasets.lerobot_dataset import LeRobotDataset; "
         "print('RLT cache image imports OK')\""
     )
@@ -102,35 +105,70 @@ app = modal.App("armnet-rlt-cache")
 )
 def build_green_button_cache(inference_batch_size: int = 4) -> dict:
     """Build and persist the cache and matching normalization assets."""
+    return _build_cache(
+        config_name=GREEN_BUTTON_CONFIG,
+        checkpoint_repo=GREEN_BUTTON_CHECKPOINT,
+        dataset_repo=GREEN_BUTTON_DATASET,
+        prompt=GREEN_BUTTON_PROMPT,
+        inference_batch_size=inference_batch_size,
+    )
+
+
+@app.function(
+    image=image,
+    gpu="A100-80GB",
+    volumes={str(VOLUME_MOUNT): volume},
+    secrets=[hf_secret],
+    timeout=4 * 60 * 60,
+)
+def build_multitask_cache(inference_batch_size: int = 4) -> dict:
+    """Build the 27-task cache using each episode's own instruction."""
+    return _build_cache(
+        config_name=MULTITASK_CONFIG,
+        checkpoint_repo=MULTITASK_CHECKPOINT,
+        dataset_repo=MULTITASK_DATASET,
+        prompt=None,
+        inference_batch_size=inference_batch_size,
+    )
+
+
+def _build_cache(
+    *,
+    config_name: str,
+    checkpoint_repo: str,
+    dataset_repo: str,
+    prompt: str | None,
+    inference_batch_size: int,
+) -> dict:
     from huggingface_hub import snapshot_download
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     from armnet_rlt.cache_builder import build_demo_cache, copy_norm_stats
     from armnet_rlt.openpi_rlt import OpenPIRLTPolicy
 
-    checkpoint = snapshot_download(CHECKPOINT_REPO)
+    checkpoint = snapshot_download(checkpoint_repo)
     print(f"[RLT cache] checkpoint={checkpoint}", flush=True)
     policy = OpenPIRLTPolicy.from_checkpoint(
         checkpoint,
-        CONFIG_NAME,
-        default_prompt=PROMPT,
+        config_name,
+        default_prompt=prompt or "",
     )
-    dataset = LeRobotDataset(DATASET_REPO, video_backend="pyav")
-    cache_path, assets_dir, _output_dir = task_paths(CONFIG_NAME)
+    dataset = LeRobotDataset(dataset_repo, video_backend="pyav")
+    cache_path, assets_dir, _output_dir = task_paths(config_name)
     summary = build_demo_cache(
         dataset=dataset,
         policy=policy,
         output_path=cache_path,
-        prompt=PROMPT,
+        prompt=prompt,
         inference_batch_size=inference_batch_size,
     )
     copy_norm_stats(checkpoint, assets_dir)
     volume.commit()
     result = {
         **summary,
-        "config_name": CONFIG_NAME,
-        "dataset": DATASET_REPO,
-        "checkpoint": CHECKPOINT_REPO,
+        "config_name": config_name,
+        "dataset": dataset_repo,
+        "checkpoint": checkpoint_repo,
         "cache_path": cache_path,
         "assets_dir": assets_dir,
     }

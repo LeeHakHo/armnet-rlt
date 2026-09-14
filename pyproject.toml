@@ -14,6 +14,8 @@ dependencies = [
 
 [project.scripts]
 rlt-submit-actor = "armnet_rlt.submit_actor:main"
+rlt-freeze-checkpoint = "armnet_rlt.freeze_checkpoint:main"
+rlt-submit-eval = "armnet_rlt.submit_eval:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -24,7 +26,7 @@ dev = [
     "pytest>=8",
 ]
 submit = [
-    "armnet-client==0.3.3",
+    "armnet-client==0.3.4",
     "modal>=1.5.4",
     "python-dotenv>=1.2.3",
 ]

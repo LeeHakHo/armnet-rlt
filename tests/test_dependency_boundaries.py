@@ -39,13 +39,15 @@ def test_actor_image_does_not_copy_parent_repository() -> None:
     assert "COPY missiontracker/" not in dockerfile
     assert "COPY python/" not in dockerfile
     assert "external/openpi" not in dockerfile
-    assert "armnet-runtime==0.3.1" in dockerfile
-    assert "armnet-busybox==0.3.3" in dockerfile
+    assert "armnet-client==0.3.4" in dockerfile
+    assert "armnet-runtime==0.3.2" in dockerfile
+    assert "armnet-busybox==0.3.4" in dockerfile
+    assert "armnet-core==0.3.2" in dockerfile
 
 
 def test_developer_sdk_is_the_published_armnet_distribution() -> None:
     distribution = importlib.metadata.distribution("armnet-client")
-    assert distribution.version == "0.3.3"
+    assert distribution.version == "0.3.4"
     location = Path(distribution.locate_file("")).resolve()
     assert location.name == "site-packages"
     assert "alpha-robotics/armnet/client" not in str(location)

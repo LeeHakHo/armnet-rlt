@@ -70,6 +70,44 @@ def test_jerk_penalty_is_zero_for_constant_velocity() -> None:
     assert torch.equal(policy.jerk_penalty(action), torch.zeros(1))
 
 
+def test_jerk_penalty_includes_chunk_boundary_from_current_pose() -> None:
+    policy = _policy()
+    action = torch.ones(1, 18)
+    state = torch.zeros(1, 6)
+
+    assert torch.equal(policy.jerk_penalty(action), torch.zeros(1))
+    assert torch.all(policy.jerk_penalty(action, state) > 0)
+
+
+def test_boundary_jerk_is_zero_for_stationary_delta_action() -> None:
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=3,
+        predicted_action_len=3,
+        fixed_action_std=0.0,
+        ref_action_dropout=0.0,
+    )
+    policy = RLTPolicy(
+        RLTConfig(
+            network=network,
+            actions_to_execute=3,
+            use_subsampling=False,
+            policy_uses_delta_actions=True,
+        )
+    )
+    stats = NormStats(np.zeros(6, np.float32), np.ones(6, np.float32))
+    policy.set_norm_stats({"state": stats, "actions": stats})
+    state = torch.tensor([[1, 2, 3, 4, 5, 6]], dtype=torch.float32)
+    stationary = policy.actor.normalize_action(
+        state.repeat(1, 3), state
+    ).clamp(-1.0, 1.0)
+
+    assert torch.allclose(
+        policy.jerk_penalty(stationary, state),
+        torch.zeros(1),
+    )
+
+
 def test_delta_mask_leaves_gripper_absolute() -> None:
     network = so101_network_config(
         hidden_dims=(8,), reference_action_len=3, predicted_action_len=3

@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import pytest
 
-from armnet_rlt.submit_actor import SO101_EMBODIMENT, build_job_args
+from armnet_rlt.submit_actor import SO101_EMBODIMENT, _parser, build_job_args
 
 
 def _args(**updates):
@@ -18,8 +18,21 @@ def _args(**updates):
         "reference_action_len": 30,
         "exploration_scale": 0.0,
         "variation": False,
+        "variation_rail": None,
+        "variation_cameras": None,
+        "variation_lighting": None,
         "variation_seed": 42,
         "variation_episode_offset": 0,
+        "variation_curriculum": False,
+        "variation_scale_start": 0.25,
+        "variation_scale_min": 0.1,
+        "variation_scale_max": 1.0,
+        "variation_scale_step_up": 0.05,
+        "variation_scale_step_down": 0.1,
+        "variation_window": 20,
+        "variation_promote_threshold": 0.8,
+        "variation_demote_threshold": 0.55,
+        "variation_frontier_fraction": 0.2,
         "record_dataset": True,
         "record_dataset_repo_id": None,
         "hf_user": None,
@@ -45,6 +58,13 @@ def _entry(**updates):
 
 def test_submitter_is_fixed_to_single_arm() -> None:
     assert SO101_EMBODIMENT == "lerobot/so-101"
+
+
+def test_submitter_uses_conservative_rollout_and_exploration_defaults() -> None:
+    parser = _parser()
+    assert parser.get_default("num_rollouts") == 40
+    assert parser.get_default("exploration_scale") == 0.5
+    assert parser.get_default("variation_demote_threshold") == 0.55
 
 
 def test_job_args_use_tls_modal_endpoint() -> None:
@@ -87,6 +107,41 @@ def test_job_args_enable_deterministic_variation() -> None:
     assert result["variation"] is True
     assert result["variation_seed"] == 123
     assert result["variation_episode_offset"] == 7
+
+
+def test_job_args_enable_variation_curriculum() -> None:
+    result = build_job_args(
+        _args(
+            variation_curriculum=True,
+            variation_scale_start=0.2,
+            variation_window=10,
+        ),
+        _entry(),
+    )
+
+    assert result["variation"] is True
+    assert result["variation_curriculum"] is True
+    assert result["variation_scale_start"] == 0.2
+    assert result["variation_window"] == 10
+    assert result["variation_promote_threshold"] == 0.8
+    assert result["variation_frontier_fraction"] == 0.2
+
+
+def test_job_args_can_disable_camera_variation_only() -> None:
+    result = build_job_args(
+        _args(
+            variation=True,
+            variation_rail=True,
+            variation_cameras=False,
+            variation_lighting=True,
+        ),
+        _entry(),
+    )
+
+    assert result["variation"] is True
+    assert result["variation_rail"] is True
+    assert result["variation_cameras"] is False
+    assert result["variation_lighting"] is True
 
 
 def test_job_args_can_name_the_rlt_eval_dataset() -> None:

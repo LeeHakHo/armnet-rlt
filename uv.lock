@@ -90,7 +90,7 @@ wheels = [
 
 [[package]]
 name = "armnet-client"
-version = "0.3.3"
+version = "0.3.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "armnet-core" },
@@ -101,21 +101,21 @@ dependencies = [
     { name = "tqdm" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ee/e2/03f212b7902ab7cb08a8e7caa657ce4de691d197c4e4cbdffec7df7fad95/armnet_client-0.3.3.tar.gz", hash = "sha256:0f5f75d47be1b1fa4af1be179d6b667cca6bf1886e62d37df9eab52f16a2f7bd", size = 187959, upload-time = "2026-08-28T11:33:53.263Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/fe/ceb77cb122d15f67f88c5752baf439086ebb48f95c66ff5c0f4b7ae84676/armnet_client-0.3.4.tar.gz", hash = "sha256:fa7f70901e4d7563b729f63847757474c22f872a152643382eac0ba7044e110d", size = 201501, upload-time = "2026-09-14T15:23:21.447Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/b8/fade8ecc8800ce831e15c113583a53be688f61ad8fa04c3212ad64538734/armnet_client-0.3.3-py3-none-any.whl", hash = "sha256:70cbf1e4f417771068bd8982740b028ace2d0eff87e8b03be116a0cad8c58bab", size = 180423, upload-time = "2026-08-28T11:33:52.299Z" },
+    { url = "https://files.pythonhosted.org/packages/78/20/1f512f6695a654da596a5382d1003fc7c4d95614d77a37e194276559db4e/armnet_client-0.3.4-py3-none-any.whl", hash = "sha256:7a66146dae1db82fd144f88868a3f143755ef064cb1aa166cd87c95cf4859468", size = 185789, upload-time = "2026-09-14T15:23:20.396Z" },
 ]
 
 [[package]]
 name = "armnet-core"
-version = "0.3.1"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/21/dc/79f644755de9e5ecd4eb29368acd4b1cf8a4458dd86865dd0f347045e03c/armnet_core-0.3.1.tar.gz", hash = "sha256:360dcbff5cf7a14ae25b84a7d69731860d00fcb49ebeecbe2b65f390c9934b49", size = 40490, upload-time = "2026-08-28T11:32:46.318Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bc/81/38836eb295910d3125eab9c08f71f9f048b449c534c398a86ea477a2b6f6/armnet_core-0.3.2.tar.gz", hash = "sha256:81c324d969786fdeb1161439cac544db2075d0442a823661ac834c178441a39e", size = 61730, upload-time = "2026-09-14T15:21:22.294Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/bb/720894b5a1b348d3d0c67bc72f574c33baa842e297f743555eb9f1451ac4/armnet_core-0.3.1-py3-none-any.whl", hash = "sha256:4ee61109d37a7b20712017e5faf71719337cd4950dc141a567988e5d772e7f82", size = 34480, upload-time = "2026-08-28T11:32:45.404Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/23/8ec357c0031a2d7a97c48a12967783293476e6ad75cfbb78fd8d3a0f8455/armnet_core-0.3.2-py3-none-any.whl", hash = "sha256:974421fd75b045582314a1005a6376162ce88167f89d1891c69c22a45fb8ab23", size = 47415, upload-time = "2026-09-14T15:21:21.182Z" },
 ]
 
 [[package]]
@@ -150,7 +150,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
 submit = [
-    { name = "armnet-client", specifier = "==0.3.3" },
+    { name = "armnet-client", specifier = "==0.3.4" },
     { name = "modal", specifier = ">=1.5.4" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]

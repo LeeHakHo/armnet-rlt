@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import json
 import math
 import pickle
@@ -13,8 +14,11 @@ import torch
 from armnet_rlt.config import RLTConfig, so101_network_config
 from armnet_rlt.jsonl_log import read_jsonl
 from armnet_rlt.learner import (
+    _batch_from_transitions,
     _drain_interactions,
     _push_weights,
+    _restore_replay_buffer,
+    _save_replay_buffer,
     _schedule_online_updates,
     run_learner,
 )
@@ -163,3 +167,63 @@ def test_parameter_queue_keeps_only_latest_snapshot(monkeypatch) -> None:
 
 def test_online_utd_ratio_is_not_scheduled_twice() -> None:
     assert _schedule_online_updates(3, 52) == 55
+
+
+def test_online_replay_buffer_round_trips_with_learner_step(
+    tmp_path: Path,
+) -> None:
+    config = RLTConfig(
+        output_dir=tmp_path,
+        run_id="replay",
+    )
+    config.checkpoint_dir.mkdir(parents=True)
+    replay = deque(
+        [{"reward": torch.tensor(0.5), "done": torch.tensor(1.0)}],
+        maxlen=10,
+    )
+
+    path = _save_replay_buffer(config, replay, step=123)
+    restored = _restore_replay_buffer(
+        config,
+        checkpoint_step=123,
+    )
+
+    assert path.is_file()
+    assert len(restored) == 1
+    assert restored[0]["reward"].item() == 0.5
+
+
+def test_online_batches_balance_curriculum_levels(tmp_path: Path) -> None:
+    network = so101_network_config()
+    _assets, cache = _write_artifacts(tmp_path, network)
+    [transition, *_] = torch.load(
+        cache,
+        map_location="cpu",
+        weights_only=False,
+    )
+    transitions = [
+        {
+            **transition,
+            "curriculum_scale": torch.tensor(0.1),
+        }
+        for _ in range(100)
+    ]
+    transitions.append(
+        {
+            **transition,
+            "curriculum_scale": torch.tensor(0.5),
+        }
+    )
+    torch.manual_seed(42)
+
+    batch = _batch_from_transitions(
+        transitions,
+        1_000,
+        torch.device("cpu"),
+        balance_key="curriculum_scale",
+    )
+
+    high_fraction = (
+        batch["curriculum_scale"].eq(0.5).float().mean().item()
+    )
+    assert 0.4 < high_fraction < 0.6

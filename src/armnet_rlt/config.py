@@ -13,15 +13,15 @@ BISO101_JERK_JOINT_WEIGHTS: tuple[float, ...] = (
 
 @dataclass
 class RLTNetworkConfig:
-    hidden_dims: tuple[int, ...] = (512, 512, 512)
+    hidden_dims: tuple[int, ...] = (512, 512, 512, 512)
     init_final: float | None = 0.05
     action_dim: int = 6
     reference_action_len: int = 30
     predicted_action_len: int = 10
     rl_token_dim: int = 2048
     proprioception_dim: int = 6
-    fixed_action_std: float = 0.1
-    ref_action_dropout: float = 0.5
+    fixed_action_std: float = 0.05
+    ref_action_dropout: float = 0.25
     delta_action_mask: tuple[bool, ...] = (True, True, True, True, True, False)
 
     def __post_init__(self) -> None:
@@ -123,6 +123,7 @@ class RLTActorLearnerConfig:
 
 @dataclass
 class RLTConfig:
+    seed: int = 42
     embodiment: str = "so101"
     network: RLTNetworkConfig = field(default_factory=so101_network_config)
 
@@ -134,23 +135,25 @@ class RLTConfig:
     discount: float = 0.985
     num_critics: int = 4
     critic_target_update_weight: float = 0.005
-    utd_ratio: int = 10
-    policy_update_freq: int = 2
-    critic_lr: float = 3e-4
-    actor_lr: float = 3e-4
-    critic_lr_min: float = 3e-4
-    actor_lr_min: float = 3e-4
-    grad_clip_norm: float = 20.0
+    utd_ratio: int = 5
+    policy_update_freq: int = 4
+    critic_lr: float = 1e-4
+    actor_lr: float = 1e-4
+    critic_lr_min: float = 5e-5
+    actor_lr_min: float = 2.5e-5
+    grad_clip_norm: float = 5.0
     max_q: float | None = 2.0
-    bc_beta: float = 0.05
+    bc_beta: float = 0.5
     bc_gripper_weight: float = 0.33
-    jerk_lambda: float = 0.05
+    jerk_lambda: float = 0.2
     jerk_joint_weights: tuple[float, ...] = SO101_JERK_JOINT_WEIGHTS
-    target_policy_noise: float = 0.1
-    target_noise_clip: float = 0.3
+    wrong_button_penalty_min: float = 0.05
+    wrong_button_penalty_max: float = 0.5
+    target_policy_noise: float = 0.05
+    target_noise_clip: float = 0.1
 
     online_buffer_capacity: int = 15_000
-    online_step_before_learning: int = 10
+    online_step_before_learning: int = 500
     max_demo_pretrain_steps: int = 500
     online_steps: int = 100_000
     batch_size: int = 256
@@ -168,6 +171,8 @@ class RLTConfig:
     actor_learner: RLTActorLearnerConfig = field(default_factory=RLTActorLearnerConfig)
 
     def __post_init__(self) -> None:
+        if self.seed < 0:
+            raise ValueError("seed must be nonnegative")
         if self.embodiment not in {"so101", "biso101"}:
             raise ValueError("embodiment must be 'so101' or historical 'biso101'")
         expected_dim = 6 if self.embodiment == "so101" else 12
@@ -225,10 +230,27 @@ class RLTConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        if self.critic_lr_min > self.critic_lr:
+            raise ValueError("critic_lr_min must not exceed critic_lr")
+        if self.actor_lr_min > self.actor_lr:
+            raise ValueError("actor_lr_min must not exceed actor_lr")
+        for name in ("target_policy_noise", "target_noise_clip"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative")
         if self.max_q is not None and (
             not math.isfinite(self.max_q) or self.max_q <= 0
         ):
             raise ValueError("max_q must be finite and positive when set")
+        if not (
+            0.0
+            <= self.wrong_button_penalty_min
+            <= self.wrong_button_penalty_max
+            <= 1.0
+        ):
+            raise ValueError(
+                "wrong-button penalties must satisfy 0 <= min <= max <= 1"
+            )
         if not self.run_id or self.run_id in {".", ".."}:
             raise ValueError("run_id must be a nonempty directory name")
         if Path(self.run_id).name != self.run_id:

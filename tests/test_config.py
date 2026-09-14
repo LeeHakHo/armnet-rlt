@@ -44,3 +44,35 @@ def test_network_validates_delta_mask_and_dimensions() -> None:
         RLTNetworkConfig(delta_action_mask=(True,))
     with pytest.raises(ValueError, match="2048"):
         RLTNetworkConfig(rl_token_dim=32)
+
+
+def test_conservative_online_defaults() -> None:
+    config = RLTConfig()
+
+    assert config.network.fixed_action_std == 0.05
+    assert config.network.ref_action_dropout == 0.25
+    assert config.seed == 42
+    assert config.actor_lr == 1e-4
+    assert config.actor_lr_min == 2.5e-5
+    assert config.utd_ratio == 5
+    assert config.policy_update_freq == 4
+    assert config.online_step_before_learning == 500
+    assert config.wrong_button_penalty_min == 0.05
+    assert config.wrong_button_penalty_max == 0.5
+
+
+def test_learning_rate_minimum_cannot_exceed_initial_rate() -> None:
+    with pytest.raises(ValueError, match="critic_lr_min"):
+        RLTConfig(critic_lr=1e-4, critic_lr_min=2e-4)
+    with pytest.raises(ValueError, match="actor_lr_min"):
+        RLTConfig(actor_lr=1e-4, actor_lr_min=2e-4)
+
+
+def test_wrong_button_penalty_range_is_validated() -> None:
+    with pytest.raises(ValueError, match="wrong-button"):
+        RLTConfig(
+            wrong_button_penalty_min=0.6,
+            wrong_button_penalty_max=0.5,
+        )
+    with pytest.raises(ValueError, match="seed"):
+        RLTConfig(seed=-1)

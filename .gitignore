@@ -3,6 +3,9 @@
 .pytest_cache/
 __pycache__/
 *.py[cod]
+*.log
 dist/
 build/
 checkpoints/
+experiment-data/
+learner_snapshots/

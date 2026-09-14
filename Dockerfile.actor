@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
 
-ARG OPENPI_REVISION=e0eb11f08ffcef37809ba72d72b4ce5fb68ca0f7
+ARG OPENPI_REVISION=90490b9c42a1accafde514f7ee610fbd7bc53376
 ARG LEROBOT_REVISION=4eecbad32b0380c64bd5574bbf74e56e5255bdea
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -71,7 +71,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \
-        armnet-client==0.3.3 armnet-runtime==0.3.1 armnet-busybox==0.3.3
+        armnet-client==0.3.4 armnet-runtime==0.3.2 \
+        armnet-busybox==0.3.4 armnet-core==0.3.2
 
 # Clone the pravsels fork with its submodules. The pinned revision can be bumped
 # when a new single-arm RLT checkpoint/config is ready.

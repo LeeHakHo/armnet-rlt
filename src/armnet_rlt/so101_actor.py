@@ -100,6 +100,7 @@ class _ChunkTransition:
     rl_token: torch.Tensor
     proprioception: torch.Tensor
     reference_action: torch.Tensor
+    curriculum_scale: torch.Tensor
     action: torch.Tensor
     next_rl_token: torch.Tensor
     next_proprioception: torch.Tensor
@@ -125,6 +126,7 @@ def _serialize_episode(
                     "rl_token": item.rl_token.unsqueeze(0),
                     "proprioception": item.proprioception.unsqueeze(0),
                     "reference_action": item.reference_action.unsqueeze(0),
+                    "curriculum_scale": item.curriculum_scale.unsqueeze(0),
                 },
                 action=item.action.unsqueeze(0),
                 reward=reward if terminal else 0.0,
@@ -132,6 +134,7 @@ def _serialize_episode(
                     "rl_token": item.next_rl_token.unsqueeze(0),
                     "proprioception": item.next_proprioception.unsqueeze(0),
                     "reference_action": item.next_reference_action.unsqueeze(0),
+                    "curriculum_scale": item.curriculum_scale.unsqueeze(0),
                 },
                 done=terminal,
                 truncated=False,
@@ -266,6 +269,36 @@ class LearnerTransport:
                 self._shutdown.set()
 
 
+class FrozenActorTransport:
+    """Transport-shaped adapter that serves one immutable actor snapshot."""
+
+    def __init__(self, artifact: dict[str, Any]) -> None:
+        self._artifact = artifact
+
+    def start(self) -> None:
+        return None
+
+    def wait_for_initial_parameters(
+        self, timeout_s: float = 120.0
+    ) -> dict[str, Any]:
+        del timeout_s
+        return {
+            "policy": self._artifact["actor_state_dict"],
+            "learner_step": self._artifact["learner_step"],
+        }
+
+    def latest_parameters(self) -> None:
+        return None
+
+    def send_episode(
+        self, transitions: bytes | None, interaction: bytes
+    ) -> None:
+        del transitions, interaction
+
+    def close(self) -> None:
+        return None
+
+
 def _auth_interceptor(metadata: list[tuple[str, str]]) -> Any:
     import grpc
 
@@ -333,10 +366,13 @@ def _connect_learner(cfg: Any) -> tuple[Any, Any]:
     return channel, stub
 
 
-def _load_parameters(actor: Any, payload: bytes) -> int | None:
-    from lerobot.transport.utils import bytes_to_state_dict
+def _load_parameters(actor: Any, payload: Any) -> int | None:
+    if isinstance(payload, dict):
+        state = payload
+    else:
+        from lerobot.transport.utils import bytes_to_state_dict
 
-    state = bytes_to_state_dict(payload)
+        state = bytes_to_state_dict(payload)
     actor.load_state_dict(state.get("policy", state))
     raw_step = state.get("learner_step") if isinstance(state, dict) else None
     if raw_step is None:
@@ -344,6 +380,109 @@ def _load_parameters(actor: Any, payload: bytes) -> int | None:
     if hasattr(raw_step, "item"):
         raw_step = raw_step.item()
     return int(raw_step)
+
+
+def _policy_variant(
+    *,
+    frozen_eval: bool,
+    include_base: bool,
+    rollout_index: int,
+) -> str:
+    if not frozen_eval:
+        return "online_rlt"
+    if include_base:
+        pair_index = (rollout_index - 1) // 2
+        position_in_pair = (rollout_index - 1) % 2
+        base_first = pair_index % 2 == 0
+        if (position_in_pair == 0) == base_first:
+            return "base"
+    return "frozen_rlt"
+
+
+def _paired_eval_summary(
+    records: list[dict[str, Any]],
+) -> dict[str, float | int] | None:
+    if not records or len(records) % 2:
+        return None
+    counts = {
+        "both_success": 0,
+        "frozen_rlt_only": 0,
+        "base_only": 0,
+        "both_fail": 0,
+    }
+    base_successes = frozen_successes = 0
+    for index in range(0, len(records), 2):
+        pair = {
+            str(record.get("policy_variant")): bool(record.get("success"))
+            for record in records[index : index + 2]
+        }
+        if set(pair) != {"base", "frozen_rlt"}:
+            return None
+        base = pair["base"]
+        frozen = pair["frozen_rlt"]
+        base_successes += int(base)
+        frozen_successes += int(frozen)
+        key = (
+            "both_success"
+            if base and frozen
+            else "frozen_rlt_only"
+            if frozen
+            else "base_only"
+            if base
+            else "both_fail"
+        )
+        counts[key] += 1
+    pairs = len(records) // 2
+    return {
+        "n_pairs": pairs,
+        "base_successes": base_successes,
+        "frozen_rlt_successes": frozen_successes,
+        "base_success_rate": base_successes / pairs,
+        "frozen_rlt_success_rate": frozen_successes / pairs,
+        "delta_percentage_points": (
+            100.0 * (frozen_successes - base_successes) / pairs
+        ),
+        **counts,
+    }
+
+
+def _shape_button_reward(
+    base_reward: float,
+    *,
+    press_counts: dict[str, int],
+    target_button: str,
+    curriculum_scale: float,
+    penalty_min: float,
+    penalty_max: float,
+) -> tuple[float, int, float]:
+    if not target_button:
+        return base_reward, 0, 0.0
+    wrong_presses = sum(
+        max(0, int(count))
+        for name, count in press_counts.items()
+        if name != target_button
+    )
+    level = max(0.0, min(1.0, float(curriculum_scale)))
+    penalty = penalty_min + level * (penalty_max - penalty_min)
+    shaped = max(0.0, float(base_reward) - wrong_presses * penalty)
+    return shaped, wrong_presses, penalty
+
+
+def _button_press_counts(robot: Any) -> dict[str, int]:
+    state = getattr(robot, "state", None)
+    if not callable(state):
+        return {}
+    try:
+        counts = getattr(state(), "press_count", {})
+    except Exception:
+        log.warning("failed to read BusyBox button press counts", exc_info=True)
+        return {}
+    if not isinstance(counts, dict):
+        return {}
+    return {
+        str(name): max(0, int(count))
+        for name, count in counts.items()
+    }
 
 
 def _refine_chunk(
@@ -432,6 +571,11 @@ def run_actor(
     device = torch.device(
         device_name if device_name != "cuda" or torch.cuda.is_available() else "cpu"
     )
+    seed = int(_field(cfg, "seed", 42))
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
     robot = robot or make_so101_robot(ctx, cfg)
     robot = ctx.cell.instrument(robot)
     if not getattr(robot, "is_connected", False):
@@ -481,6 +625,19 @@ def run_actor(
     exploration_scale = float(_field(cfg, "exploration_scale", 1.0))
     if not math.isfinite(exploration_scale) or exploration_scale < 0:
         raise ValueError("exploration_scale must be finite and nonnegative")
+    frozen_eval = bool(_field(cfg, "frozen_eval", False))
+    include_base = bool(_field(cfg, "eval_include_base", False))
+    if frozen_eval and exploration_scale != 0:
+        raise ValueError("frozen RLT evaluation requires exploration_scale=0")
+    reward_target_button = str(
+        _field(cfg, "reward_target_button", "") or ""
+    )
+    wrong_button_penalty_min = float(
+        _field(cfg, "wrong_button_penalty_min", 0.0)
+    )
+    wrong_button_penalty_max = float(
+        _field(cfg, "wrong_button_penalty_max", 0.0)
+    )
     instruction = str(
         _field(cfg, "language_instruction", "")
         or getattr(ctx.cell, "language_instruction", "")
@@ -575,6 +732,8 @@ def run_actor(
     episode_policy_step_start: int | None = None
     policy_reload_count = 0
     episode_started_at = ""
+    policy_variant = "online_rlt"
+    episode_curriculum_scale = 0.0
     command_ticks = 0
     hardware_clamp_steps = 0
     deviation_sum = torch.zeros(action_dim, dtype=torch.float64)
@@ -602,8 +761,34 @@ def run_actor(
                 previous_state is EpisodeState.END_EPISODE
                 and state_machine.state is EpisodeState.IN_EPISODE
             ):
+                # Keep one immutable actor snapshot for the whole episode.
+                # Reloading every action chunk makes the behavior policy
+                # non-stationary mid-rollout and can turn rapid learner updates
+                # into visible command discontinuities.
+                update = transport.latest_parameters()
+                if update is not None:
+                    loaded_step = _load_parameters(actor, update)
+                    if loaded_step is not None:
+                        current_policy_step = loaded_step
+                    policy_reload_count += 1
                 episode_started_at = datetime.now(UTC).isoformat()
                 episode_policy_step_start = current_policy_step
+                policy_variant = _policy_variant(
+                    frozen_eval=frozen_eval,
+                    include_base=include_base,
+                    rollout_index=int(
+                        getattr(operator, "rollout_index", completed + 1)
+                    ),
+                )
+                variation = getattr(operator, "variation", None)
+                curriculum = (
+                    variation.get("curriculum", {})
+                    if isinstance(variation, dict)
+                    else {}
+                )
+                episode_curriculum_scale = float(
+                    curriculum.get("scale", 0.0)
+                )
                 if telemetry is not None and eval_dataset is not None:
                     telemetry.begin_episode(eval_dataset.num_episodes)
             if (
@@ -616,7 +801,26 @@ def run_actor(
                 previous_state is EpisodeState.IN_EPISODE
                 and state_machine.state is EpisodeState.END_EPISODE
             ):
-                reward = state_machine.episode_reward
+                base_reward = state_machine.episode_reward
+                variation = getattr(operator, "variation", None)
+                curriculum = (
+                    variation.get("curriculum", {})
+                    if isinstance(variation, dict)
+                    else {}
+                )
+                press_counts = _button_press_counts(robot)
+                reward, wrong_button_presses, wrong_button_penalty = (
+                    _shape_button_reward(
+                        base_reward,
+                        press_counts=press_counts,
+                        target_button=reward_target_button,
+                        curriculum_scale=float(
+                            curriculum.get("scale", 0.0)
+                        ),
+                        penalty_min=wrong_button_penalty_min,
+                        penalty_max=wrong_button_penalty_max,
+                    )
+                )
                 payload = _serialize_episode(transitions, reward=reward)
                 outcome = state_machine.episode_ctx.outcome
                 mean_by_joint = (
@@ -626,6 +830,7 @@ def run_actor(
                 )
                 record = EpisodeRecord(
                     session_id=session_id,
+                    policy_variant=policy_variant,
                     session_rollout_index=int(
                         getattr(operator, "rollout_index", completed + 1)
                     ),
@@ -646,10 +851,13 @@ def run_actor(
                     policy_step_start=episode_policy_step_start,
                     policy_step_end=current_policy_step,
                     policy_reload_count=policy_reload_count,
-                    variation=getattr(operator, "variation", None),
+                    variation=variation,
                     reset_problems=tuple(
                         getattr(operator, "reset_problems", ())
                     ),
+                    shaped_reward=reward,
+                    wrong_button_presses=wrong_button_presses,
+                    wrong_button_penalty=wrong_button_penalty,
                     command_ticks=command_ticks,
                     hardware_clamp_steps=hardware_clamp_steps,
                     action_deviation_mean=float(mean_by_joint.mean()),
@@ -662,7 +870,7 @@ def run_actor(
                 transport.send_episode(payload, interaction)
                 per_rollout.append(record.to_dict())
                 completed += 1
-                successes += int(reward > 0)
+                successes += int(outcome is EpisodeOutcome.SUCCESS)
                 operator.on_episode_end(state_machine.episode_ctx.outcome)
                 if eval_dataset is not None and frame_writer is not None:
                     from armnet_rlt.dataset_recording import save_episode
@@ -700,13 +908,6 @@ def run_actor(
                 device=device,
             )
             if chunk is None or chunk_index >= predicted_len:
-                update = transport.latest_parameters()
-                if update is not None:
-                    loaded_step = _load_parameters(actor, update)
-                    if loaded_step is not None:
-                        current_policy_step = loaded_step
-                    policy_reload_count += 1
-
                 result = policy.infer(
                     build_policy_observation(raw_obs, instruction)
                 )
@@ -729,22 +930,29 @@ def run_actor(
                             rl_token=prev_token.cpu(),
                             proprioception=prev_prop.cpu(),
                             reference_action=prev_reference.flatten().cpu(),
+                            curriculum_scale=torch.tensor(
+                                episode_curriculum_scale,
+                                dtype=torch.float32,
+                            ),
                             action=executed.flatten().cpu(),
                             next_rl_token=token.cpu(),
                             next_proprioception=proprioception.cpu(),
                             next_reference_action=reference.flatten().cpu(),
                         )
                     )
-                chunk = _refine_chunk(
-                    actor,
-                    token,
-                    proprioception,
-                    reference,
-                    predicted_len=predicted_len,
-                    action_dim=action_dim,
-                    exploration_correlation=exploration_correlation,
-                    exploration_scale=exploration_scale,
-                )
+                if policy_variant == "base":
+                    chunk = reference[:predicted_len].detach().clone()
+                else:
+                    chunk = _refine_chunk(
+                        actor,
+                        token,
+                        proprioception,
+                        reference,
+                        predicted_len=predicted_len,
+                        action_dim=action_dim,
+                        exploration_correlation=exploration_correlation,
+                        exploration_scale=exploration_scale,
+                    )
                 deviation = (
                     chunk - reference[:predicted_len]
                 ).detach().abs().double().cpu()
@@ -770,7 +978,15 @@ def run_actor(
                 sent_action if isinstance(sent_action, dict) else requested_action
             )
             if frame_writer is not None:
-                frame_writer.submit_observation(raw_obs, actual_action)
+                frame_writer.submit_observation(
+                    raw_obs,
+                    actual_action,
+                    task=(
+                        instruction
+                        if not frozen_eval
+                        else f"{instruction} [{policy_variant}]"
+                    ),
+                )
                 ctx.cell.record_frame()
                 if telemetry is not None:
                     telemetry.submit_frame(
@@ -843,6 +1059,24 @@ def run_actor(
             transport.close()
             _close_robot_and_cell(robot, ctx.cell)
 
+    by_variant: dict[str, dict[str, float | int]] = {}
+    for variant in sorted(
+        {str(record.get("policy_variant", "")) for record in per_rollout}
+    ):
+        records = [
+            record
+            for record in per_rollout
+            if record.get("policy_variant") == variant
+        ]
+        variant_successes = sum(bool(record["success"]) for record in records)
+        by_variant[variant] = {
+            "n_rollouts": len(records),
+            "n_success": variant_successes,
+            "pc_success": (
+                100.0 * variant_successes / len(records) if records else 0.0
+            ),
+        }
+
     return {
         "status": "actor_finished",
         "rollouts": completed,
@@ -858,5 +1092,11 @@ def run_actor(
             "n_success": successes,
             "pc_success": 100.0 * successes / completed if completed else 0.0,
         },
+        "aggregated_by_variant": by_variant,
+        "paired_comparison": (
+            _paired_eval_summary(per_rollout)
+            if frozen_eval and include_base
+            else None
+        ),
     }
 

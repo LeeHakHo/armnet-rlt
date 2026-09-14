@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,7 @@ from queue import Empty, Full, Queue
 from threading import Event
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -29,15 +31,35 @@ def _batch_from_transitions(
     transitions: list[dict[str, Tensor]],
     batch_size: int,
     device: torch.device,
+    *,
+    balance_key: str | None = None,
 ) -> dict[str, Any]:
-    indices = torch.randint(len(transitions), (batch_size,)).tolist()
+    if balance_key is None:
+        indices = torch.randint(len(transitions), (batch_size,)).tolist()
+    else:
+        groups: dict[float, list[int]] = {}
+        for index, transition in enumerate(transitions):
+            raw = transition.get(balance_key, torch.tensor(0.0))
+            value = float(raw.item() if isinstance(raw, Tensor) else raw)
+            groups.setdefault(round(value, 6), []).append(index)
+        grouped_indices = list(groups.values())
+        selected_groups = torch.randint(
+            len(grouped_indices), (batch_size,)
+        ).tolist()
+        indices = [
+            group[torch.randint(len(group), ()).item()]
+            for group in (
+                grouped_indices[group_index]
+                for group_index in selected_groups
+            )
+        ]
 
     def stack(key: str) -> Tensor:
         return torch.stack([transitions[index][key] for index in indices]).to(
             device
         )
 
-    return {
+    batch = {
         "state": {
             "rl_token": stack("rl_token"),
             "proprioception": stack("proprioception"),
@@ -52,6 +74,9 @@ def _batch_from_transitions(
         },
         "done": stack("done"),
     }
+    if all("curriculum_scale" in item for item in transitions):
+        batch["curriculum_scale"] = stack("curriculum_scale")
+    return batch
 
 
 def _merge_batches(first: Any, second: Any) -> Any:
@@ -159,6 +184,58 @@ def _latest_checkpoint(config: RLTConfig) -> Path | None:
         candidates,
         key=lambda path: int(path.parent.name.removeprefix("step_")),
     )
+
+
+def _replay_buffer_path(config: RLTConfig) -> Path:
+    return config.checkpoint_dir / "online_replay_buffer.pt"
+
+
+def _save_replay_buffer(
+    config: RLTConfig,
+    replay_buffer: deque[dict[str, Tensor]],
+    *,
+    step: int,
+) -> Path:
+    path = _replay_buffer_path(config)
+    temporary = path.with_suffix(".pt.tmp")
+    torch.save(
+        {
+            "schema_version": 1,
+            "learner_step": step,
+            "transitions": list(replay_buffer),
+        },
+        temporary,
+    )
+    temporary.replace(path)
+    return path
+
+
+def _restore_replay_buffer(
+    config: RLTConfig,
+    *,
+    checkpoint_step: int,
+) -> list[dict[str, Tensor]]:
+    path = _replay_buffer_path(config)
+    if not path.exists():
+        return []
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ValueError(f"invalid online replay snapshot at {path}")
+    replay_step = int(payload.get("learner_step", -1))
+    if replay_step > checkpoint_step:
+        raise ValueError(
+            "online replay snapshot is newer than the learner checkpoint "
+            f"({replay_step} > {checkpoint_step})"
+        )
+    transitions = payload.get("transitions")
+    if not isinstance(transitions, list):
+        raise ValueError(f"online replay snapshot at {path} lacks transitions")
+    print(
+        f"[RLT] restored {len(transitions)} online transitions "
+        f"from learner step {replay_step}",
+        flush=True,
+    )
+    return transitions
 
 
 def _restore_checkpoint(
@@ -333,6 +410,12 @@ def _drain_online_transitions(
                     "done": torch.tensor(
                         float(bool(transition["done"])), dtype=torch.float32
                     ),
+                    "curriculum_scale": unbatch(
+                        transition["state"].get(
+                            "curriculum_scale",
+                            torch.tensor(0.0),
+                        )
+                    ),
                 }
             )
             count += 1
@@ -392,7 +475,9 @@ def _drain_interactions(
             f"duration={record.duration_s:.1f}s "
             f"policy={record.policy_step_start}..{record.policy_step_end} "
             f"success_10={derived.get('rolling/success_rate_10', 0.0):.3f} "
-            f"deviation={record.action_deviation_mean:.3f}",
+            f"deviation={record.action_deviation_mean:.3f} "
+            f"reward={record.shaped_reward:.3f} "
+            f"wrong_buttons={record.wrong_button_presses}",
             flush=True,
         )
         if wandb_run is not None:
@@ -456,11 +541,15 @@ def run_learner(
     rollout_log = run_dir / "rollout_metrics.jsonl"
     training_log = run_dir / "training_metrics.jsonl"
 
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
     device = torch.device(config.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
     if device.type == "cuda":
-        torch.backends.cudnn.benchmark = True
+        torch.cuda.manual_seed_all(config.seed)
+        torch.backends.cudnn.benchmark = False
         torch.backends.cuda.matmul.allow_tf32 = True
 
     norm_stats = load_norm_stats(
@@ -505,6 +594,14 @@ def run_learner(
         )
         if resume
         else 0
+    )
+    restored_online_transitions = (
+        _restore_replay_buffer(
+            config,
+            checkpoint_step=completed_steps,
+        )
+        if resume and completed_steps
+        else []
     )
     rolling, episode_count = _restore_rolling_metrics(
         rollout_log, window=config.rolling_window
@@ -618,11 +715,13 @@ def run_learner(
                 config=config,
             )
 
+    online_buffer: deque[dict[str, Tensor]] | None = None
     if not offline_only and completed_steps < config.online_steps:
         assert transition_queue is not None
         assert interaction_queue is not None
         assert parameters_queue is not None
-        online_buffer: deque[dict[str, Tensor]] = deque(
+        online_buffer = deque(
+            restored_online_transitions,
             maxlen=config.online_buffer_capacity
         )
         pending_updates = 0
@@ -670,7 +769,10 @@ def run_learner(
                     continue
                 online_batch_size = max(1, config.batch_size // 2)
                 online_batch = _batch_from_transitions(
-                    list(online_buffer), online_batch_size, device
+                    list(online_buffer),
+                    online_batch_size,
+                    device,
+                    balance_key="curriculum_scale",
                 )
                 demo_batch_size = (
                     config.batch_size - online_batch_size
@@ -737,6 +839,11 @@ def run_learner(
                         step=completed_steps,
                         config=config,
                     )
+                    _save_replay_buffer(
+                        config,
+                        online_buffer,
+                        step=completed_steps,
+                    )
         finally:
             shutdown_event.set()
             if server is not None:
@@ -757,6 +864,12 @@ def run_learner(
         step=completed_steps,
         config=config,
     )
+    if online_buffer is not None:
+        _save_replay_buffer(
+            config,
+            online_buffer,
+            step=completed_steps,
+        )
     summary = _learner_summary(
         artifact_summary,
         completed_steps=completed_steps,

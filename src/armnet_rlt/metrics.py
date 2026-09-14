@@ -9,6 +9,7 @@ from typing import Any
 class EpisodeRecord:
     schema_version: int = 1
     session_id: str = ""
+    policy_variant: str = "online_rlt"
     session_rollout_index: int = 0
     rollout_total: int | None = None
     started_at: str = ""
@@ -17,6 +18,9 @@ class EpisodeRecord:
     duration_s: float = 0.0
     timeout: bool = False
     outcome: str = "fail"
+    shaped_reward: float = 0.0
+    wrong_button_presses: int = 0
+    wrong_button_penalty: float = 0.0
     scored_by: str | None = None
     teleop_override_rate: float = 0.0
     num_chunks: int = 0
@@ -96,11 +100,15 @@ class RollingMetrics:
 
 def episode_metrics(
     record: EpisodeRecord, episode_index: int
-) -> dict[str, float | int]:
-    metrics: dict[str, float | int] = {
+) -> dict[str, float | int | str]:
+    metrics: dict[str, float | int | str] = {
         "episode/success": int(record.success),
+        "episode/policy_variant": record.policy_variant,
         "episode/duration_seconds": record.duration_s,
         "episode/timeout": int(record.timeout),
+        "episode/shaped_reward": record.shaped_reward,
+        "episode/wrong_button_presses": record.wrong_button_presses,
+        "episode/wrong_button_penalty": record.wrong_button_penalty,
         "episode/teleop_override_rate": record.teleop_override_rate,
         "episode/num_chunks": record.num_chunks,
         "episode/num_transitions": record.num_transitions,

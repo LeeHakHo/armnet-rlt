@@ -148,14 +148,34 @@ class RLTPolicy(nn.Module):
             reduction="none",
         ).mean()
 
-    def jerk_penalty(self, action: Tensor) -> Tensor:
-        if self.predicted_action_len < 3:
-            return action.new_zeros(action.shape[0])
+    def jerk_penalty(
+        self,
+        action: Tensor,
+        proprioception: Tensor | None = None,
+    ) -> Tensor:
         chunks = action.view(
             action.shape[0],
             self.predicted_action_len,
             self.per_step_action_dim,
         )
+        if proprioception is not None:
+            # A newly inferred chunk starts from the robot's observed pose, not
+            # from an arbitrary point on the chunk. Prepending that stationary
+            # target twice extends the existing second-difference loss across
+            # the chunk boundary: the first term penalizes an initial command
+            # jump and the second penalizes the initial acceleration.
+            stationary = proprioception[
+                :, : self.per_step_action_dim
+            ].repeat(1, self.predicted_action_len)
+            normalized_stationary = self.actor.normalize_action(
+                stationary, proprioception
+            )
+            boundary = normalized_stationary.view_as(chunks)[:, :1].clamp(
+                -1.0, 1.0
+            )
+            chunks = torch.cat((boundary, boundary, chunks), dim=1)
+        elif self.predicted_action_len < 3:
+            return action.new_zeros(action.shape[0])
         second_difference = (
             chunks[:, 2:] - 2 * chunks[:, 1:-1] + chunks[:, :-2]
         )
@@ -163,8 +183,12 @@ class RLTPolicy(nn.Module):
             second_difference.square() * self._jerk_joint_weights
         ).sum(dim=(-2, -1))
 
-    def _jerk_penalty(self, action: Tensor) -> Tensor:
-        return self.jerk_penalty(action)
+    def _jerk_penalty(
+        self,
+        action: Tensor,
+        proprioception: Tensor | None = None,
+    ) -> Tensor:
+        return self.jerk_penalty(action, proprioception)
 
     def compute_loss_actor(
         self,
@@ -188,7 +212,9 @@ class RLTPolicy(nn.Module):
         ).sum(dim=-1)
         loss = -minimum_q + self.bc_beta * bc_penalty
         if self.jerk_lambda > 0:
-            loss = loss + self.jerk_lambda * self.jerk_penalty(action)
+            loss = loss + self.jerk_lambda * self.jerk_penalty(
+                action, proprioception
+            )
         return loss.mean()
 
     @torch.no_grad()

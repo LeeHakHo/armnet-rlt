@@ -151,9 +151,13 @@ class DatasetFrameWriter:
         self._thread.start()
 
     def submit_observation(
-        self, raw_obs: dict[str, Any], sent_action: dict[str, float]
+        self,
+        raw_obs: dict[str, Any],
+        sent_action: dict[str, float],
+        *,
+        task: str | None = None,
     ) -> None:
-        self._queue.put((raw_obs, sent_action))
+        self._queue.put((raw_obs, sent_action, task or self._task))
 
     def flush(self) -> None:
         self._queue.join()
@@ -170,6 +174,7 @@ class DatasetFrameWriter:
         self,
         raw_obs: dict[str, Any],
         sent_action: dict[str, float],
+        task: str,
     ) -> dict[str, Any]:
         from lerobot.datasets.feature_utils import build_dataset_frame
         from lerobot.utils.constants import ACTION, OBS_STR
@@ -181,7 +186,7 @@ class DatasetFrameWriter:
             **build_dataset_frame(
                 self._features, sent_action, prefix=ACTION
             ),
-            "task": self._task,
+            "task": task,
         }
 
     def _run(self) -> None:
@@ -191,9 +196,9 @@ class DatasetFrameWriter:
                 if item is None:
                     return
                 if self._error is None:
-                    raw_obs, sent_action = item
+                    raw_obs, sent_action, task = item
                     self._dataset.add_frame(
-                        self._build(raw_obs, sent_action)
+                        self._build(raw_obs, sent_action, task)
                     )
             except Exception as exc:  # noqa: BLE001 - surfaced by flush()
                 self._error = exc

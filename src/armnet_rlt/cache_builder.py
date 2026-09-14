@@ -46,6 +46,27 @@ def _frame_observation(frame: dict[str, Any], prompt: str) -> PolicyObservation:
     )
 
 
+def _episode_prompt(
+    frame: dict[str, Any],
+    metadata: dict[str, Any],
+    fixed_prompt: str | None,
+) -> str:
+    if fixed_prompt:
+        return fixed_prompt
+    task = frame.get("task")
+    if isinstance(task, str) and task.strip():
+        return task.strip()
+    tasks = metadata.get("tasks")
+    if isinstance(tasks, (list, tuple)) and len(tasks) == 1:
+        task = tasks[0]
+        if isinstance(task, str) and task.strip():
+            return task.strip()
+    raise ValueError(
+        "multitask cache episode has no unambiguous task prompt in its "
+        "first frame or episode metadata"
+    )
+
+
 def _executed_chunk(
     dataset: Any,
     *,
@@ -83,7 +104,7 @@ def build_demo_cache(
     dataset: Any,
     policy: OpenPIRLTPolicy,
     output_path: str | Path,
-    prompt: str,
+    prompt: str | None,
     inference_batch_size: int = 4,
     predicted_action_len: int = 10,
     reference_action_len: int = 30,
@@ -102,8 +123,16 @@ def build_demo_cache(
     for episode_index, metadata in enumerate(episodes):
         episode_length = int(metadata["length"])
         offsets = list(range(0, episode_length, predicted_action_len))
+        episode_prompt = _episode_prompt(
+            dataset[episode_start],
+            metadata,
+            prompt,
+        )
         observations = [
-            _frame_observation(dataset[episode_start + offset], prompt)
+            _frame_observation(
+                dataset[episode_start + offset],
+                episode_prompt,
+            )
             for offset in offsets
         ]
         executed = [

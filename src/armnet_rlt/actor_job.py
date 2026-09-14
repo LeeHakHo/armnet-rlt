@@ -89,6 +89,18 @@ def _resolve_checkpoint(ctx: Context) -> str:
     return _checkpoint_root(local)
 
 
+def _resolve_volume_file(ctx: Context, value: str, *, label: str) -> Path:
+    path = value
+    if path.startswith("volume://"):
+        path = str(ctx.volume.path(path.removeprefix("volume://")))
+    elif not Path(path).is_absolute() and getattr(ctx.volume, "root", None):
+        path = str(ctx.volume.path(path))
+    resolved = Path(path)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{label} not found: {resolved}")
+    return resolved
+
+
 def _calibration_lookup(ctx: Context) -> tuple[str, str]:
     """Stage a cell calibration file in LeRobot's ``<id>.json`` layout."""
 
@@ -162,7 +174,14 @@ def run(ctx: Context) -> dict[str, Any]:
         RLTConfig,
         so101_network_config,
     )
-    from armnet_rlt.operator_control import CellOperatorControl
+    from armnet_rlt.frozen import (
+        config_from_frozen_checkpoint,
+        load_frozen_checkpoint,
+    )
+    from armnet_rlt.operator_control import (
+        CellOperatorControl,
+        VariationCurriculumConfig,
+    )
     from armnet_rlt.so101_actor import run_actor
 
     args = ctx.args
@@ -171,7 +190,10 @@ def run(ctx: Context) -> dict[str, Any]:
     cameras = dict(ctx.camera_configs)
     config_name = str(args.get("config_name", "pi05_rlt_so101"))
     required_cameras = {"front"}
-    if config_name == "pi05_rlt_busybox_push_green_button":
+    if config_name in {
+        "pi05_rlt_busybox_push_green_button",
+        "pi05_rlt_busybox_multitask_singlearm_minmax",
+    }:
         required_cameras.update(("top", "wrist"))
     missing_cameras = required_cameras.difference(cameras)
     if missing_cameras:
@@ -180,12 +202,42 @@ def run(ctx: Context) -> dict[str, Any]:
             f"{sorted(missing_cameras)} required by {config_name!r}"
         )
 
-    reference_len = int(args.get("reference_action_len", 30))
-    predicted_len = int(args.get("predicted_action_len", args.get("actions_to_execute", 10)))
-    network = so101_network_config(
-        reference_action_len=reference_len,
-        predicted_action_len=predicted_len,
-    )
+    frozen_path = args.get("frozen_rlt_checkpoint")
+    frozen_artifact = None
+    if frozen_path:
+        frozen_artifact = load_frozen_checkpoint(
+            _resolve_volume_file(
+                ctx,
+                str(frozen_path),
+                label="frozen RLT checkpoint",
+            )
+        )
+        base_cfg = config_from_frozen_checkpoint(frozen_artifact)
+        network = base_cfg.network
+    else:
+        reference_len = int(args.get("reference_action_len", 30))
+        predicted_len = int(
+            args.get(
+                "predicted_action_len",
+                args.get("actions_to_execute", 10),
+            )
+        )
+        network = so101_network_config(
+            reference_action_len=reference_len,
+            predicted_action_len=predicted_len,
+        )
+        base_cfg = _construct(
+            RLTConfig,
+            embodiment="so101",
+            network=network,
+            jerk_joint_weights=list(SO101_JERK_JOINT_WEIGHTS),
+            device=str(args.get("device", "cuda")),
+            actions_to_execute=predicted_len,
+            use_quantile_norm=_as_bool(args.get("quantile_norm"), True),
+            policy_uses_delta_actions=_as_bool(
+                args.get("delta_actions"), True
+            ),
+        )
     if (
         network.action_dim != 6
         or network.proprioception_dim != 6
@@ -206,16 +258,7 @@ def run(ctx: Context) -> dict[str, Any]:
         or getattr(ctx.cell, "language_instruction", "")
         or ctx.task
     )
-    base_cfg = _construct(
-        RLTConfig,
-        embodiment="so101",
-        network=network,
-        jerk_joint_weights=list(SO101_JERK_JOINT_WEIGHTS),
-        device=str(args.get("device", "cuda")),
-        actions_to_execute=predicted_len,
-        use_quantile_norm=_as_bool(args.get("quantile_norm"), True),
-        policy_uses_delta_actions=_as_bool(args.get("delta_actions"), True),
-    )
+    base_cfg.device = str(args.get("device", "cuda"))
     # Robot connection values are deployment resources, not learner config.
     so101 = SimpleNamespace(
         robot_port=ctx.cell.robot_port,
@@ -236,32 +279,54 @@ def run(ctx: Context) -> dict[str, Any]:
             args.get("exploration_correlation", 0.85)
         ),
         exploration_scale=float(args.get("exploration_scale", 1.0)),
+        frozen_eval=frozen_artifact is not None,
+        eval_include_base=_as_bool(args.get("eval_include_base"), False),
+        reward_target_button=str(
+            args.get("reward_target_button")
+            or ("green_button" if ctx.task == "push_green_button" else "")
+        ),
         so101=so101,
     )
 
     learner = cfg.actor_learner
-    learner.learner_host = str(
-        args.get("learner_host") or os.environ.get("RLT_LEARNER_HOST", "")
-    )
-    learner.learner_port = int(
-        args.get("learner_port") or os.environ.get("RLT_LEARNER_PORT", 443)
-    )
-    learner.auth_token = str(
-        ctx.secrets.get("RLT_LEARNER_AUTH_TOKEN")
-        or os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
-    )
-    learner.use_tls = _as_bool(
-        args.get("use_tls", os.environ.get("RLT_LEARNER_USE_TLS", "1")), True
-    )
-    learner.tls_server_name = str(args.get("tls_server_name", "") or "")
-    if not learner.learner_host:
-        raise ValueError("learner_host is required")
-    if not learner.auth_token:
-        raise ValueError("RLT_LEARNER_AUTH_TOKEN is required")
+    if frozen_artifact is None:
+        learner.learner_host = str(
+            args.get("learner_host")
+            or os.environ.get("RLT_LEARNER_HOST", "")
+        )
+        learner.learner_port = int(
+            args.get("learner_port")
+            or os.environ.get("RLT_LEARNER_PORT", 443)
+        )
+        learner.auth_token = str(
+            ctx.secrets.get("RLT_LEARNER_AUTH_TOKEN")
+            or os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
+        )
+        learner.use_tls = _as_bool(
+            args.get(
+                "use_tls",
+                os.environ.get("RLT_LEARNER_USE_TLS", "1"),
+            ),
+            True,
+        )
+        learner.tls_server_name = str(
+            args.get("tls_server_name", "") or ""
+        )
+        if not learner.learner_host:
+            raise ValueError("learner_host is required")
+        if not learner.auth_token:
+            raise ValueError("RLT_LEARNER_AUTH_TOKEN is required")
 
     cert_path, temporary_cert = _tls_root_cert_file(args)
     learner.tls_root_cert_path = cert_path
-    total_rollouts = int(args.get("num_rollouts", 0)) or None
+    requested_rollouts = int(args.get("num_rollouts", 0))
+    include_base = bool(
+        frozen_artifact is not None
+        and _as_bool(args.get("eval_include_base"), False)
+    )
+    total_rollouts = (
+        requested_rollouts * (2 if include_base else 1)
+    ) or None
     operator = CellOperatorControl(
         ctx.cell,
         total_rollouts=total_rollouts,
@@ -269,13 +334,50 @@ def run(ctx: Context) -> dict[str, Any]:
         variation_episode_offset=int(
             args.get("variation_episode_offset", 0)
         ),
+        variation_repeat=2 if include_base else 1,
+        variation_curriculum=VariationCurriculumConfig(
+            enabled=_as_bool(args.get("variation_curriculum"), False),
+            start_scale=float(args.get("variation_scale_start", 0.25)),
+            min_scale=float(args.get("variation_scale_min", 0.1)),
+            max_scale=float(args.get("variation_scale_max", 1.0)),
+            step_up=float(args.get("variation_scale_step_up", 0.05)),
+            step_down=float(
+                args.get("variation_scale_step_down", 0.1)
+            ),
+            window=int(args.get("variation_window", 20)),
+            promote_threshold=float(
+                args.get("variation_promote_threshold", 0.8)
+            ),
+            demote_threshold=float(
+                args.get("variation_demote_threshold", 0.55)
+            ),
+            frontier_fraction=float(
+                args.get("variation_frontier_fraction", 0.2)
+            ),
+        ),
     )
-    ctx.report_progress(
-        f"starting single-arm RLT actor: cameras={sorted(cameras)}, "
-        f"learner={learner.learner_host}:{learner.learner_port}"
-    )
+    transport = None
+    if frozen_artifact is not None:
+        from armnet_rlt.so101_actor import FrozenActorTransport
+
+        transport = FrozenActorTransport(frozen_artifact)
+    if frozen_artifact is not None:
+        ctx.report_progress(
+            "starting frozen single-arm RLT evaluation: "
+            f"cameras={sorted(cameras)}, "
+            f"learner_step={frozen_artifact['learner_step']}, "
+            f"paired_base={include_base}"
+        )
+    else:
+        ctx.report_progress(
+            f"starting single-arm RLT actor: cameras={sorted(cameras)}, "
+            f"learner={learner.learner_host}:{learner.learner_port}"
+        )
     try:
-        return run_actor(ctx, cfg, operator=operator)
+        runtime_kwargs = {"operator": operator}
+        if transport is not None:
+            runtime_kwargs["transport"] = transport
+        return run_actor(ctx, cfg, **runtime_kwargs)
     finally:
         if temporary_cert:
             Path(temporary_cert).unlink(missing_ok=True)
