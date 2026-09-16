@@ -14,8 +14,8 @@ GREEN_BUTTON_CHECKPOINT = "pravsels/pi05_rlt_busybox_push_green_button"
 GREEN_BUTTON_DATASET = "villekuosmanen/busybox_push_green_button"
 GREEN_BUTTON_PROMPT = "push the green button"
 MULTITASK_CONFIG = "pi05_rlt_busybox_multitask_singlearm_minmax"
-MULTITASK_CHECKPOINT = "pravsels/pi05_rlt_busybox_multitask_singlearm_minmax"
-MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
+MULTITASK_CHECKPOINT = "AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax"
+MULTITASK_DATASET = "AutoRLBench/busybox_multitask"
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface-secret")

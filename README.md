@@ -66,8 +66,8 @@ overwrite them.
 
 The recommended single-arm multitask setup uses:
 
-- model: `pravsels/pi05_rlt_busybox_multitask_singlearm_minmax`
-- demonstrations: `villekuosmanen/busybox_multitask`
+- model: `AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax`
+- demonstrations: `AutoRLBench/busybox_multitask`
 - config: `pi05_rlt_busybox_multitask_singlearm_minmax`
 
 Build the cache once in the configured Modal volume:
@@ -112,7 +112,7 @@ uv run --env-file .env rlt-submit-actor \
   --task push_green_button \
   --config-name "$RLT_CONFIG" \
   --hf-checkpoint-repo \
-    pravsels/pi05_rlt_busybox_multitask_singlearm_minmax \
+    AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax \
   --language-instruction "push the green button" \
   --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
   --num-rollouts 20 \
