@@ -1,132 +1,238 @@
 # Armnet RL Token
 
-Online RL-Token (TD3) for Pi0 / Pi0.5 on a single-arm SO-101.
+Online RL-Token (TD3) for Pi0/Pi0.5 on an Armnet SO-101 cell. The learner runs
+on Modal; the actor runs beside the physical robot on Armnet.
 
-The included backends are **Modal** (learner GPU) and **Armnet** (robot cell).
-Both are explicit dependencies you can swap: run `run_learner` on a local GPU
-or another cloud, and replace the Armnet actor job with a local robot or
-simulator (`operator_control.py` is the cell/reset/scoring seam).
+## Prerequisites
 
-## Setup
+- Python 3.12
+- [`uv`](https://docs.astral.sh/uv/)
+- An Armnet API key
+- A Modal account
+- A Hugging Face token that can read the model and create private eval datasets
 
-Python 3.12 and [uv](https://docs.astral.sh/uv/).
+Credentials are supplied at setup time and are never built into an image or
+committed to this repository.
+
+## 1. Install and sign in
 
 ```bash
-uv sync --locked
 cp .env.example .env
 ```
 
-Set `ARMNET_API_KEY` in `.env`. Create matching secrets once:
+Edit `.env`:
+
+```dotenv
+ARMNET_API_KEY=<your-armnet-api-key>
+HF_TOKEN=<your-huggingface-token>
+```
+
+Install the locked environment and authenticate the Modal CLI:
 
 ```bash
-TOKEN="$(openssl rand -hex 24)"
-uv run modal secret create armnet-rlt-auth RLT_LEARNER_AUTH_TOKEN="$TOKEN"
-uv run armnet secret create armnet-rlt-auth "$TOKEN"
+uv sync --locked
+uv run modal setup
+```
+
+`modal setup` stores Modal credentials in the user's normal Modal
+configuration. The repository does not read a Modal API token from `.env`.
+
+## 2. Create secrets once
+
+The learner and actor share a randomly generated bearer token. Store the same
+value under the same secret name in Modal and Armnet:
+
+```bash
+set -a
+source .env
+set +a
+
+LEARNER_TOKEN="$(openssl rand -hex 32)"
+
+uv run modal secret create armnet-rlt-auth \
+  RLT_LEARNER_AUTH_TOKEN="$LEARNER_TOKEN"
+uv run armnet secret create armnet-rlt-auth "$LEARNER_TOKEN"
+
 uv run modal secret create huggingface-secret HF_TOKEN="$HF_TOKEN"
-uv run armnet secret create huggingface-secret "$HF_TOKEN"
+uv run armnet secret create huggingface-token "$HF_TOKEN"
+
+unset LEARNER_TOKEN
 ```
 
-## Run
+If a team administrator has already provisioned these named secrets, do not
+overwrite them.
 
-Build the demonstration cache (Modal A100), start the learner, then submit
-the actor. Stop the detached Modal app when collection ends.
+## 3. Build the demonstration cache
+
+The recommended single-arm multitask setup uses:
+
+- model: `pravsels/pi05_rlt_busybox_multitask_singlearm_minmax`
+- demonstrations: `villekuosmanen/busybox_multitask`
+- config: `pi05_rlt_busybox_multitask_singlearm_minmax`
+
+Build the cache once in the configured Modal volume:
 
 ```bash
-uv run modal run src/armnet_rlt/modal_cache.py::build_green_button_cache \
+uv run --env-file .env modal run \
+  src/armnet_rlt/modal_cache.py::build_multitask_cache \
   --inference-batch-size 4
+```
 
-uv run modal run --detach src/armnet_rlt/modal_app.py::main \
-  --config-name pi05_rlt_busybox_push_green_button \
-  --run-id <run_id>
+The cache and normalization assets are reusable across learner runs whose
+network/action dimensions match.
 
-uv run rlt-submit-actor \
-  --task <armnet_task_slug> \
-  --config-name pi05_rlt_busybox_push_green_button \
-  --checkpoint-dir volume://openpi/checkpoints/<checkpoint> \
+## 4. Start a learner
+
+Choose a unique run ID. In a shared Modal workspace, include your username:
+
+```bash
+export RLT_CONFIG=pi05_rlt_busybox_multitask_singlearm_minmax
+export RLT_RUN_ID="${USER}-$(date -u +%Y%m%d-%H%M%S)"
+
+uv run --env-file .env modal run --detach \
+  src/armnet_rlt/modal_app.py::main \
+  --config-name "$RLT_CONFIG" \
+  --run-id "$RLT_RUN_ID" \
+  --embodiment so101
+```
+
+Wait for the learner to print its rendezvous entry. Keep this process open, or
+disconnect it after the remote Modal function is running; `--detach` keeps the
+learner alive.
+
+## 5. Start an actor
+
+In another terminal, set the same config/run ID and submit the robot job:
+
+```bash
+export RLT_CONFIG=pi05_rlt_busybox_multitask_singlearm_minmax
+export RLT_RUN_ID=<the-run-id-from-step-4>
+
+uv run --env-file .env rlt-submit-actor \
+  --task push_green_button \
+  --config-name "$RLT_CONFIG" \
+  --hf-checkpoint-repo \
+    pravsels/pi05_rlt_busybox_multitask_singlearm_minmax \
   --language-instruction "push the green button" \
-  --learner-key 'pi05_rlt_busybox_push_green_button:<run_id>' \
-  --num-rollouts 20
+  --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
+  --num-rollouts 20 \
+  --armnet.variation \
+  --variation-curriculum \
+  --robot-telemetry-strict \
+  --detach
 ```
 
-For adaptive scene variation, add `--armnet.variation` and
-`--variation-curriculum`. The curriculum starts at 25% of each cell's
-configured variation spread, promotes by 0.05 after at least 80% success over
-20 rollouts, and demotes by 0.10 at or below 55%. Every fifth episode places
-one rotating variation axis at the current curriculum frontier. The scale,
-rolling success rate, and frontier axis are saved in the rollout metadata.
-Use `--no-armnet.variation-cameras` (or the corresponding rail/lighting
-selector) to exclude one device family while retaining the others.
-The actor's default exploration multiplier is 0.5; use 0 for a deterministic
-validation run. Actor submissions default to 40 rollouts.
+Alternatively, put the OpenPI checkpoint on the Armnet volume and replace
+`--hf-checkpoint-repo` with:
 
-Online checkpoints also update `online_replay_buffer.pt` beside the step
-directories. Resuming restores that buffer when present; older runs created
-before this format resume their weights, optimizers, schedulers, and rollout
-history with an empty online buffer.
+```text
+--checkpoint-dir volume://openpi/checkpoints/<checkpoint-name>
+```
 
-For `push_green_button`, online rollouts apply a curriculum-scaled penalty for
-pressing any non-green button. One wrong press changes the terminal reward from
-`1.0` to `0.95` at variation scale 0 and to `0.5` at scale 1; a failed rollout
-remains at zero. Multiple wrong presses accumulate down to a floor of `0.0`;
-rewards are always in `[0, 1]`. Binary success reporting is unchanged. Actor weights are
-reloaded only between episodes, so one rollout never changes policy midway
-through its action chunks.
+The actor records each rollout as a private LeRobot dataset and uploads it to
+Hugging Face unless `--no-push-to-hub` is supplied.
 
-The example cache uses `pravsels/pi05_rlt_busybox_push_green_button` and
-`villekuosmanen/busybox_push_green_button`. Replace those with your own
-checkpoint and dataset for a different task.
+## How actor-to-learner discovery works
 
-For the single-arm 27-task min/max model, build a separate cache whose
-inference prompt comes from each demonstration episode:
+There is no hard-coded IP address or DNS name in this repository:
+
+1. Modal starts the learner and creates an ephemeral, public-CA TLS endpoint
+   with HTTP/2 enabled for gRPC.
+2. The learner registers `{host, port, TLS, config, run ID}` in the Modal Dict
+   named `armnet-rlt-rendezvous`.
+3. `rlt-submit-actor` resolves `<config>:<run-id>` from that Dict immediately
+   before submitting the Armnet job.
+4. The resolved endpoint is injected into that job's arguments.
+5. The actor connects over TLS and sends the bearer token from its Armnet
+   secret as gRPC authorization metadata.
+
+The bearer token is never stored in the rendezvous Dict, job arguments, image,
+or logs. The Modal TLS endpoint changes whenever a learner is restarted, so an
+actor must be submitted against the currently active rendezvous entry.
+
+## Multiple collaborators
+
+Different Modal accounts have independent volumes, Dicts, and secrets.
+
+When collaborators share one Modal workspace:
+
+- always use unique run IDs;
+- do not reuse another learner's `<config>:<run-id>` key;
+- the shared cache volume is safe to reuse;
+- each run writes checkpoints under its own run-ID directory;
+- use one actor stream per learner unless combining actors is intentional,
+  because one learner mixes every connected actor's transitions.
+
+The default Modal resource names can be overridden in `.env`:
+
+```dotenv
+RLT_MODAL_VOLUME=pi0-rlt-data
+RLT_MODAL_RENDEZVOUS=armnet-rlt-rendezvous
+RLT_MODAL_AUTH_SECRET=armnet-rlt-auth
+```
+
+For a per-user learner token in a shared workspace, choose a unique secret
+name in `RLT_MODAL_AUTH_SECRET`, create the same named Armnet secret, and pass
+that name to `rlt-submit-actor --auth-secret <name>`.
+
+## Stop and resume
+
+Actor jobs stop after `--num-rollouts`. The learner continues waiting for data
+and continues consuming a Modal GPU, so stop it when collection finishes:
 
 ```bash
-uv run modal run src/armnet_rlt/modal_cache.py::build_multitask_cache \
-  --inference-batch-size 4
+uv run modal app list
+uv run modal app stop -y <learner-app-id>
 ```
 
-This uses `pravsels/pi05_rlt_busybox_multitask_singlearm_minmax`,
-`villekuosmanen/busybox_multitask`, and config
-`pi05_rlt_busybox_multitask_singlearm_minmax`. The actor checkpoint belongs at
-`volume://openpi/checkpoints/pi05_rlt_busybox_multitask_singlearm_minmax`.
+Resume persisted weights, optimizer state, scheduler state, rollout history,
+and `online_replay_buffer.pt` with:
+
+```bash
+uv run --env-file .env modal run --detach \
+  src/armnet_rlt/modal_app.py::main \
+  --config-name "$RLT_CONFIG" \
+  --run-id "$RLT_RUN_ID" \
+  --embodiment so101 \
+  --resume
+```
 
 ## Frozen evaluation
 
-Freeze a selected learner checkpoint into an actor-only artifact. The command
-reads the checkpoint from the Modal learner volume, removes critics and
-optimizer state, and can upload the result directly to the Armnet volume:
+Freeze an actor-only checkpoint and optionally upload it to the Armnet volume:
 
 ```bash
-uv run rlt-freeze-checkpoint \
-  --config-name pi05_rlt_busybox_multitask_singlearm_minmax \
-  --run-id <learner_run_id> \
+uv run --env-file .env rlt-freeze-checkpoint \
+  --config-name "$RLT_CONFIG" \
+  --run-id "$RLT_RUN_ID" \
   --step latest \
-  --armnet-volume-path rlt/frozen/<learner_run_id>/frozen_actor.pt
+  --armnet-volume-path \
+    "rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt"
 ```
 
-Evaluate the immutable actor against its base OpenPI policy on paired scenes:
+Then compare frozen RLT against base OpenPI on matched scenes:
 
 ```bash
-uv run rlt-submit-eval \
+uv run --env-file .env rlt-submit-eval \
   --task push_green_button \
-  --config-name pi05_rlt_busybox_multitask_singlearm_minmax \
-  --checkpoint-dir \
-    volume://openpi/checkpoints/pi05_rlt_busybox_multitask_singlearm_minmax \
+  --config-name "$RLT_CONFIG" \
+  --checkpoint-dir volume://openpi/checkpoints/<checkpoint-name> \
   --frozen-rlt-checkpoint \
-    volume://rlt/frozen/<learner_run_id>/frozen_actor.pt \
+    "volume://rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt" \
   --language-instruction "push the green button" \
   --num-rollouts 20 \
   --armnet.variation \
   --robot-telemetry-strict
 ```
 
-Each requested rollout is one matched scene: the base policy and frozen RLT
-actor run after separate resets to the same seeded variation. Their order
-alternates between pairs to avoid systematic first-run bias. Frozen evaluation
-forces exploration to zero, never opens a learner connection, and never sends
-transitions or updates weights. The recorded dataset tags frames with `[base]`
-or `[frozen_rlt]`, and the result reports per-variant aggregates. Use
-`--no-include-base` to evaluate only the frozen actor.
+Frozen evaluation disables exploration and weight updates. Base and RLT run on
+matched seeded scenes with counterbalanced order.
+
+## Development
 
 ```bash
 uv run pytest
 ```
+
+The actor image intentionally installs released Armnet packages from PyPI. It
+does not copy or import the surrounding `alpha-robotics` checkout.
