@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import PurePosixPath
+from typing import Any
 
 
 APP_NAME = "armnet-rlt-learner"
@@ -33,3 +34,26 @@ def rendezvous_key(config_name: str, run_id: str) -> str:
     if not clean_config or not clean_run:
         raise ValueError("config_name and run_id are required for rendezvous")
     return f"{clean_config}:{clean_run}"
+
+
+def report_job_outcome(result: Any, *, prefix: str) -> None:
+    """Print the job outcome and raise on FAILED, TIMEOUT or CANCELLED.
+
+    Other statuses print a warning and return.
+    """
+    from armnet_client import JobStatus
+
+    print(f"[{prefix}] job status: {result.status}")
+    if result.return_value is not None:
+        print(f"[{prefix}] result: {result.return_value}")
+    if result.status in (
+        JobStatus.FAILED,
+        JobStatus.TIMEOUT,
+        JobStatus.CANCELLED,
+    ):
+        result.raise_for_status()
+    if result.status != JobStatus.SUCCEEDED:
+        print(
+            f"[{prefix}] job is not finished (status {result.status}); "
+            "nothing ran yet, so do not read this as a completed run"
+        )

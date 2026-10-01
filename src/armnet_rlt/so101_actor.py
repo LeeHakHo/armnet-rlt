@@ -723,6 +723,7 @@ def run_actor(
 
     completed = successes = 0
     session_id = uuid.uuid4().hex
+    cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
     transitions: list[_ChunkTransition] = []
     previous: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None
@@ -830,6 +831,7 @@ def run_actor(
                 )
                 record = EpisodeRecord(
                     session_id=session_id,
+                    cell_id=cell_id,
                     policy_variant=policy_variant,
                     session_rollout_index=int(
                         getattr(operator, "rollout_index", completed + 1)

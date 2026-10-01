@@ -160,6 +160,29 @@ class _ActorConfigView:
         return getattr(self.rlt_config, name)
 
 
+def _check_required_cell(actual: str, required: str) -> str:
+    """Raise unless ``actual`` is one of the comma-separated ``required`` cells.
+
+    An empty ``required`` accepts anything. Returns ``actual``.
+    """
+    required = required.strip()
+    if not required:
+        return actual
+    allowed = {name.strip() for name in required.split(",") if name.strip()}
+    if not actual:
+        raise ValueError(
+            f"require_cell={sorted(allowed)} was requested but the runtime "
+            "reports no cell_id, so the assignment cannot be verified"
+        )
+    if actual not in allowed:
+        raise ValueError(
+            f"this job was scheduled onto {actual!r} but require_cell asks for "
+            f"{sorted(allowed)}. Resubmit until it lands on one of those, or drop "
+            "--armnet.require-cell to accept whichever cell the scheduler picks."
+        )
+    return actual
+
+
 @main
 def run(ctx: Context) -> dict[str, Any]:
     # Validate before downloads, OpenPI imports, or robot construction.
@@ -185,6 +208,11 @@ def run(ctx: Context) -> dict[str, Any]:
     from armnet_rlt.so101_actor import run_actor
 
     args = ctx.args
+    cell_id = _check_required_cell(
+        str(getattr(ctx.cell, "cell_id", "") or ""),
+        str(args.get("require_cell", "") or ""),
+    )
+    ctx.report_progress(f"running on cell {cell_id or '<unknown>'}")
     if not ctx.cell.robot_port:
         raise ValueError("ctx.cell.robot_port is empty; no robot connector is available")
     cameras = dict(ctx.camera_configs)

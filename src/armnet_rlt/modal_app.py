@@ -26,6 +26,8 @@ FUNCTION_TIMEOUT_S = 24 * 60 * 60
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 rendezvous = modal.Dict.from_name(RENDEZVOUS_DICT, create_if_missing=True)
 auth_secret = modal.Secret.from_name(AUTH_SECRET_NAME)
+# Carries WANDB_API_KEY from .env, resolved from this file upward.
+dotenv_secret = modal.Secret.from_dotenv(__file__)
 
 # This image deliberately has no OpenPI/JAX. The learner consumes cached tokens
 # and normalization JSON, so installing the VLA would only add build time and
@@ -135,7 +137,7 @@ def _config(
     image=image,
     gpu=GPU,
     volumes={str(VOLUME_MOUNT): volume},
-    secrets=[auth_secret],
+    secrets=[auth_secret, dotenv_secret],
     timeout=FUNCTION_TIMEOUT_S,
 )
 def serve_learner(

@@ -88,6 +88,33 @@ def _merge_batches(first: Any, second: Any) -> Any:
     return torch.cat((first, second), dim=0)
 
 
+@torch.no_grad()
+def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
+    """Mean and spread of min-Q over the batch, split by reward when both
+    rewarded and unrewarded transitions are present.
+    """
+    state = batch["state"]
+    normalized = policy.actor.normalize_action(
+        batch["action"], state["proprioception"]
+    ).clamp(-1.0, 1.0)
+    q = policy.critic_ensemble(
+        state["rl_token"], state["proprioception"], normalized
+    ).min(dim=0).values.reshape(-1)
+    reward = batch["reward"].reshape(-1)
+    stats = {
+        "learner/q_mean": float(q.mean()),
+        "learner/q_std": float(q.std()),
+    }
+    rewarded = reward > 0
+    if bool(rewarded.any()) and bool((~rewarded).any()):
+        high = float(q[rewarded].mean())
+        low = float(q[~rewarded].mean())
+        stats["learner/q_reward1_mean"] = high
+        stats["learner/q_reward0_mean"] = low
+        stats["learner/q_gap"] = high - low
+    return stats
+
+
 def _train_step(
     policy: RLTPolicy,
     batch: dict[str, Any],
@@ -613,13 +640,21 @@ def run_learner(
         try:
             import wandb
 
+            # Appends to the W&B run named by ``config.run_id``.
             wandb_run = wandb.init(
                 project=wandb_project,
+                id=config.run_id,
+                resume="allow",
                 config=asdict(config),
                 tags=["offline-only" if offline_only else "online"],
             )
-        except Exception as exc:  # noqa: BLE001 - metrics must not stop training
-            print(f"[RLT] WandB disabled: {exc}", flush=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"WandB logging was requested (project={wandb_project!r}) but "
+                f"could not start: {exc}. Check that WANDB_API_KEY reaches the "
+                "container, or drop --wandb-project to run without metrics."
+            ) from exc
+        print(f"[RLT] WandB run: {wandb_run.url}", flush=True)
 
     # Start transport before demonstration pretraining. The Modal rendezvous is
     # already public when this function begins; delaying the server until after
@@ -695,6 +730,7 @@ def run_learner(
             if wandb_run is not None:
                 wandb_run.log(
                     {
+                        **_q_stats(policy, batch),
                         "learner/critic_loss": final_critic_loss,
                         "learner/actor_loss": final_actor_loss,
                         "learner/step": completed_steps,
@@ -798,10 +834,14 @@ def run_learner(
                 completed_steps += 1
                 pending_updates -= 1
                 if config.log_freq and completed_steps % config.log_freq == 0:
+                    qs = _q_stats(policy, batch)
                     print(
                         f"[RLT] online step={completed_steps} "
                         f"critic={final_critic_loss:.6f} "
                         f"actor={final_actor_loss:.6f} "
+                        f"q={qs['learner/q_mean']:.4f}"
+                        f"±{qs['learner/q_std']:.4f} "
+                        f"gap={qs.get('learner/q_gap', float('nan')):.4f} "
                         f"online_buffer={len(online_buffer)}",
                         flush=True,
                     )
@@ -820,6 +860,7 @@ def run_learner(
                     if wandb_run is not None:
                         wandb_run.log(
                             {
+                                **_q_stats(policy, batch),
                                 "learner/critic_loss": final_critic_loss,
                                 "learner/actor_loss": final_actor_loss,
                                 "learner/online_buffer": len(online_buffer),

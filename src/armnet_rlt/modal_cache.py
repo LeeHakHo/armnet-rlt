@@ -15,7 +15,7 @@ GREEN_BUTTON_DATASET = "villekuosmanen/busybox_push_green_button"
 GREEN_BUTTON_PROMPT = "push the green button"
 MULTITASK_CONFIG = "pi05_rlt_busybox_multitask_singlearm_minmax"
 MULTITASK_CHECKPOINT = "AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax"
-MULTITASK_DATASET = "AutoRLBench/busybox_multitask"
+MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface-secret")
@@ -153,7 +153,10 @@ def _build_cache(
         config_name,
         default_prompt=prompt or "",
     )
-    dataset = LeRobotDataset(dataset_repo, video_backend="pyav")
+    # revision="main" skips LeRobot's codebase_version tag lookup.
+    dataset = LeRobotDataset(
+        dataset_repo, revision="main", video_backend="pyav"
+    )
     cache_path, assets_dir, _output_dir = task_paths(config_name)
     summary = build_demo_cache(
         dataset=dataset,

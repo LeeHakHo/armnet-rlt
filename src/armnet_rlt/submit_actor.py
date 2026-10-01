@@ -9,7 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from armnet_rlt.resources import RENDEZVOUS_DICT
+from armnet_rlt.resources import RENDEZVOUS_DICT, report_job_outcome
 from armnet_client.variation import DEFAULT_VARIATION_SEED, variation_job_args
 
 
@@ -41,6 +41,16 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="Multiplier for RLT exploration noise; use 0 for deterministic validation",
+    )
+    parser.add_argument(
+        "--armnet.require-cell",
+        dest="require_cell",
+        default="",
+        help=(
+            "Abort at startup unless the scheduler assigns one of these cells "
+            "(comma separated, e.g. cell-01). JobSpec has no field to request a "
+            "cell, so an assignment can only be rejected."
+        ),
     )
     parser.add_argument(
         "--armnet.variation",
@@ -174,6 +184,9 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
             getattr(args, "robot_telemetry_strict", False)
         ),
     }
+    require_cell = str(getattr(args, "require_cell", "") or "").strip()
+    if require_cell:
+        job_args["require_cell"] = require_cell
     if args.checkpoint_dir:
         job_args["checkpoint_dir"] = args.checkpoint_dir
     else:
@@ -293,9 +306,7 @@ def main(argv: list[str] | None = None) -> None:
         stream_logs=not args.detach,
         timeout_seconds=args.timeout_seconds,
     )
-    print(f"[rlt] job status: {result.status}")
-    if result.return_value is not None:
-        print(f"[rlt] result: {result.return_value}")
+    report_job_outcome(result, prefix="rlt")
 
 
 if __name__ == "__main__":

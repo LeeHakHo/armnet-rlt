@@ -7,8 +7,11 @@ from typing import Any
 
 @dataclass(frozen=True)
 class EpisodeRecord:
-    schema_version: int = 1
+    # Schema v2 adds cell_id. ``from_dict`` drops unknown keys and fills missing
+    # ones from these defaults.
+    schema_version: int = 2
     session_id: str = ""
+    cell_id: str = ""
     policy_variant: str = "online_rlt"
     session_rollout_index: int = 0
     rollout_total: int | None = None
@@ -117,6 +120,17 @@ def episode_metrics(
         "episode/policy_reload_count": record.policy_reload_count,
         "episode/index": episode_index,
     }
+    # Curriculum state arrives inside the variation record.
+    variation = record.variation or {}
+    curriculum = variation.get("curriculum") or {}
+    if curriculum.get("scale") is not None:
+        metrics["episode/curriculum_scale"] = float(curriculum["scale"])
+    if curriculum.get("window_success_rate") is not None:
+        metrics["episode/curriculum_window_success"] = float(
+            curriculum["window_success_rate"]
+        )
+    if record.cell_id:
+        metrics["episode/cell_id"] = record.cell_id
     for index, value in enumerate(record.action_deviation_by_joint):
         metrics[f"episode/action_deviation_joint_{index}"] = value
     if record.policy_step_start is not None:
