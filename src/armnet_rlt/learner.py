@@ -346,7 +346,7 @@ def _start_online_transport(
             _make_auth_interceptor(grpc, transport.auth_token),
         )
     server = grpc.server(
-        ThreadPoolExecutor(max_workers=4),
+        ThreadPoolExecutor(max_workers=16),
         options=(
             ("grpc.max_receive_message_length", MAX_MESSAGE_SIZE),
             ("grpc.max_send_message_length", MAX_MESSAGE_SIZE),
@@ -803,7 +803,13 @@ def run_learner(
                 ):
                     time.sleep(0.02)
                     continue
-                online_batch_size = max(1, config.batch_size // 2)
+                online_batch_size = min(
+                    config.batch_size,
+                    max(
+                        1,
+                        round(config.batch_size * config.online_batch_fraction),
+                    ),
+                )
                 online_batch = _batch_from_transitions(
                     list(online_buffer),
                     online_batch_size,

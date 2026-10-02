@@ -157,6 +157,7 @@ class RLTConfig:
     max_demo_pretrain_steps: int = 500
     online_steps: int = 100_000
     batch_size: int = 256
+    online_batch_fraction: float = 0.5
     actions_to_execute: int = 10
     use_subsampling: bool = True
     sub_chunk_stride: int = 2
@@ -216,6 +217,8 @@ class RLTConfig:
         for name in ("max_demo_pretrain_steps", "online_steps", "log_freq", "save_freq"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be nonnegative")
+        if not 0.0 < self.online_batch_fraction <= 1.0:
+            raise ValueError("online_batch_fraction must be in (0, 1]")
         if not 0.0 < self.discount <= 1.0:
             raise ValueError("discount must be in (0, 1]")
         if not 0.0 < self.critic_target_update_weight <= 1.0:

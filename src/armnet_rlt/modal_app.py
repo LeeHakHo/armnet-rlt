@@ -109,6 +109,7 @@ def _config(
     max_demo_pretrain_steps: int = 5_000,
     online_steps: int = 300_000,
     utd_ratio: int | None = None,
+    online_batch_fraction: float = 0.5,
 ):
     from armnet_rlt.config import RLTConfig
 
@@ -127,6 +128,7 @@ def _config(
         "max_demo_pretrain_steps": max_demo_pretrain_steps,
         "online_steps": online_steps,
         "policy_uses_delta_actions": True,
+        "online_batch_fraction": online_batch_fraction,
     }
     if utd_ratio is not None:
         kwargs["utd_ratio"] = utd_ratio
@@ -146,6 +148,7 @@ def serve_learner(
     embodiment: str = "so101",
     resume: bool = False,
     wandb_project: str = "",
+    online_batch_fraction: float = 0.5,
 ) -> dict:
     """Train and serve an online learner through Modal's HTTP/2 TLS tunnel."""
     from armnet_rlt.learner import run_learner
@@ -154,6 +157,7 @@ def serve_learner(
         embodiment=embodiment,
         config_name=config_name,
         run_id=run_id,
+        online_batch_fraction=online_batch_fraction,
     )
     cfg.actor_learner.server_bind_host = "0.0.0.0"
     cfg.actor_learner.learner_port = LEARNER_PORT
@@ -318,6 +322,7 @@ def main(
     embodiment: str = "so101",
     resume: bool = False,
     wandb_project: str = "",
+    online_batch_fraction: float = 0.5,
 ) -> None:
     """Start the online learner. Use `modal run --detach` for long runs."""
     run_id = run_id or dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
@@ -329,6 +334,7 @@ def main(
         embodiment=embodiment,
         resume=resume,
         wandb_project=wandb_project,
+        online_batch_fraction=online_batch_fraction,
     )
 
 
