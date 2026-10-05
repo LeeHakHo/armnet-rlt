@@ -39,6 +39,8 @@ def _args(**updates):
         "no_push_to_hub": False,
         "robot_telemetry": "full",
         "robot_telemetry_strict": False,
+        "use_rerun": True,
+        "detach": False,
     }
     values.update(updates)
     return Namespace(**values)
@@ -76,6 +78,12 @@ def test_job_args_use_tls_modal_endpoint() -> None:
     assert result["exploration_scale"] == 0.0
     assert result["record_dataset"] is True
     assert result["robot_telemetry"] == "full"
+    assert result["use_rerun"] is True
+
+
+def test_detached_submit_does_not_stream_rerun() -> None:
+    result = build_job_args(_args(detach=True, use_rerun=True), _entry())
+    assert result["use_rerun"] is False
 
 
 def test_submitter_rejects_wrong_learner_config() -> None:

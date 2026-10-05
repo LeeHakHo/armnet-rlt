@@ -9,8 +9,14 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from armnet_rlt.resources import RENDEZVOUS_DICT
 from armnet_client.variation import DEFAULT_VARIATION_SEED, variation_job_args
+
+from armnet_rlt.rerun_view import (
+    add_rerun_argument,
+    rerun_job_enabled,
+    start_live_view,
+)
+from armnet_rlt.resources import RENDEZVOUS_DICT
 
 
 SO101_EMBODIMENT = "lerobot/so-101"
@@ -126,6 +132,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail the actor if telemetry recording is incomplete",
     )
+    add_rerun_argument(parser)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--auth-secret", default="armnet-rlt-auth")
     parser.add_argument("--hf-secret", default="huggingface-token")
@@ -173,6 +180,7 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "robot_telemetry_strict": bool(
             getattr(args, "robot_telemetry_strict", False)
         ),
+        "use_rerun": rerun_job_enabled(args),
     }
     if args.checkpoint_dir:
         job_args["checkpoint_dir"] = args.checkpoint_dir
@@ -272,9 +280,16 @@ def main(argv: list[str] | None = None) -> None:
     print(f"[rlt] embodiment={SO101_EMBODIMENT} task={args.task}")
     print(f"[rlt] args={job_args}")
     print(f"[rlt] secrets={secrets}")
+    if args.use_rerun and args.detach:
+        print(
+            "[rlt] Rerun stays on this machine, so --detach disables it. "
+            "Submit without --detach to watch each rollout live."
+        )
     if args.dry_run:
         print("[rlt] dry run: no image build or job submission")
         return
+    if rerun_job_enabled(args):
+        start_live_view()
 
     from armnet_client import Image, execute
 
@@ -291,6 +306,7 @@ def main(argv: list[str] | None = None) -> None:
         secrets=secrets,
         detach=args.detach,
         stream_logs=not args.detach,
+        use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
     )
     print(f"[rlt] job status: {result.status}")

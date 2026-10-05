@@ -14,6 +14,12 @@ from armnet_client.variation import (
     variation_job_args,
 )
 
+from armnet_rlt.rerun_view import (
+    add_rerun_argument,
+    rerun_job_enabled,
+    start_live_view,
+)
+
 
 SO101_EMBODIMENT = "lerobot/so-101"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +84,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--robot-telemetry-strict", action="store_true")
     parser.add_argument("--hf-secret", default="huggingface-token")
+    add_rerun_argument(parser)
     parser.add_argument("--timeout-seconds", type=int, default=10800)
     parser.add_argument("--image-name", default="armnet-rlt-frozen-eval")
     parser.add_argument("--detach", action="store_true")
@@ -115,6 +122,7 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         "record_dataset": bool(args.record_dataset),
         "robot_telemetry": str(args.robot_telemetry),
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
+        "use_rerun": rerun_job_enabled(args),
     }
     job_args.update(
         variation_job_args(
@@ -146,8 +154,15 @@ def main(argv: list[str] | None = None) -> None:
     secrets = {"HF_TOKEN": args.hf_secret} if args.hf_secret else {}
     print(f"[rlt eval] task={args.task} args={job_args}")
     print(f"[rlt eval] secrets={secrets}")
+    if args.use_rerun and args.detach:
+        print(
+            "[rlt eval] Rerun stays on this machine, so --detach disables it. "
+            "Submit without --detach to watch each rollout live."
+        )
     if args.dry_run:
         return
+    if rerun_job_enabled(args):
+        start_live_view()
 
     from armnet_client import Image, execute
 
@@ -164,6 +179,7 @@ def main(argv: list[str] | None = None) -> None:
         secrets=secrets,
         detach=args.detach,
         stream_logs=not args.detach,
+        use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
     )
     print(f"[rlt eval] job status: {result.status}")

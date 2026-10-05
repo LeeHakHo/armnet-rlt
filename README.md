@@ -132,6 +132,12 @@ Alternatively, put the OpenPI checkpoint on the Armnet volume and replace
 The actor records each rollout as a private LeRobot dataset and uploads it to
 Hugging Face unless `--no-push-to-hub` is supplied.
 
+Leave off `--detach` to watch the cell live. A Rerun viewer opens on this
+machine, and each rollout is its own recording rather than one long timeline.
+The recording name changes to success, fail, or timeout when that rollout ends.
+`--detach` disables the viewer, because the stream has to stay connected to
+this process. `--no-use-rerun` turns the stream off explicitly.
+
 ## How actor-to-learner discovery works
 
 There is no hard-coded IP address or DNS name in this repository:
