@@ -43,6 +43,7 @@ def test_actor_image_does_not_copy_parent_repository() -> None:
     assert "armnet-runtime==0.3.2" in dockerfile
     assert "armnet-busybox==0.3.4" in dockerfile
     assert "armnet-core==0.3.2" in dockerfile
+    assert "av>=14,<19" in dockerfile
 
 
 def test_developer_sdk_is_the_published_armnet_distribution() -> None:

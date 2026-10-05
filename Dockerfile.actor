@@ -45,6 +45,8 @@ RUN printf '%s\n' \
 
 # OpenPI/JAX and actor support packages. Torch is intentionally absent here and
 # installed last so no transitive dependency can replace it with a CPU wheel.
+# PyAV 19 returns frame rates as AVRational, which LeRobot's int(base_rate)
+# cannot convert, so the first saved episode fails. Stay on 14–18.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \

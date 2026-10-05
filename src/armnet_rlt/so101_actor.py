@@ -16,13 +16,21 @@ from typing import Any
 import numpy as np
 import torch
 
+from armnet_rlt.metrics import EpisodeRecord
 from armnet_rlt.openpi_rlt import (
     MOTOR_NAMES,
     OpenPIRLTPolicy,
     build_policy_observation,
 )
-from armnet_rlt.metrics import EpisodeRecord
 from armnet_rlt.operator_control import CellOperatorControl
+from armnet_rlt.rerun_view import (
+    KIND_FAIL,
+    KIND_RUNNING,
+    KIND_SUCCESS,
+    KIND_TIMEOUT,
+    as_bool,
+    log_rollout,
+)
 from armnet_rlt.state_machine import (
     EpisodeEvent,
     EpisodeOutcome,
@@ -58,6 +66,42 @@ def _delta_action_mode(cfg: Any, policy: Any) -> bool:
     return configured
 
 
+# Cell JSON includes mount blocks that are not LeRobot camera fields. The
+# published runtime only turns type=opencv entries into OpenCVCameraConfig, so
+# a Pi CSI camera (type=pi) arrives as a dict and SO101FollowerConfig crashes
+# looking up width.
+_OPENCV_CAMERA_KEYS = {
+    "index_or_path",
+    "fps",
+    "width",
+    "height",
+    "color_mode",
+    "rotation",
+    "warmup_s",
+    "fourcc",
+    "backend",
+}
+
+
+def lerobot_camera_config(config: Any) -> Any:
+    """Return a LeRobot camera config, dropping Armnet-only mount fields."""
+    if not isinstance(config, dict):
+        return config
+    from lerobot.cameras.opencv import OpenCVCameraConfig
+
+    kwargs = {
+        key: value
+        for key, value in config.items()
+        if key in _OPENCV_CAMERA_KEYS
+    }
+    missing = {"width", "height", "fps", "index_or_path"}.difference(kwargs)
+    if missing:
+        raise ValueError(
+            f"camera config is missing {sorted(missing)}; got keys {sorted(config)}"
+        )
+    return OpenCVCameraConfig(**kwargs)
+
+
 def make_so101_robot(ctx: Any, cfg: Any) -> Any:
     """Build a LeRobot follower solely from Armnet connector resources."""
 
@@ -69,7 +113,10 @@ def make_so101_robot(ctx: Any, cfg: Any) -> Any:
     robot_port = cell.robot_port
     if not robot_port:
         raise ValueError("ctx.cell.robot_port is empty; an Armnet robot connector is required")
-    cameras = dict(ctx.camera_configs)
+    cameras = {
+        name: lerobot_camera_config(config)
+        for name, config in dict(ctx.camera_configs).items()
+    }
     if "front" not in cameras:
         raise ValueError(
             f"cell cameras {sorted(cameras)} are missing required camera 'front'"
@@ -643,6 +690,7 @@ def run_actor(
         or getattr(ctx.cell, "language_instruction", "")
         or getattr(ctx, "task", "")
     )
+    use_rerun = as_bool(_field(getattr(ctx, "args", {}), "use_rerun", False))
     eval_dataset = None
     frame_writer = None
     telemetry = None
@@ -740,6 +788,8 @@ def run_actor(
     deviation_sum = torch.zeros(action_dim, dtype=torch.float64)
     deviation_count = 0
     deviation_max = 0.0
+    rerun_rollout_index = 0
+    rerun_variant = "online_rlt"
 
     try:
         transport.start()
@@ -790,6 +840,10 @@ def run_actor(
                 episode_curriculum_scale = float(
                     curriculum.get("scale", 0.0)
                 )
+                rerun_rollout_index = int(
+                    getattr(operator, "rollout_index", completed + 1)
+                )
+                rerun_variant = policy_variant
                 if telemetry is not None and eval_dataset is not None:
                     telemetry.begin_episode(eval_dataset.num_episodes)
             if (
@@ -873,6 +927,21 @@ def run_actor(
                 per_rollout.append(record.to_dict())
                 completed += 1
                 successes += int(outcome is EpisodeOutcome.SUCCESS)
+                if use_rerun:
+                    if outcome is EpisodeOutcome.SUCCESS:
+                        rerun_kind = KIND_SUCCESS
+                    elif outcome is EpisodeOutcome.TIMEOUT:
+                        rerun_kind = KIND_TIMEOUT
+                    else:
+                        rerun_kind = KIND_FAIL
+                    log_rollout(
+                        ctx,
+                        None,
+                        None,
+                        rollout_index=rerun_rollout_index,
+                        variant=rerun_variant,
+                        kind=rerun_kind,
+                    )
                 operator.on_episode_end(state_machine.episode_ctx.outcome)
                 if eval_dataset is not None and frame_writer is not None:
                     from armnet_rlt.dataset_recording import save_episode
@@ -979,6 +1048,15 @@ def run_actor(
             actual_action = (
                 sent_action if isinstance(sent_action, dict) else requested_action
             )
+            if use_rerun:
+                log_rollout(
+                    ctx,
+                    raw_obs,
+                    actual_action,
+                    rollout_index=rerun_rollout_index,
+                    variant=rerun_variant,
+                    kind=KIND_RUNNING,
+                )
             if frame_writer is not None:
                 frame_writer.submit_observation(
                     raw_obs,

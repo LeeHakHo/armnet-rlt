@@ -22,6 +22,8 @@ def _args(**updates) -> Namespace:
         "no_push_to_hub": False,
         "robot_telemetry": "full",
         "robot_telemetry_strict": True,
+        "use_rerun": True,
+        "detach": False,
     }
     values.update(updates)
     return Namespace(**values)
@@ -37,6 +39,7 @@ def test_frozen_eval_is_paired_deterministic_and_volume_backed() -> None:
     assert result["exploration_scale"] == 0.0
     assert result["variation"] is True
     assert result["variation_seed"] == 42
+    assert result["use_rerun"] is True
 
 
 def test_frozen_eval_can_skip_base() -> None:
