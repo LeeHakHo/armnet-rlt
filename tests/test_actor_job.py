@@ -336,3 +336,42 @@ def test_transport_close_waits_for_outbound_messages() -> None:
     assert transport._transitions.unfinished_tasks == 0
     assert transport._interactions.unfinished_tasks == 0
 
+
+def test_pi_camera_dict_becomes_an_opencv_config_without_mounts(monkeypatch) -> None:
+    from types import ModuleType
+
+    captured: dict = {}
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    cameras = ModuleType("lerobot.cameras")
+    opencv = ModuleType("lerobot.cameras.opencv")
+    opencv.OpenCVCameraConfig = FakeConfig
+    monkeypatch.setitem(sys.modules, "lerobot.cameras", cameras)
+    monkeypatch.setitem(sys.modules, "lerobot.cameras.opencv", opencv)
+
+    from armnet_rlt.so101_actor import lerobot_camera_config
+
+    config = lerobot_camera_config(
+        {
+            "type": "pi",
+            "index_or_path": "/dev/video_front",
+            "fps": 20,
+            "width": 1280,
+            "height": 720,
+            "servo_mount": {"pan": 1},
+        }
+    )
+
+    assert isinstance(config, FakeConfig)
+    assert captured == {
+        "index_or_path": "/dev/video_front",
+        "fps": 20,
+        "width": 1280,
+        "height": 720,
+    }
+    sentinel = object()
+    assert lerobot_camera_config(sentinel) is sentinel
+

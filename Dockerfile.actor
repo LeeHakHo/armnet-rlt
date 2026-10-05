@@ -44,6 +44,8 @@ RUN printf '%s\n' \
 
 # OpenPI/JAX and actor support packages. Torch is intentionally absent here and
 # installed last so no transitive dependency can replace it with a CPU wheel.
+# PyAV 19 returns frame rates as AVRational, which LeRobot's int(base_rate)
+# cannot convert, so the first saved episode fails. Stay on 14–18.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \
@@ -56,7 +58,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         'fsspec>=2024.6.0,<=2026.2.0' gcsfs imageio jaxtyping==0.2.36 \
         ml_collections==1.0.0 'numpydantic>=1.6.6' sentencepiece \
         'tqdm-loggable>=0.2' 'tyro>=0.9.5' wandb beartype==0.19.0 \
-        'treescope>=0.1.7' rich chex av pydantic \
+        'treescope>=0.1.7' rich chex 'av>=14,<19' pydantic \
         feetech-servo-sdk pyserial termcolor draccus==0.10.0 deepdiff
 
 # LeRobot's RL transport is not in the 0.5.1 release used by normal Armnet
