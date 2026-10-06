@@ -319,7 +319,7 @@ def _start_online_transport(
             _make_auth_interceptor(grpc, transport.auth_token),
         )
     server = grpc.server(
-        ThreadPoolExecutor(max_workers=4),
+        ThreadPoolExecutor(max_workers=8),
         options=(
             ("grpc.max_receive_message_length", MAX_MESSAGE_SIZE),
             ("grpc.max_send_message_length", MAX_MESSAGE_SIZE),
