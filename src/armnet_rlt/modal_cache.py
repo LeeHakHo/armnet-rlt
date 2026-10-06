@@ -153,7 +153,9 @@ def _build_cache(
         config_name,
         default_prompt=prompt or "",
     )
-    dataset = LeRobotDataset(dataset_repo, video_backend="pyav")
+    dataset = LeRobotDataset(
+        dataset_repo, revision="main", video_backend="pyav"
+    )
     cache_path, assets_dir, _output_dir = task_paths(config_name)
     summary = build_demo_cache(
         dataset=dataset,
