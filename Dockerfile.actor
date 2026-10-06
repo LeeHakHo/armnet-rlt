@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && python -m venv /opt/venv \
-    && python -m pip install --upgrade pip setuptools wheel uv
+    && /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel uv
 
 # Headless cell containers never use Linux keyboard devices. Keep LeRobot's
 # optional input dependencies out rather than compiling/starting X11 packages.
