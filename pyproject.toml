@@ -16,6 +16,7 @@ dependencies = [
 rlt-submit-actor = "armnet_rlt.submit_actor:main"
 rlt-freeze-checkpoint = "armnet_rlt.freeze_checkpoint:main"
 rlt-submit-eval = "armnet_rlt.submit_eval:main"
+rlt-analyze-q = "armnet_rlt.q_analysis:main"
 
 [build-system]
 requires = ["hatchling"]
