@@ -89,22 +89,44 @@ def _merge_batches(first: Any, second: Any) -> Any:
 
 
 @torch.no_grad()
-def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
-    """Mean and spread of min-Q over the batch, split by reward when both
-    rewarded and unrewarded transitions are present.
+def _q_stats(
+    policy: RLTPolicy,
+    batch: dict[str, Any],
+    *,
+    online_count: int | None = None,
+) -> dict[str, float]:
+    """Critic diagnostics on one batch; nothing here trains the policy.
+
+    ``learner/q_*`` is min-Q over the ensemble. Besides the dataset action,
+    Q is evaluated on the VLA reference chunk, the actor mean and a uniform
+    random chunk for the same states. If those barely differ the critic is
+    ignoring the action. The two ``dq_da`` norms are the critic's pull on the
+    action and ``bc_grad_norm`` is the BC term's pull at the actor mean, all in
+    normalized action space; ``pull_ratio`` above 1 means the critic outweighs
+    BC. Pass ``online_count`` when the first rows of the batch are online
+    transitions (``_merge_batches`` puts them first).
     """
     state = batch["state"]
-    normalized = policy.actor.normalize_action(
-        batch["action"], state["proprioception"]
+    token = state["rl_token"]
+    proprioception = state["proprioception"]
+    reference = state["reference_action"]
+    actor = policy.actor
+    ensemble = policy.critic_ensemble
+
+    data_action = actor.normalize_action(
+        batch["action"], proprioception
     ).clamp(-1.0, 1.0)
-    q = policy.critic_ensemble(
-        state["rl_token"], state["proprioception"], normalized
-    ).min(dim=0).values.reshape(-1)
+    per_critic = ensemble(token, proprioception, data_action)
+    q = per_critic.min(dim=0).values.reshape(-1)
     reward = batch["reward"].reshape(-1)
     stats = {
         "learner/q_mean": float(q.mean()),
         "learner/q_std": float(q.std()),
     }
+    if per_critic.shape[0] > 1:
+        stats["learner/q_critic_disagreement"] = float(
+            per_critic.std(dim=0).mean()
+        )
     rewarded = reward > 0
     if bool(rewarded.any()) and bool((~rewarded).any()):
         high = float(q[rewarded].mean())
@@ -112,6 +134,62 @@ def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
         stats["learner/q_reward1_mean"] = high
         stats["learner/q_reward0_mean"] = low
         stats["learner/q_gap"] = high - low
+    if online_count is not None and 0 < online_count < q.shape[0]:
+        stats["learner/q_online_mean"] = float(q[:online_count].mean())
+        stats["learner/q_demo_mean"] = float(q[online_count:].mean())
+
+    reference_action = actor.normalize_action(
+        reference[:, : policy.predicted_action_dim], proprioception
+    ).clamp(-1.0, 1.0)
+    _, actor_mean = actor(token, proprioception, reference, sample=False)
+    # A local generator keeps this from consuming the training RNG stream.
+    generator = torch.Generator(device=data_action.device)
+    generator.manual_seed(0)
+    random_action = (
+        torch.rand(
+            data_action.shape,
+            generator=generator,
+            device=data_action.device,
+        )
+        * 2.0
+        - 1.0
+    )
+
+    def min_q(action: Tensor) -> Tensor:
+        return ensemble(token, proprioception, action).min(dim=0).values
+
+    stats["learner/q_reference_mean"] = float(min_q(reference_action).mean())
+    stats["learner/q_actor_mean"] = float(min_q(actor_mean).mean())
+    stats["learner/q_random_mean"] = float(min_q(random_action).mean())
+    stats["learner/actor_minus_data_q"] = (
+        stats["learner/q_actor_mean"] - stats["learner/q_mean"]
+    )
+    stats["learner/actor_reference_rms"] = float(
+        (actor_mean - reference_action).square().mean().sqrt()
+    )
+    stats["learner/data_reference_rms"] = float(
+        (data_action - reference_action).square().mean().sqrt()
+    )
+
+    def q_pull(action: Tensor) -> float:
+        with torch.enable_grad():
+            probe = action.detach().clone().requires_grad_(True)
+            (grad,) = torch.autograd.grad(min_q(probe).sum(), probe)
+        return float(grad.norm(dim=-1).mean())
+
+    stats["learner/dq_da_data_norm"] = q_pull(data_action)
+    stats["learner/dq_da_actor_norm"] = q_pull(actor_mean)
+    # Gradient of bc_beta * sum(mask * (a - ref)^2) at the actor mean.
+    bc_grad = (
+        2.0
+        * policy.bc_beta
+        * (actor_mean - reference_action)
+        * policy._bc_mask
+    )
+    stats["learner/bc_grad_norm"] = float(bc_grad.norm(dim=-1).mean())
+    stats["learner/pull_ratio"] = stats["learner/dq_da_actor_norm"] / max(
+        stats["learner/bc_grad_norm"], 1e-12
+    )
     return stats
 
 
@@ -840,7 +918,9 @@ def run_learner(
                 completed_steps += 1
                 pending_updates -= 1
                 if config.log_freq and completed_steps % config.log_freq == 0:
-                    qs = _q_stats(policy, batch)
+                    qs = _q_stats(
+                        policy, batch, online_count=online_batch_size
+                    )
                     print(
                         f"[RLT] online step={completed_steps} "
                         f"critic={final_critic_loss:.6f} "
@@ -848,6 +928,8 @@ def run_learner(
                         f"q={qs['learner/q_mean']:.4f}"
                         f"±{qs['learner/q_std']:.4f} "
                         f"gap={qs.get('learner/q_gap', float('nan')):.4f} "
+                        f"actor-data={qs['learner/actor_minus_data_q']:+.4f} "
+                        f"pull={qs['learner/pull_ratio']:.3f} "
                         f"online_buffer={len(online_buffer)}",
                         flush=True,
                     )
@@ -866,7 +948,7 @@ def run_learner(
                     if wandb_run is not None:
                         wandb_run.log(
                             {
-                                **_q_stats(policy, batch),
+                                **qs,
                                 "learner/critic_loss": final_critic_loss,
                                 "learner/actor_loss": final_actor_loss,
                                 "learner/online_buffer": len(online_buffer),

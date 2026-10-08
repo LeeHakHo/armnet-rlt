@@ -11,18 +11,21 @@ from queue import Queue
 
 import torch
 
+from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTConfig, so101_network_config
 from armnet_rlt.jsonl_log import read_jsonl
 from armnet_rlt.learner import (
     _batch_from_transitions,
     _drain_interactions,
     _push_weights,
+    _q_stats,
     _restore_replay_buffer,
     _save_replay_buffer,
     _schedule_online_updates,
     run_learner,
 )
 from armnet_rlt.metrics import RollingMetrics
+from armnet_rlt.policy import RLTPolicy
 
 
 def _write_artifacts(root: Path, network) -> tuple[Path, Path]:
@@ -227,3 +230,84 @@ def test_online_batches_balance_curriculum_levels(tmp_path: Path) -> None:
         batch["curriculum_scale"].eq(0.5).float().mean().item()
     )
     assert 0.4 < high_fraction < 0.6
+
+
+def _stats_policy_and_batch(num_critics: int):
+    import numpy as np
+
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=3,
+        predicted_action_len=3,
+        ref_action_dropout=0.0,
+    )
+    policy = RLTPolicy(
+        RLTConfig(
+            network=network,
+            actions_to_execute=3,
+            use_subsampling=False,
+            num_critics=num_critics,
+            utd_ratio=1,
+        )
+    )
+    policy.set_norm_stats(
+        {
+            "state": NormStats(np.zeros(6, np.float32), np.ones(6, np.float32)),
+            "actions": NormStats(
+                np.zeros(6, np.float32), np.ones(6, np.float32)
+            ),
+        }
+    )
+    count = 6
+    batch = {
+        "state": {
+            "rl_token": torch.randn(count, 2048),
+            "proprioception": torch.zeros(count, 6),
+            "reference_action": torch.randn(count, network.reference_action_dim)
+            * 0.1,
+        },
+        "action": torch.randn(count, network.predicted_action_dim) * 0.1,
+        "reward": torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+    }
+    return policy, batch
+
+
+def test_q_stats_reports_action_sensitivity_and_pull_ratio() -> None:
+    policy, batch = _stats_policy_and_batch(num_critics=3)
+    before = torch.get_rng_state()
+
+    stats = _q_stats(policy, batch, online_count=4)
+
+    assert all(math.isfinite(value) for value in stats.values())
+    for key in (
+        "learner/q_gap",
+        "learner/q_online_mean",
+        "learner/q_demo_mean",
+        "learner/q_critic_disagreement",
+        "learner/q_reference_mean",
+        "learner/q_actor_mean",
+        "learner/q_random_mean",
+        "learner/actor_minus_data_q",
+        "learner/dq_da_actor_norm",
+        "learner/bc_grad_norm",
+        "learner/pull_ratio",
+    ):
+        assert key in stats
+    assert stats["learner/dq_da_data_norm"] > 0
+    assert stats["learner/pull_ratio"] == (
+        stats["learner/dq_da_actor_norm"]
+        / max(stats["learner/bc_grad_norm"], 1e-12)
+    )
+    # Diagnostics must not move the training RNG or leave gradients behind.
+    assert torch.equal(torch.get_rng_state(), before)
+    assert all(p.grad is None for p in policy.critic_ensemble.parameters())
+
+
+def test_q_stats_single_critic_and_all_online_batch() -> None:
+    policy, batch = _stats_policy_and_batch(num_critics=1)
+
+    stats = _q_stats(policy, batch, online_count=6)
+
+    assert "learner/q_critic_disagreement" not in stats
+    assert "learner/q_online_mean" not in stats
+    assert math.isfinite(stats["learner/q_mean"])
