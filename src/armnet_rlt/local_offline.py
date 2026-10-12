@@ -103,7 +103,8 @@ def build_config(args: argparse.Namespace) -> RLTConfig:
     return RLTConfig.for_embodiment("so101", **values)
 
 
-def main(argv: list[str] | None = None) -> dict[str, object]:
+def run(argv: list[str] | None = None) -> dict[str, object]:
+    """Train and return the learner summary."""
     from armnet_rlt.learner import run_learner
 
     config = build_config(_parser().parse_args(argv))
@@ -123,6 +124,12 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         flush=True,
     )
     return summary
+
+
+def main(argv: list[str] | None = None) -> None:
+    # Console scripts hand main()'s return value to sys.exit, which would print
+    # the summary again and exit with status 1.
+    run(argv)
 
 
 if __name__ == "__main__":

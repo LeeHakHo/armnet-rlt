@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from armnet_rlt.local_cache import output_paths
-from armnet_rlt.local_offline import _parser, build_config, main
+from armnet_rlt.local_offline import _parser, build_config, main, run
 
 
 def test_defaults_match_the_modal_learner_wrapper(tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ def test_ablation_flags_override_only_what_is_given(tmp_path: Path) -> None:
 
 def test_main_fails_clearly_when_the_cache_is_missing(tmp_path: Path) -> None:
     try:
-        main(["--data-dir", str(tmp_path), "--device", "cpu"])
+        run(["--data-dir", str(tmp_path), "--device", "cpu"])
     except FileNotFoundError as error:
         assert "local_cache" in str(error)
     else:
@@ -84,7 +84,7 @@ def test_tiny_run_writes_checkpoints_every_save_freq(tmp_path: Path) -> None:
         )
     torch.save(transitions, cache)
 
-    summary = main(
+    summary = run(
         [
             "--data-dir", str(tmp_path),
             "--run-id", "tiny",
@@ -102,3 +102,11 @@ def test_tiny_run_writes_checkpoints_every_save_freq(tmp_path: Path) -> None:
         "step_000004",
     ]
     assert summary["completed_steps"] == 4
+
+
+def test_main_returns_none_so_the_console_script_exits_cleanly(tmp_path: Path) -> None:
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        main(["--data-dir", str(tmp_path), "--device", "cpu"])
+    assert main.__annotations__["return"] == "None"
