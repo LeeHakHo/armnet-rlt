@@ -131,8 +131,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-telemetry-strict", action="store_true")
     parser.add_argument("--hf-secret", default="huggingface-token")
     add_rerun_argument(parser)
+    parser.add_argument(
+        "--episode-timeout-s",
+        type=float,
+        default=0.0,
+        help="Seconds a rollout may run before it is scored a timeout "
+        "(actor default 30)",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=10800)
     parser.add_argument("--image-name", default="armnet-rlt-frozen-eval")
+    parser.add_argument(
+        "--image-ref",
+        default="",
+        help="Submit this already-pushed actor image instead of building one; "
+        "for hosts without a Docker daemon",
+    )
     parser.add_argument("--detach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -185,6 +198,8 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         job_args["variation_episode_offset"] = int(
             args.variation_episode_offset
         )
+    if getattr(args, "episode_timeout_s", 0.0) > 0:
+        job_args["episode_timeout_s"] = float(args.episode_timeout_s)
     if args.record_dataset_repo_id:
         job_args["record_dataset_repo_id"] = args.record_dataset_repo_id
     if args.hf_user:
@@ -208,6 +223,8 @@ def main(argv: list[str] | None = None) -> None:
     secrets = {"HF_TOKEN": args.hf_secret} if args.hf_secret else {}
     print(f"[rlt eval] task={args.task} args={job_args}")
     print(f"[rlt eval] secrets={secrets}")
+    if args.image_ref:
+        print(f"[rlt eval] image={args.image_ref} (prebuilt)")
     if args.use_rerun and args.detach:
         print(
             "[rlt eval] Rerun stays on this machine, so --detach disables it. "
@@ -220,11 +237,14 @@ def main(argv: list[str] | None = None) -> None:
 
     from armnet_client import Image, execute
 
-    image = Image.build(
-        dockerfile=PROJECT_ROOT / "Dockerfile.actor",
-        context_dir=PROJECT_ROOT,
-        name=args.image_name,
-    ).push(if_possible=True)
+    if args.image_ref:
+        image = Image.from_ref(args.image_ref)
+    else:
+        image = Image.build(
+            dockerfile=PROJECT_ROOT / "Dockerfile.actor",
+            context_dir=PROJECT_ROOT,
+            name=args.image_name,
+        ).push(if_possible=True)
     result = execute(
         image=image,
         embodiment=SO101_EMBODIMENT,
