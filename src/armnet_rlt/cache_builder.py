@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from collections.abc import Container
@@ -13,6 +14,12 @@ import torch
 from armnet_rlt.artifacts import load_transition_cache
 from armnet_rlt.config import so101_network_config
 from armnet_rlt.openpi_rlt import OpenPIRLTPolicy, PolicyObservation
+from armnet_rlt.resources import (
+    GREEN_BUTTON_PROMPT,
+    MULTITASK_CHECKPOINT,
+    MULTITASK_CONFIG,
+    task_paths,
+)
 
 
 CAMERAS = ("front", "top", "wrist")
@@ -222,3 +229,122 @@ def copy_norm_stats(checkpoint_dir: str | Path, target_assets: str | Path) -> No
         if not path.is_file():
             raise FileNotFoundError(path)
         shutil.copy2(path, target / name)
+
+
+def build_task_cache(
+    *,
+    config_name: str,
+    checkpoint_repo: str,
+    dataset_repo: str,
+    prompt: str | None,
+    inference_batch_size: int,
+    data_root: str | os.PathLike[str],
+) -> dict:
+    """Build the demonstration cache and normalization assets under ``data_root``."""
+    from huggingface_hub import snapshot_download
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    checkpoint = snapshot_download(checkpoint_repo)
+    print(f"[RLT cache] checkpoint={checkpoint}", flush=True)
+    policy = OpenPIRLTPolicy.from_checkpoint(
+        checkpoint,
+        config_name,
+        default_prompt=prompt or "",
+    )
+    # Load the dataset from the main revision.
+    dataset = LeRobotDataset(
+        dataset_repo, revision="main", video_backend="pyav"
+    )
+    cache_path, assets_dir, _output_dir = task_paths(config_name, data_root)
+    summary = build_demo_cache(
+        dataset=dataset,
+        policy=policy,
+        output_path=cache_path,
+        prompt=prompt,
+        inference_batch_size=inference_batch_size,
+    )
+    copy_norm_stats(checkpoint, assets_dir)
+    result = {
+        **summary,
+        "config_name": config_name,
+        "dataset": dataset_repo,
+        "checkpoint": checkpoint_repo,
+        "cache_path": cache_path,
+        "assets_dir": assets_dir,
+    }
+    print(f"[RLT cache] complete: {result}", flush=True)
+    return result
+
+
+def build_rollout_cache(
+    *,
+    sources: list[dict],
+    data_root: str | os.PathLike[str],
+    inference_batch_size: int = 4,
+    prompt: str = GREEN_BUTTON_PROMPT,
+    cache_name: str = "rlt_bc_cache.pt",
+) -> dict:
+    """Build one cache from selected episodes of recorded rollout datasets."""
+    from huggingface_hub import snapshot_download
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    checkpoint = snapshot_download(MULTITASK_CHECKPOINT)
+    policy = OpenPIRLTPolicy.from_checkpoint(
+        checkpoint, MULTITASK_CONFIG, default_prompt=prompt
+    )
+    demo_cache_path, assets_dir, _ = task_paths(MULTITASK_CONFIG, data_root)
+    target = Path(demo_cache_path).with_name(cache_name)
+
+    merged: list[dict] = []
+    per_source = []
+    for source in sources:
+        repo_id = str(source["repo_id"])
+        episodes = sorted({int(index) for index in source["episodes"]})
+        if not episodes:
+            continue
+        dataset = LeRobotDataset(repo_id, revision="main", video_backend="pyav")
+        part = target.with_name(f"{target.stem}.part.pt")
+        build_demo_cache(
+            dataset=dataset,
+            policy=policy,
+            output_path=part,
+            prompt=prompt,
+            inference_batch_size=inference_batch_size,
+            episode_filter=set(episodes),
+        )
+        chunk = torch.load(part, map_location="cpu", weights_only=False)
+        merged.extend(chunk)
+        part.unlink(missing_ok=True)
+        per_source.append(
+            {"repo_id": repo_id, "episodes": len(episodes), "transitions": len(chunk)}
+        )
+        print(f"[RLT bc] {repo_id}: {len(episodes)} episodes -> {len(chunk)} transitions", flush=True)
+
+    if not merged:
+        raise ValueError("no episodes were selected, so no cache was written")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".pt.tmp")
+    torch.save(merged, temporary)
+    temporary.replace(target)
+    _, summary = load_transition_cache(target, so101_network_config())
+    copy_norm_stats(checkpoint, assets_dir)
+    result = {
+        **summary.to_dict(),
+        "cache_path": str(target),
+        "sources": per_source,
+        "episodes_total": sum(item["episodes"] for item in per_source),
+    }
+    print(f"[RLT bc] complete: {result}", flush=True)
+    return result
+
+
+def manifest_sources(manifest: str | os.PathLike[str]) -> list[dict]:
+    """Read ``datasets`` (each ``repo_id`` + ``episodes``) from a JSON manifest."""
+    import json
+
+    spec = json.loads(Path(manifest).read_text())
+    return [
+        {"repo_id": entry["repo_id"], "episodes": entry["episodes"]}
+        for entry in spec["datasets"]
+        if entry.get("episodes")
+    ]

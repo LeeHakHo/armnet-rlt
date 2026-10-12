@@ -1,0 +1,105 @@
+"""Learner configuration shared by the Modal and local entrypoints."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from armnet_rlt.config import (
+    BISO101_JERK_JOINT_WEIGHTS,
+    SO101_JERK_JOINT_WEIGHTS,
+    RLTConfig,
+    RLTNetworkConfig,
+    biso101_network_config,
+    so101_network_config,
+)
+from armnet_rlt.resources import task_paths
+
+
+def network_for(
+    embodiment: str, reference_action_len: int
+) -> tuple[RLTNetworkConfig, tuple[float, ...]]:
+    if embodiment == "so101":
+        return (
+            so101_network_config(reference_action_len=reference_action_len),
+            SO101_JERK_JOINT_WEIGHTS,
+        )
+    if embodiment == "biso101":
+        return (
+            biso101_network_config(reference_action_len=reference_action_len),
+            BISO101_JERK_JOINT_WEIGHTS,
+        )
+    raise ValueError("embodiment must be 'so101' or historical learner-only 'biso101'")
+
+
+def learner_config(
+    *,
+    data_root: str | os.PathLike[str],
+    embodiment: str,
+    config_name: str,
+    run_id: str,
+    output_dir: str | None = None,
+    batch_size: int = 256,
+    max_demo_pretrain_steps: int = 5_000,
+    online_steps: int = 300_000,
+    utd_ratio: int | None = None,
+    online_batch_fraction: float = 0.5,
+    q_loss_normalization: bool = False,
+    discount: float | None = None,
+    num_critics: int | None = None,
+    bc_deviation_max: float = 0.0,
+    bc_deviation_weight: float = 1.0,
+    actor_lr: float = 0.0,
+    actor_lr_min: float = 0.0,
+    device: str = "cuda",
+) -> RLTConfig:
+    cache_path, assets_dir, production_output = task_paths(config_name, data_root)
+    network, jerk = network_for(embodiment, reference_action_len=30)
+    kwargs = {
+        "embodiment": embodiment,
+        "network": network,
+        "jerk_joint_weights": jerk,
+        "assets_dir": assets_dir,
+        "demo_cache_path": cache_path,
+        "output_dir": output_dir or production_output,
+        "run_id": run_id,
+        "device": device,
+        "batch_size": batch_size,
+        "max_demo_pretrain_steps": max_demo_pretrain_steps,
+        "online_steps": online_steps,
+        "policy_uses_delta_actions": True,
+        "online_batch_fraction": online_batch_fraction,
+        "q_loss_normalization": q_loss_normalization,
+        "bc_deviation_max": bc_deviation_max,
+        "bc_deviation_weight": bc_deviation_weight,
+    }
+    if discount is not None:
+        kwargs["discount"] = discount
+    if num_critics is not None:
+        kwargs["num_critics"] = num_critics
+    if utd_ratio is not None:
+        kwargs["utd_ratio"] = utd_ratio
+    # Override the actor learning rate and its floor.
+    if actor_lr > 0:
+        kwargs["actor_lr"] = actor_lr
+        kwargs["actor_lr_min"] = actor_lr_min if actor_lr_min > 0 else actor_lr / 4
+    return RLTConfig(**kwargs)
+
+
+def resolve_init_checkpoint(
+    config: RLTConfig, init_run_id: str, init_step: int = 0
+) -> Path | None:
+    """Locate ``init_run_id``'s checkpoint at ``init_step``, or its latest."""
+    if not init_run_id:
+        return None
+    root = config.checkpoint_dir.parent / init_run_id
+    if init_step:
+        checkpoint = root / f"step_{init_step:06d}" / "checkpoint.pt"
+    else:
+        found = sorted(root.glob("step_*/checkpoint.pt"))
+        if not found:
+            raise FileNotFoundError(f"no checkpoint under {root}")
+        checkpoint = found[-1]
+    if not checkpoint.exists():
+        raise FileNotFoundError(str(checkpoint))
+    return checkpoint

@@ -1,9 +1,10 @@
-"""Names shared by the Modal learner and Armnet submitter."""
+"""Names shared by the Modal learner, local learner and Armnet submitter."""
 
 from __future__ import annotations
 
+import json
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -16,10 +17,26 @@ RENDEZVOUS_DICT = os.environ.get(
 )
 AUTH_SECRET_NAME = os.environ.get("RLT_MODAL_AUTH_SECRET", "armnet-rlt-auth")
 
+GREEN_BUTTON_CONFIG = "pi05_rlt_busybox_push_green_button"
+GREEN_BUTTON_CHECKPOINT = "pravsels/pi05_rlt_busybox_push_green_button"
+GREEN_BUTTON_DATASET = "villekuosmanen/busybox_push_green_button"
+GREEN_BUTTON_PROMPT = "push the green button"
+MULTITASK_CONFIG = "pi05_rlt_busybox_multitask_singlearm_minmax"
+MULTITASK_CHECKPOINT = "AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax"
+MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
 
-def task_paths(config_name: str) -> tuple[str, str, str]:
+
+def local_data_root() -> Path:
+    """Directory a learner on this machine uses in place of the Modal volume."""
+    default = Path(__file__).resolve().parents[2] / "experiment-data"
+    return Path(os.environ.get("RLT_DATA_ROOT") or default).resolve()
+
+
+def task_paths(
+    config_name: str, root: str | os.PathLike[str] = VOLUME_MOUNT
+) -> tuple[str, str, str]:
     """Return demo cache, stats directory and production output directory."""
-    root = VOLUME_MOUNT / "tasks" / config_name
+    root = Path(root) / "tasks" / config_name
     return (
         str(root / "demo" / "rlt_demo_cache.pt"),
         str(root / "ckpt" / "assets"),
@@ -34,6 +51,18 @@ def rendezvous_key(config_name: str, run_id: str) -> str:
     if not clean_config or not clean_run:
         raise ValueError("config_name and run_id are required for rendezvous")
     return f"{clean_config}:{clean_run}"
+
+
+def local_rendezvous_path(key: str) -> Path:
+    """File a learner on this machine registers its endpoint in."""
+    return local_data_root() / "rendezvous" / f"{key.replace(':', '__')}.json"
+
+
+def read_local_rendezvous(key: str) -> dict[str, Any] | None:
+    path = local_rendezvous_path(key)
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text())
 
 
 def report_job_outcome(result: Any, *, prefix: str) -> None:

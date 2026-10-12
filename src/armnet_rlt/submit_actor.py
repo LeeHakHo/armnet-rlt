@@ -16,7 +16,12 @@ from armnet_rlt.rerun_view import (
     rerun_job_enabled,
     start_live_view,
 )
-from armnet_rlt.resources import RENDEZVOUS_DICT, report_job_outcome
+from armnet_rlt.resources import (
+    RENDEZVOUS_DICT,
+    local_rendezvous_path,
+    read_local_rendezvous,
+    report_job_outcome,
+)
 
 
 SO101_EMBODIMENT = "lerobot/so-101"
@@ -38,7 +43,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--learner-key",
         required=True,
-        help="<config-name>:<run-id> printed by the Modal learner",
+        help="<config-name>:<run-id> printed by the Modal or local learner",
     )
     parser.add_argument("--num-rollouts", type=int, default=40)
     parser.add_argument("--reference-action-len", type=int, default=30)
@@ -205,20 +210,35 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--auth-secret", default="armnet-rlt-auth")
     parser.add_argument("--hf-secret", default="huggingface-token")
     parser.add_argument("--image-name", default="armnet-rlt-actor")
+    parser.add_argument(
+        "--image-ref",
+        default="",
+        help="Submit this already-pushed actor image instead of building one; "
+        "for hosts without a Docker daemon",
+    )
     parser.add_argument("--detach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def resolve_rendezvous(key: str) -> dict[str, Any]:
-    """Read one namespaced learner endpoint from Modal."""
-    import modal
+    """Read one namespaced learner endpoint: a local learner's, else Modal's."""
+    entry = read_local_rendezvous(key)
+    if entry is None:
+        try:
+            import modal
 
-    entry = modal.Dict.from_name(RENDEZVOUS_DICT).get(key)
+            entry = modal.Dict.from_name(RENDEZVOUS_DICT).get(key)
+        except Exception as exc:
+            raise RuntimeError(
+                f"No local learner at {local_rendezvous_path(key)} and Modal "
+                f"Dict {RENDEZVOUS_DICT!r} is unreachable: {exc}"
+            ) from exc
     if not entry:
         raise RuntimeError(
-            f"No learner registered in Modal Dict {RENDEZVOUS_DICT!r} at "
-            f"{key!r}. Start the learner and use the key it prints."
+            f"No learner registered at {local_rendezvous_path(key)} or in Modal "
+            f"Dict {RENDEZVOUS_DICT!r} at {key!r}. Start the learner and use "
+            "the key it prints."
         )
     required = {"host", "port", "use_tls", "config_name", "run_id"}
     missing = required.difference(entry)
@@ -345,9 +365,10 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
     if bool(getattr(args, "no_push_to_hub", False)):
         job_args["no_push_to_hub"] = True
     if cert := entry.get("tls_root_cert_pem"):
-        # Supported for a future self-signed endpoint. Modal's h2-enabled TLS
-        # tunnel uses a public CA, so current entries normally omit this.
+        # Pass the learner's self-signed certificate to the actor.
         job_args["tls_root_cert_pem"] = cert
+    if server_name := entry.get("tls_server_name"):
+        job_args["tls_server_name"] = server_name
     return job_args
 
 
@@ -370,6 +391,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"[rlt] embodiment={SO101_EMBODIMENT} task={args.task}")
     print(f"[rlt] args={job_args}")
     print(f"[rlt] secrets={secrets}")
+    if args.image_ref:
+        print(f"[rlt] image={args.image_ref} (prebuilt)")
     if args.use_rerun and args.detach:
         print(
             "[rlt] Rerun stays on this machine, so --detach disables it. "
@@ -383,11 +406,14 @@ def main(argv: list[str] | None = None) -> None:
 
     from armnet_client import Image, execute
 
-    image = Image.build(
-        dockerfile=PROJECT_ROOT / "Dockerfile.actor",
-        context_dir=PROJECT_ROOT,
-        name=args.image_name,
-    ).push(if_possible=True)
+    if args.image_ref:
+        image = Image.from_ref(args.image_ref)
+    else:
+        image = Image.build(
+            dockerfile=PROJECT_ROOT / "Dockerfile.actor",
+            context_dir=PROJECT_ROOT,
+            name=args.image_name,
+        ).push(if_possible=True)
     result = execute(
         image=image,
         embodiment=SO101_EMBODIMENT,

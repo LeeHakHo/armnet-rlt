@@ -138,6 +138,46 @@ The recording name changes to success, fail, or timeout when that rollout ends.
 `--detach` disables the viewer, because the stream has to stay connected to
 this process. `--no-use-rerun` turns the stream off explicitly.
 
+## Run on a local GPU instead of Modal
+
+`rlt-local` runs the same learner and cache builders on this machine. Artifacts
+go under `RLT_DATA_ROOT` (default `./experiment-data`) in the Modal volume's
+`tasks/<config>/...` layout. Build the two environments once:
+
+```bash
+scripts/setup_local.sh learner   # tools/venv-learner: bc, streaming-bc
+scripts/setup_local.sh openpi    # tools/venv-openpi: cache, bc-cache
+```
+
+`--gpu N` sets `CUDA_VISIBLE_DEVICES`. On a Slurm machine leave it off and
+prefix each command with `srun --gres=gpu:1` instead.
+
+Offline BC clones a cache built from recorded rollouts:
+
+```bash
+tools/venv-openpi/bin/rlt-local bc-cache --gpu 1 --manifest manifest.json
+tools/venv-learner/bin/rlt-local bc --gpu 1 --run-id "$RLT_RUN_ID" --steps 5000
+```
+
+`manifest.json` holds `{"datasets": [{"repo_id": ..., "episodes": [...]}]}`.
+
+Streaming BC serves a learner that a robot actor connects to. The cell has to
+reach this machine, so the learner opens an ngrok TCP tunnel (run
+`ngrok config add-authtoken <token>` once) and protects it with a self-signed
+certificate plus the bearer token. Put the value of the Armnet secret
+`armnet-rlt-auth` in `.env` as `RLT_LEARNER_AUTH_TOKEN`, then:
+
+```bash
+tools/venv-learner/bin/rlt-local streaming-bc --gpu 1 \
+  --run-id "$RLT_RUN_ID" --init-run-id <offline-bc-run-id>
+```
+
+The learner writes its endpoint and certificate to
+`experiment-data/rendezvous/`. `rlt-submit-actor --learner-key
+"${RLT_CONFIG}:${RLT_RUN_ID}"`, run from this checkout, reads that file before
+it falls back to Modal. Use `--public-endpoint <host>:<port>` instead of ngrok
+when the machine already has a reachable address.
+
 ## How actor-to-learner discovery works
 
 There is no hard-coded IP address or DNS name in this repository:

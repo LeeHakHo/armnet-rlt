@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
+from collections.abc import Callable
 from threading import Event
 from typing import Any
 
@@ -321,6 +322,7 @@ def _start_online_transport(
     shutdown_event: Event,
     *,
     learner_step: int,
+    on_parameter_stream: Callable[[], None] | None = None,
 ) -> tuple[Any, Queue, Queue, Queue]:
     import grpc
     from lerobot.rl.learner_service import LearnerService
@@ -336,7 +338,14 @@ def _start_online_transport(
         learner_step=learner_step,
     )
     transport = config.actor_learner
-    service = LearnerService(
+
+    class Service(LearnerService):
+        def StreamParameters(self, request, context):  # noqa: N802
+            if on_parameter_stream is not None:
+                on_parameter_stream()
+            yield from super().StreamParameters(request, context)
+
+    service = Service(
         shutdown_event=shutdown_event,
         parameters_queue=parameters_queue,
         seconds_between_pushes=transport.policy_parameters_push_frequency,
@@ -791,6 +800,7 @@ def run_streaming_bc(
     base_batch_fraction: float = 0.0,
     idle_timeout_s: float = 600.0,
     idle_min_episodes: int = 5,
+    push_unchanged_weights: bool = True,
 ) -> dict[str, object]:
     """Clone successful episodes as they stream in from a live actor.
 
@@ -902,16 +912,23 @@ def run_streaming_bc(
         rollout_log, window=config.rolling_window
     )
     shutdown_event = Event()
+    # Set when an actor opens its parameter stream.
+    actor_subscribed = Event()
     (
         server,
         transition_queue,
         interaction_queue,
         parameters_queue,
     ) = _start_online_transport(
-        config, policy, shutdown_event, learner_step=0
+        config,
+        policy,
+        shutdown_event,
+        learner_step=0,
+        on_parameter_stream=actor_subscribed.set,
     )
     _push_weights(parameters_queue, policy, learner_step=0)
     last_push = time.monotonic()
+    pushed_step = 0
 
     success_buffer: deque[dict[str, Tensor]] = deque(
         restored_transitions, maxlen=config.online_buffer_capacity
@@ -1060,14 +1077,22 @@ def run_streaming_bc(
                 )
 
             now = time.monotonic()
-            if (
+            changed = completed_steps != pushed_step
+            due = (
                 now - last_push
                 >= config.actor_learner.policy_parameters_push_frequency
+            )
+            if (
+                actor_subscribed.is_set()
+                or (due and (changed or push_unchanged_weights))
+                or (changed and pending_updates <= 0)
             ):
+                actor_subscribed.clear()
                 _push_weights(
                     parameters_queue, policy, learner_step=completed_steps
                 )
                 last_push = now
+                pushed_step = completed_steps
 
             buffer_floor = 1 if round_schedule else min_success_transitions
             if (

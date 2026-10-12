@@ -15,7 +15,6 @@ from armnet_rlt.resources import (
     VOLUME_MOUNT,
     VOLUME_NAME,
     rendezvous_key,
-    task_paths,
 )
 
 
@@ -78,79 +77,10 @@ image = (
 app = modal.App(APP_NAME)
 
 
-def _network(embodiment: str, reference_action_len: int):
-    from armnet_rlt.config import (
-        BISO101_JERK_JOINT_WEIGHTS,
-        SO101_JERK_JOINT_WEIGHTS,
-        biso101_network_config,
-        so101_network_config,
-    )
+def _config(**overrides):
+    from armnet_rlt.learner_config import learner_config
 
-    if embodiment == "so101":
-        return (
-            so101_network_config(reference_action_len=reference_action_len),
-            SO101_JERK_JOINT_WEIGHTS,
-        )
-    if embodiment == "biso101":
-        return (
-            biso101_network_config(reference_action_len=reference_action_len),
-            BISO101_JERK_JOINT_WEIGHTS,
-        )
-    raise ValueError("embodiment must be 'so101' or historical learner-only 'biso101'")
-
-
-def _config(
-    *,
-    embodiment: str,
-    config_name: str,
-    run_id: str,
-    output_dir: str | None = None,
-    batch_size: int = 256,
-    max_demo_pretrain_steps: int = 5_000,
-    online_steps: int = 300_000,
-    utd_ratio: int | None = None,
-    online_batch_fraction: float = 0.5,
-    q_loss_normalization: bool = False,
-    discount: float | None = None,
-    num_critics: int | None = None,
-    bc_deviation_max: float = 0.0,
-    bc_deviation_weight: float = 1.0,
-    actor_lr: float = 0.0,
-    actor_lr_min: float = 0.0,
-):
-    from armnet_rlt.config import RLTConfig
-
-    cache_path, assets_dir, production_output = task_paths(config_name)
-    network, jerk = _network(embodiment, reference_action_len=30)
-    kwargs = {
-        "embodiment": embodiment,
-        "network": network,
-        "jerk_joint_weights": jerk,
-        "assets_dir": assets_dir,
-        "demo_cache_path": cache_path,
-        "output_dir": output_dir or production_output,
-        "run_id": run_id,
-        "device": "cuda",
-        "batch_size": batch_size,
-        "max_demo_pretrain_steps": max_demo_pretrain_steps,
-        "online_steps": online_steps,
-        "policy_uses_delta_actions": True,
-        "online_batch_fraction": online_batch_fraction,
-        "q_loss_normalization": q_loss_normalization,
-        "bc_deviation_max": bc_deviation_max,
-        "bc_deviation_weight": bc_deviation_weight,
-    }
-    if discount is not None:
-        kwargs["discount"] = discount
-    if num_critics is not None:
-        kwargs["num_critics"] = num_critics
-    if utd_ratio is not None:
-        kwargs["utd_ratio"] = utd_ratio
-    # The cosine schedule restarts at actor_lr.
-    if actor_lr > 0:
-        kwargs["actor_lr"] = actor_lr
-        kwargs["actor_lr_min"] = actor_lr_min if actor_lr_min > 0 else actor_lr / 4
-    return RLTConfig(**kwargs)
+    return learner_config(data_root=VOLUME_MOUNT, **overrides)
 
 
 @app.function(
@@ -418,9 +348,8 @@ def serve_streaming_bc(
     idle_min_episodes: int = 5,
 ) -> dict:
     """Serve a learner that clones the successful episodes a live actor sends."""
-    from pathlib import Path
-
     from armnet_rlt.learner import run_streaming_bc
+    from armnet_rlt.learner_config import resolve_init_checkpoint
 
     cfg = _config(
         embodiment=embodiment,
@@ -436,18 +365,7 @@ def serve_streaming_bc(
     cfg.actor_learner.learner_port = LEARNER_PORT
     cfg.actor_learner.auth_token = os.environ["RLT_LEARNER_AUTH_TOKEN"]
 
-    init_checkpoint = None
-    if init_run_id:
-        root = cfg.checkpoint_dir.parent / init_run_id
-        if init_step:
-            init_checkpoint = root / f"step_{init_step:06d}" / "checkpoint.pt"
-        else:
-            found = sorted(root.glob("step_*/checkpoint.pt"))
-            if not found:
-                raise FileNotFoundError(f"no checkpoint under {root}")
-            init_checkpoint = found[-1]
-        if not init_checkpoint.exists():
-            raise FileNotFoundError(str(init_checkpoint))
+    init_checkpoint = resolve_init_checkpoint(cfg, init_run_id, init_step)
 
     key = rendezvous_key(config_name, run_id)
     with modal.forward(LEARNER_PORT, h2_enabled=True) as tunnel:
@@ -466,9 +384,7 @@ def serve_streaming_bc(
                 wandb_project=wandb_project or None,
                 min_success_transitions=min_success_transitions,
                 steps_per_transition=steps_per_transition,
-                init_checkpoint=Path(init_checkpoint)
-                if init_checkpoint
-                else None,
+                init_checkpoint=init_checkpoint,
                 min_shaped_reward=min_shaped_reward,
                 base_batch_fraction=base_batch_fraction,
                 episodes_per_round=episodes_per_round,
@@ -577,7 +493,3 @@ def address(key: str) -> None:
     if not entry:
         raise SystemExit(f"No active learner at {key!r} in {RENDEZVOUS_DICT!r}")
     print(f"{key}: {entry['host']}:{entry['port']} tls={entry['use_tls']}")
-
-
-
-
