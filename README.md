@@ -140,43 +140,72 @@ this process. `--no-use-rerun` turns the stream off explicitly.
 
 ## Run on a local GPU instead of Modal
 
-`rlt-local` runs the same learner and cache builders on this machine. Artifacts
-go under `RLT_DATA_ROOT` (default `./experiment-data`) in the Modal volume's
-`tasks/<config>/...` layout. Build the two environments once:
+Setup:
 
 ```bash
-scripts/setup_local.sh learner   # tools/venv-learner: bc, streaming-bc
-scripts/setup_local.sh openpi    # tools/venv-openpi: cache, bc-cache
+scripts/setup_local.sh learner
+scripts/setup_local.sh openpi
 ```
 
-`--gpu N` sets `CUDA_VISIBLE_DEVICES`. On a Slurm machine leave it off and
-prefix each command with `srun --gres=gpu:1` instead.
-
-Offline BC clones a cache built from recorded rollouts:
+Offline BC:
 
 ```bash
 tools/venv-openpi/bin/rlt-local bc-cache --gpu 1 --manifest manifest.json
 tools/venv-learner/bin/rlt-local bc --gpu 1 --run-id "$RLT_RUN_ID" --steps 5000
 ```
 
-`manifest.json` holds `{"datasets": [{"repo_id": ..., "episodes": [...]}]}`.
-
-Streaming BC serves a learner that a robot actor connects to. The cell has to
-reach this machine, so the learner opens an ngrok TCP tunnel (run
-`ngrok config add-authtoken <token>` once) and protects it with a self-signed
-certificate plus the bearer token. Put the value of the Armnet secret
-`armnet-rlt-auth` in `.env` as `RLT_LEARNER_AUTH_TOKEN`, then:
+Streaming BC learner:
 
 ```bash
 tools/venv-learner/bin/rlt-local streaming-bc --gpu 1 \
-  --run-id "$RLT_RUN_ID" --init-run-id <offline-bc-run-id>
+  --run-id "$RLT_RUN_ID" \
+  --episodes-per-round 30,30,10 --steps-per-round 300
 ```
 
-The learner writes its endpoint and certificate to
-`experiment-data/rendezvous/`. `rlt-submit-actor --learner-key
-"${RLT_CONFIG}:${RLT_RUN_ID}"`, run from this checkout, reads that file before
-it falls back to Modal. Use `--public-endpoint <host>:<port>` instead of ngrok
-when the machine already has a reachable address.
+Streaming BC actor:
+
+```bash
+uv run --env-file .env rlt-submit-actor \
+  --task push_green_button \
+  --config-name "$RLT_CONFIG" \
+  --checkpoint-dir volume://openpi/checkpoints/<checkpoint-name> \
+  --language-instruction "push the green button" \
+  --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
+  --num-rollouts 90 --bc-warmup-episodes 30 \
+  --episodes-per-round 30,30,10 --steps-per-round 300 \
+  --episode-timeout-s 45 --timeout-seconds 7200 \
+  --armnet.variation \
+  --image-ref <pushed-actor-image>
+```
+
+Frozen evaluation:
+
+```bash
+uv run --env-file .env rlt-freeze-checkpoint --local \
+  --config-name "$RLT_CONFIG" \
+  --run-id "$RLT_RUN_ID" \
+  --step latest \
+  --armnet-volume-path \
+    "rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt"
+
+uv run --env-file .env rlt-submit-eval \
+  --task push_green_button \
+  --config-name "$RLT_CONFIG" \
+  --checkpoint-dir volume://openpi/checkpoints/<checkpoint-name> \
+  --frozen-rlt-checkpoint \
+    "volume://rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt" \
+  --language-instruction "push the green button" \
+  --num-rollouts 20 --episode-timeout-s 45 \
+  --armnet.variation --armnet.variation-seed <seed> \
+  --image-ref <pushed-actor-image>
+```
+
+Slurm:
+
+```bash
+srun --gres=gpu:1 --cpus-per-task=8 --mem=32G \
+  tools/venv-learner/bin/rlt-local streaming-bc --run-id "$RLT_RUN_ID"
+```
 
 ## How actor-to-learner discovery works
 
