@@ -35,7 +35,11 @@ class RLTPolicy(nn.Module):
         self._chunk_discount = self.chunk_discount
         self.ref_dropout = config.network.ref_action_dropout
         self.bc_beta = config.bc_beta
+        self.q_loss_normalization = config.q_loss_normalization
+        self.q_loss_alpha = config.q_loss_alpha
         self.jerk_lambda = config.jerk_lambda
+        self.bc_deviation_max = config.bc_deviation_max
+        self.bc_deviation_weight = config.bc_deviation_weight
         self.target_policy_noise = config.target_policy_noise
         self.target_noise_clip = config.target_noise_clip
 
@@ -59,6 +63,41 @@ class RLTPolicy(nn.Module):
         self.critic_target.set_norm_stats(
             norm_stats, use_quantiles=use_quantiles
         )
+
+    def compute_loss_bc(
+        self,
+        rl_token: Tensor,
+        proprioception: Tensor,
+        reference_action: Tensor,
+        action: Tensor,
+    ) -> Tensor:
+        """Squared error between the sampled action and the recorded ``action``.
+
+        Uses no critic. ``bc_deviation_max`` adds a hinge penalty on the distance
+        from ``reference_action``; the gripper weighting and jerk penalty are
+        shared with ``compute_loss_actor``.
+        """
+        self._validate_reference(reference_action, "reference_action")
+        sampled, _ = self.actor(
+            rl_token, proprioception, self._apply_ref_dropout(reference_action)
+        )
+        target = self.actor.normalize_action(
+            action[:, : self.predicted_action_dim], proprioception
+        ).clamp(-1.0, 1.0)
+        loss = ((sampled - target).square() * self._bc_mask).sum(dim=-1)
+        if self.bc_deviation_max > 0:
+            # Only the part above bc_deviation_max is penalised.
+            normalized_reference = self.actor.normalize_action(
+                reference_action[:, : self.predicted_action_dim], proprioception
+            ).clamp(-1.0, 1.0)
+            spread = (sampled - normalized_reference).norm(dim=-1)
+            overshoot = (spread - self.bc_deviation_max).clamp_min(0.0)
+            loss = loss + self.bc_deviation_weight * overshoot.square()
+        if self.jerk_lambda > 0:
+            loss = loss + self.jerk_lambda * self.jerk_penalty(
+                sampled, proprioception
+            )
+        return loss.mean()
 
     @torch.no_grad()
     def select_action(
@@ -210,7 +249,12 @@ class RLTPolicy(nn.Module):
         bc_penalty = (
             (action - normalized_reference).square() * self._bc_mask
         ).sum(dim=-1)
-        loss = -minimum_q + self.bc_beta * bc_penalty
+        if self.q_loss_normalization:
+            # Scale the Q term by alpha / mean|Q|.
+            scale = self.q_loss_alpha / minimum_q.detach().abs().mean().clamp_min(1e-6)
+            loss = -(scale * minimum_q) + self.bc_beta * bc_penalty
+        else:
+            loss = -minimum_q + self.bc_beta * bc_penalty
         if self.jerk_lambda > 0:
             loss = loss + self.jerk_lambda * self.jerk_penalty(
                 action, proprioception

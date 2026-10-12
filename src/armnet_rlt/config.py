@@ -11,6 +11,35 @@ BISO101_JERK_JOINT_WEIGHTS: tuple[float, ...] = (
 )
 
 
+def parse_round_schedule(spec: str | int) -> tuple[int, ...]:
+    """Parse ``"30,30,10"`` into the episode count for each training round.
+
+    The last entry repeats for later rounds. An empty spec or ``0`` returns an
+    empty tuple.
+    """
+    if isinstance(spec, int):
+        values = [spec]
+    else:
+        text = str(spec).strip()
+        if not text:
+            return ()
+        values = [int(part) for part in text.split(",") if part.strip()]
+    if not values or values == [0]:
+        return ()
+    if any(value <= 0 for value in values):
+        raise ValueError(f"round schedule must be positive: {spec!r}")
+    return tuple(values)
+
+
+def episodes_for_round(schedule: tuple[int, ...], round_index: int) -> int:
+    """Episodes required by round ``round_index`` (1-based); last entry repeats."""
+    if not schedule:
+        raise ValueError("round schedule is empty")
+    if round_index < 1:
+        raise ValueError("round_index must be at least 1")
+    return schedule[min(round_index - 1, len(schedule) - 1)]
+
+
 @dataclass
 class RLTNetworkConfig:
     hidden_dims: tuple[int, ...] = (512, 512, 512, 512)
@@ -157,6 +186,12 @@ class RLTConfig:
     max_demo_pretrain_steps: int = 500
     online_steps: int = 100_000
     batch_size: int = 256
+    online_batch_fraction: float = 0.5
+    q_loss_normalization: bool = False
+    # Hinge cap in normalized action space; 0 disables it.
+    bc_deviation_max: float = 0.0
+    bc_deviation_weight: float = 1.0
+    q_loss_alpha: float = 2.5
     actions_to_execute: int = 10
     use_subsampling: bool = True
     sub_chunk_stride: int = 2
@@ -189,6 +224,13 @@ class RLTConfig:
             raise ValueError(
                 "jerk_joint_weights length must equal network.action_dim"
             )
+        if not math.isfinite(self.bc_deviation_max) or self.bc_deviation_max < 0:
+            raise ValueError("bc_deviation_max must be finite and nonnegative")
+        if (
+            not math.isfinite(self.bc_deviation_weight)
+            or self.bc_deviation_weight < 0
+        ):
+            raise ValueError("bc_deviation_weight must be finite and nonnegative")
         if any(
             not math.isfinite(weight) or weight < 0
             for weight in self.jerk_joint_weights
@@ -216,6 +258,10 @@ class RLTConfig:
         for name in ("max_demo_pretrain_steps", "online_steps", "log_freq", "save_freq"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be nonnegative")
+        if not 0.0 < self.online_batch_fraction <= 1.0:
+            raise ValueError("online_batch_fraction must be in (0, 1]")
+        if not math.isfinite(self.q_loss_alpha) or self.q_loss_alpha <= 0:
+            raise ValueError("q_loss_alpha must be finite and positive")
         if not 0.0 < self.discount <= 1.0:
             raise ValueError("discount must be in (0, 1]")
         if not 0.0 < self.critic_target_update_weight <= 1.0:

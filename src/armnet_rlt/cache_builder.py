@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from collections.abc import Container
 from typing import Any
 
 import numpy as np
@@ -108,6 +109,7 @@ def build_demo_cache(
     inference_batch_size: int = 4,
     predicted_action_len: int = 10,
     reference_action_len: int = 30,
+    episode_filter: Container[int] | None = None,
 ) -> dict[str, int | float]:
     """Extract one transition per non-overlapping action chunk.
 
@@ -122,6 +124,9 @@ def build_demo_cache(
     episode_start = 0
     for episode_index, metadata in enumerate(episodes):
         episode_length = int(metadata["length"])
+        if episode_filter is not None and episode_index not in episode_filter:
+            episode_start += episode_length
+            continue
         offsets = list(range(0, episode_length, predicted_action_len))
         episode_prompt = _episode_prompt(
             dataset[episode_start],

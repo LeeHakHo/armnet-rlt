@@ -160,6 +160,29 @@ class _ActorConfigView:
         return getattr(self.rlt_config, name)
 
 
+def _check_required_cell(actual: str, required: str) -> str:
+    """Raise unless ``actual`` is one of the comma-separated ``required`` cells.
+
+    An empty ``required`` accepts anything. Returns ``actual``.
+    """
+    required = required.strip()
+    if not required:
+        return actual
+    allowed = {name.strip() for name in required.split(",") if name.strip()}
+    if not actual:
+        raise ValueError(
+            f"require_cell={sorted(allowed)} was requested but the runtime "
+            "reports no cell_id, so the assignment cannot be verified"
+        )
+    if actual not in allowed:
+        raise ValueError(
+            f"this job was scheduled onto {actual!r} but require_cell asks for "
+            f"{sorted(allowed)}. Resubmit until it lands on one of those, or drop "
+            "--armnet.require-cell to accept whichever cell the scheduler picks."
+        )
+    return actual
+
+
 @main
 def run(ctx: Context) -> dict[str, Any]:
     # Validate before downloads, OpenPI imports, or robot construction.
@@ -185,6 +208,11 @@ def run(ctx: Context) -> dict[str, Any]:
     from armnet_rlt.so101_actor import run_actor
 
     args = ctx.args
+    cell_id = _check_required_cell(
+        str(getattr(ctx.cell, "cell_id", "") or ""),
+        str(args.get("require_cell", "") or ""),
+    )
+    ctx.report_progress(f"running on cell {cell_id or '<unknown>'}")
     if not ctx.cell.robot_port:
         raise ValueError("ctx.cell.robot_port is empty; no robot connector is available")
     cameras = dict(ctx.camera_configs)
@@ -281,6 +309,19 @@ def run(ctx: Context) -> dict[str, Any]:
         exploration_scale=float(args.get("exploration_scale", 1.0)),
         frozen_eval=frozen_artifact is not None,
         eval_include_base=_as_bool(args.get("eval_include_base"), False),
+        collect=_as_bool(args.get("collect"), False),
+        base_only=_as_bool(args.get("base_only"), False),
+        base_exploration_scale=float(args.get("base_exploration_scale", 0.0)),
+        bc_warmup_episodes=int(args.get("bc_warmup_episodes", 0)),
+        warmup_exploration_scale=float(
+            args.get(
+                "warmup_exploration_scale",
+                args.get("exploration_scale", 1.0),
+            )
+        ),
+        episodes_per_round=str(args.get("episodes_per_round", "0")),
+        steps_per_round=int(args.get("steps_per_round", 0)),
+        round_wait_timeout_s=float(args.get("round_wait_timeout_s", 120.0)),
         reward_target_button=str(
             args.get("reward_target_button")
             or ("green_button" if ctx.task == "push_green_button" else "")
@@ -335,6 +376,9 @@ def run(ctx: Context) -> dict[str, Any]:
             args.get("variation_episode_offset", 0)
         ),
         variation_repeat=2 if include_base else 1,
+        scene_retry_delay=int(args.get("scene_retry_delay", 0)),
+        scene_retry_limit=int(args.get("scene_retry_limit", 1)),
+        retry_after_round=_as_bool(args.get("retry_after_round"), False),
         variation_curriculum=VariationCurriculumConfig(
             enabled=_as_bool(args.get("variation_curriculum"), False),
             start_scale=float(args.get("variation_scale_start", 0.25)),

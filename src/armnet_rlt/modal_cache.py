@@ -15,7 +15,7 @@ GREEN_BUTTON_DATASET = "villekuosmanen/busybox_push_green_button"
 GREEN_BUTTON_PROMPT = "push the green button"
 MULTITASK_CONFIG = "pi05_rlt_busybox_multitask_singlearm_minmax"
 MULTITASK_CHECKPOINT = "AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax"
-MULTITASK_DATASET = "AutoRLBench/busybox_multitask"
+MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface-secret")
@@ -132,6 +132,87 @@ def build_multitask_cache(inference_batch_size: int = 4) -> dict:
     )
 
 
+@app.function(
+    image=image,
+    gpu="A100-80GB",
+    volumes={str(VOLUME_MOUNT): volume},
+    secrets=[hf_secret],
+    timeout=4 * 60 * 60,
+)
+def build_bc_cache(
+    sources: list[dict],
+    inference_batch_size: int = 4,
+    prompt: str = GREEN_BUTTON_PROMPT,
+    cache_name: str = "rlt_bc_cache.pt",
+) -> dict:
+    """Build one cache from selected episodes of recorded rollout datasets.
+
+    ``sources`` holds one entry per dataset with ``repo_id`` and the ``episodes``
+    to keep. Transitions from every dataset are concatenated and written beside
+    the demonstration cache under ``cache_name``.
+    """
+    from pathlib import Path
+
+    import torch
+    from huggingface_hub import snapshot_download
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    from armnet_rlt.artifacts import load_transition_cache
+    from armnet_rlt.cache_builder import build_demo_cache, copy_norm_stats
+    from armnet_rlt.config import so101_network_config
+    from armnet_rlt.openpi_rlt import OpenPIRLTPolicy
+
+    checkpoint = snapshot_download(MULTITASK_CHECKPOINT)
+    policy = OpenPIRLTPolicy.from_checkpoint(
+        checkpoint, MULTITASK_CONFIG, default_prompt=prompt
+    )
+    demo_cache_path, assets_dir, _ = task_paths(MULTITASK_CONFIG)
+    target = Path(demo_cache_path).with_name(cache_name)
+
+    merged: list[dict] = []
+    per_source = []
+    for source in sources:
+        repo_id = str(source["repo_id"])
+        episodes = sorted({int(index) for index in source["episodes"]})
+        if not episodes:
+            continue
+        dataset = LeRobotDataset(repo_id, revision="main", video_backend="pyav")
+        part = target.with_name(f"{target.stem}.part.pt")
+        summary = build_demo_cache(
+            dataset=dataset,
+            policy=policy,
+            output_path=part,
+            prompt=prompt,
+            inference_batch_size=inference_batch_size,
+            episode_filter=set(episodes),
+        )
+        chunk = torch.load(part, map_location="cpu", weights_only=False)
+        merged.extend(chunk)
+        part.unlink(missing_ok=True)
+        per_source.append(
+            {"repo_id": repo_id, "episodes": len(episodes), "transitions": len(chunk)}
+        )
+        print(f"[RLT bc] {repo_id}: {len(episodes)} episodes -> {len(chunk)} transitions", flush=True)
+
+    if not merged:
+        raise ValueError("no episodes were selected, so no cache was written")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".pt.tmp")
+    torch.save(merged, temporary)
+    temporary.replace(target)
+    _, summary = load_transition_cache(target, so101_network_config())
+    copy_norm_stats(checkpoint, assets_dir)
+    volume.commit()
+    result = {
+        **summary.to_dict(),
+        "cache_path": str(target),
+        "sources": per_source,
+        "episodes_total": sum(item["episodes"] for item in per_source),
+    }
+    print(f"[RLT bc] complete: {result}", flush=True)
+    return result
+
+
 def _build_cache(
     *,
     config_name: str,
@@ -153,6 +234,7 @@ def _build_cache(
         config_name,
         default_prompt=prompt or "",
     )
+    # revision="main" skips LeRobot's codebase_version tag lookup.
     dataset = LeRobotDataset(
         dataset_repo, revision="main", video_backend="pyav"
     )
@@ -176,3 +258,53 @@ def _build_cache(
     }
     print(f"[RLT cache] complete: {result}", flush=True)
     return result
+
+
+
+@app.local_entrypoint()
+def bc_cache(
+    manifest: str,
+    inference_batch_size: int = 4,
+    cache_name: str = "rlt_bc_cache.pt",
+) -> None:
+    """Build a cache from the datasets and episodes listed in a local JSON file.
+
+    The file holds ``datasets``, each with ``repo_id`` and ``episodes``.
+    """
+    import json
+    from pathlib import Path
+
+    spec = json.loads(Path(manifest).read_text())
+    sources = [
+        {"repo_id": entry["repo_id"], "episodes": entry["episodes"]}
+        for entry in spec["datasets"]
+        if entry.get("episodes")
+    ]
+    total = sum(len(entry["episodes"]) for entry in sources)
+    print(f"[RLT bc] {len(sources)} datasets, {total} episodes -> {cache_name}")
+    print(build_bc_cache.remote(
+        sources=sources,
+        inference_batch_size=inference_batch_size,
+        cache_name=cache_name,
+    ))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

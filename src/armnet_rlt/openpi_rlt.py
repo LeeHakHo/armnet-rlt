@@ -88,6 +88,8 @@ class PolicyOutput:
     rl_token: np.ndarray
 
 
+
+
 def build_policy_observation(
     raw_obs: dict[str, Any], language_instruction: str | None
 ) -> PolicyObservation:
@@ -248,6 +250,37 @@ class OpenPIRLTPolicy:
     ) -> PolicyOutput:
         """Run one combined action/token forward pass."""
         return self.infer_batch([observation])[0]
+
+    def to_model_observation(
+        self, observations: list[PolicyObservation | dict[str, Any]]
+    ) -> Any:
+        """Batch observations into the openpi ``Observation`` the model expects.
+
+        Shares the transform path with ``infer_batch`` so a cache built from these
+        embeddings matches what inference would have produced.
+        """
+        import jax
+        import jax.numpy as jnp
+        from openpi.models import model as model_module
+
+        transformed = [
+            self._policy._input_transform(
+                jax.tree.map(
+                    lambda value: value,
+                    observation.as_openpi_dict()
+                    if isinstance(observation, PolicyObservation)
+                    else observation,
+                )
+            )
+            for observation in observations
+        ]
+        batched = jax.tree.map(
+            lambda *values: jnp.stack(
+                [jnp.asarray(value) for value in values], axis=0
+            ),
+            *transformed,
+        )
+        return model_module.Observation.from_dict(batched)
 
     def infer_batch(
         self, observations: list[PolicyObservation | dict[str, Any]]

@@ -16,7 +16,7 @@ from armnet_rlt.rerun_view import (
     rerun_job_enabled,
     start_live_view,
 )
-from armnet_rlt.resources import RENDEZVOUS_DICT
+from armnet_rlt.resources import RENDEZVOUS_DICT, report_job_outcome
 
 
 SO101_EMBODIMENT = "lerobot/so-101"
@@ -47,6 +47,15 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="Multiplier for RLT exploration noise; use 0 for deterministic validation",
+    )
+    parser.add_argument(
+        "--armnet.require-cell",
+        dest="require_cell",
+        default="",
+        help=(
+            "Abort at startup unless the scheduler assigns one of these cells "
+            "(comma separated, e.g. cell-01)"
+        ),
     )
     parser.add_argument(
         "--armnet.variation",
@@ -88,6 +97,58 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Continue a deterministic variation sequence across actor jobs",
+    )
+    parser.add_argument(
+        "--warmup-exploration-scale",
+        type=float,
+        default=None,
+        help="Noise on the base policy's chunk during warmup; defaults to "
+        "--exploration-scale",
+    )
+    parser.add_argument(
+        "--bc-warmup-episodes",
+        type=int,
+        default=0,
+        help="Roll out the base chunk with exploration noise for this many "
+        "episodes before the head takes over",
+    )
+    parser.add_argument(
+        "--episodes-per-round",
+        default="0",
+        help="Rollouts between training rounds, as a schedule whose last "
+        "entry repeats (e.g. 30,30,10). 0 collects without pausing",
+    )
+    parser.add_argument(
+        "--steps-per-round",
+        type=int,
+        default=0,
+        help="Learner steps to wait for at each round; must match the "
+        "learner's --steps-per-round",
+    )
+    parser.add_argument(
+        "--round-wait-timeout-s",
+        type=float,
+        default=120.0,
+        help="Give up waiting for the learner after this many seconds",
+    )
+    parser.add_argument(
+        "--scene-retry-delay",
+        type=int,
+        default=0,
+        help="Revisit a failed scene after this many further rollouts; "
+        "0 disables retries",
+    )
+    parser.add_argument(
+        "--retry-after-round",
+        action="store_true",
+        help="Hold failed scenes until a training round lands instead of "
+        "revisiting them after --scene-retry-delay rollouts",
+    )
+    parser.add_argument(
+        "--scene-retry-limit",
+        type=int,
+        default=1,
+        help="Queue each failed scene for at most this many retries",
     )
     parser.add_argument(
         "--variation-curriculum",
@@ -133,6 +194,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Fail the actor if telemetry recording is incomplete",
     )
     add_rerun_argument(parser)
+    parser.add_argument(
+        "--episode-timeout-s",
+        type=float,
+        default=0.0,
+        help="Seconds a rollout may run before it is scored a timeout "
+        "(actor default 30)",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--auth-secret", default="armnet-rlt-auth")
     parser.add_argument("--hf-secret", default="huggingface-token")
@@ -175,6 +243,25 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "use_tls": bool(entry["use_tls"]),
         "delta_actions": True,
         "exploration_scale": float(getattr(args, "exploration_scale", 0.5)),
+        "bc_warmup_episodes": int(getattr(args, "bc_warmup_episodes", 0)),
+        "warmup_exploration_scale": float(
+            getattr(args, "warmup_exploration_scale", None)
+            if getattr(args, "warmup_exploration_scale", None) is not None
+            else getattr(args, "exploration_scale", 0.5)
+        ),
+        "episodes_per_round": str(getattr(args, "episodes_per_round", "0")),
+        "steps_per_round": int(getattr(args, "steps_per_round", 0)),
+        **(
+            {"episode_timeout_s": float(args.episode_timeout_s)}
+            if getattr(args, "episode_timeout_s", 0.0) > 0
+            else {}
+        ),
+        "round_wait_timeout_s": float(
+            getattr(args, "round_wait_timeout_s", 120.0)
+        ),
+        "scene_retry_delay": int(getattr(args, "scene_retry_delay", 0)),
+        "scene_retry_limit": int(getattr(args, "scene_retry_limit", 1)),
+        "retry_after_round": bool(getattr(args, "retry_after_round", False)),
         "record_dataset": bool(getattr(args, "record_dataset", True)),
         "robot_telemetry": str(getattr(args, "robot_telemetry", "full")),
         "robot_telemetry_strict": bool(
@@ -182,6 +269,9 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         ),
         "use_rerun": rerun_job_enabled(args),
     }
+    require_cell = str(getattr(args, "require_cell", "") or "").strip()
+    if require_cell:
+        job_args["require_cell"] = require_cell
     if args.checkpoint_dir:
         job_args["checkpoint_dir"] = args.checkpoint_dir
     else:
@@ -309,9 +399,7 @@ def main(argv: list[str] | None = None) -> None:
         use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
     )
-    print(f"[rlt] job status: {result.status}")
-    if result.return_value is not None:
-        print(f"[rlt] result: {result.return_value}")
+    report_job_outcome(result, prefix="rlt")
 
 
 if __name__ == "__main__":

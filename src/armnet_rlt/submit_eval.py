@@ -9,6 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from armnet_rlt.resources import report_job_outcome
 from armnet_client.variation import (
     DEFAULT_VARIATION_SEED,
     variation_job_args,
@@ -41,6 +42,41 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--language-instruction", required=True)
     parser.add_argument(
+        "--collect",
+        action="store_true",
+        help=(
+            "Run the frozen actor with exploration noise and record the rollouts. "
+            "Used to gather successes for the next behaviour-cloning round."
+        ),
+    )
+    parser.add_argument(
+        "--exploration-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Exploration noise on the frozen actor's chunk, in units of the actor's "
+            "action standard deviation. Requires --collect; 0 keeps evaluation "
+            "deterministic."
+        ),
+    )
+    parser.add_argument(
+        "--base-only",
+        action="store_true",
+        help=(
+            "Run every rollout with the base policy instead of pairing it with the "
+            "frozen actor. Used to collect around the base policy."
+        ),
+    )
+    parser.add_argument(
+        "--base-exploration-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Exploration noise added to the base policy's chunk, in units of the "
+            "actor's action standard deviation. 0 keeps the base policy deterministic."
+        ),
+    )
+    parser.add_argument(
         "--num-rollouts",
         type=int,
         default=20,
@@ -51,6 +87,16 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Evaluate the base OpenPI policy on each paired scene",
+    )
+    parser.add_argument(
+        "--armnet.require-cell",
+        dest="require_cell",
+        default="",
+        help=(
+            "Abort at startup unless the scheduler assigns one of these cells "
+            "(comma separated). Base and frozen RLT share one job, so pinning the "
+            "job pins the pair."
+        ),
     )
     parser.add_argument(
         "--armnet.variation",
@@ -118,7 +164,12 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         "language_instruction": args.language_instruction,
         "num_rollouts": int(args.num_rollouts),
         "eval_include_base": bool(args.include_base),
-        "exploration_scale": 0.0,
+        "collect": bool(getattr(args, "collect", False)),
+        "exploration_scale": float(getattr(args, "exploration_scale", 0.0)),
+        "base_only": bool(getattr(args, "base_only", False)),
+        "base_exploration_scale": float(
+            getattr(args, "base_exploration_scale", 0.0)
+        ),
         "record_dataset": bool(args.record_dataset),
         "robot_telemetry": str(args.robot_telemetry),
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
@@ -140,6 +191,9 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         job_args["hf_user"] = args.hf_user
     if args.no_push_to_hub:
         job_args["no_push_to_hub"] = True
+    require_cell = str(getattr(args, "require_cell", "") or "").strip()
+    if require_cell:
+        job_args["require_cell"] = require_cell
     return job_args
 
 
@@ -182,10 +236,7 @@ def main(argv: list[str] | None = None) -> None:
         use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
     )
-    print(f"[rlt eval] job status: {result.status}")
-    if result.return_value is not None:
-        print(f"[rlt eval] result: {result.return_value}")
-    result.raise_for_status()
+    report_job_outcome(result, prefix="rlt eval")
 
 
 if __name__ == "__main__":

@@ -224,6 +224,9 @@ class CellOperatorControl:
         variation_episode_offset: int = 0,
         variation_repeat: int = 1,
         variation_curriculum: VariationCurriculumConfig | None = None,
+        scene_retry_delay: int = 0,
+        scene_retry_limit: int = 1,
+        retry_after_round: bool = False,
     ) -> None:
         if total_rollouts is not None and total_rollouts <= 0:
             raise ValueError("total_rollouts must be positive or None")
@@ -231,6 +234,10 @@ class CellOperatorControl:
             raise ValueError("variation_episode_offset must be nonnegative")
         if variation_repeat <= 0:
             raise ValueError("variation_repeat must be positive")
+        if scene_retry_delay < 0:
+            raise ValueError("scene_retry_delay must be nonnegative")
+        if scene_retry_limit < 0:
+            raise ValueError("scene_retry_limit must be nonnegative")
         self._cell = cell
         self._ctx = ctx
         self._total = total_rollouts
@@ -239,6 +246,14 @@ class CellOperatorControl:
         self._curriculum = VariationCurriculum(
             variation_curriculum or VariationCurriculumConfig()
         )
+        self._scene_retry_delay = scene_retry_delay
+        self._scene_retry_limit = scene_retry_limit
+        self._retry_after_round = retry_after_round
+        self._retry_hold: list[tuple[int, int]] = []
+        self._retry_queue: deque[tuple[int, int]] = deque()
+        self._retry_counts: dict[int, int] = {}
+        self._fresh_rollouts = 0
+        self._episode: int | None = None
         self._index = 0
         self._rollout_active = False
         self._started = False
@@ -254,6 +269,50 @@ class CellOperatorControl:
     @property
     def rollout_index(self) -> int:
         return self._index
+
+    @property
+    def episode_number(self) -> int | None:
+        """Scene index applied to the current rollout."""
+        return self._episode
+
+    def _next_episode(self, next_index: int) -> int:
+        """Scene index for the upcoming rollout, preferring an eligible retry.
+
+        A retry does not consume a fresh scene: ``_fresh_rollouts`` advances only on
+        rollouts that visit a new scene, so no scene in the sequence is skipped.
+        """
+        if self._retry_queue and self._retry_queue[0][1] <= next_index:
+            episode, _ = self._retry_queue.popleft()
+            return episode
+        self._fresh_rollouts += 1
+        return self._variation_episode_offset + (
+            (self._fresh_rollouts - 1) // self._variation_repeat
+        )
+
+    def release_round_retries(self) -> int:
+        """Move scenes held since the last round into the retry queue."""
+        released = len(self._retry_hold)
+        self._retry_queue.extend(self._retry_hold)
+        self._retry_hold.clear()
+        return released
+
+    def record_outcome(self, success: bool) -> None:
+        """Queue the current scene for a later rollout when it did not succeed.
+
+        A scene is queued at most ``scene_retry_limit`` times, so a run that keeps
+        failing still advances to new scenes.
+        """
+        if success or not self._scene_retry_delay or self._episode is None:
+            return
+        used = self._retry_counts.get(self._episode, 0)
+        if used >= self._scene_retry_limit:
+            return
+        self._retry_counts[self._episode] = used + 1
+        entry = (self._episode, self._index + self._scene_retry_delay)
+        if self._retry_after_round:
+            self._retry_hold.append(entry)
+        else:
+            self._retry_queue.append(entry)
 
     @property
     def rollout_total(self) -> int | None:
@@ -286,10 +345,9 @@ class CellOperatorControl:
             next_index = self._index + 1
             self._cell.reset()
             self._variation = None
+            episode = self._next_episode(next_index)
+            self._episode = episode
             if self._ctx is not None:
-                episode = self._variation_episode_offset + (
-                    (next_index - 1) // self._variation_repeat
-                )
                 if self._curriculum.config.enabled:
                     self._variation = _apply_curriculum_variation(
                         self._ctx,

@@ -26,6 +26,8 @@ FUNCTION_TIMEOUT_S = 24 * 60 * 60
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 rendezvous = modal.Dict.from_name(RENDEZVOUS_DICT, create_if_missing=True)
 auth_secret = modal.Secret.from_name(AUTH_SECRET_NAME)
+# Carries WANDB_API_KEY from .env, resolved from this file upward.
+dotenv_secret = modal.Secret.from_dotenv(__file__)
 
 # This image deliberately has no OpenPI/JAX. The learner consumes cached tokens
 # and normalization JSON, so installing the VLA would only add build time and
@@ -107,6 +109,14 @@ def _config(
     max_demo_pretrain_steps: int = 5_000,
     online_steps: int = 300_000,
     utd_ratio: int | None = None,
+    online_batch_fraction: float = 0.5,
+    q_loss_normalization: bool = False,
+    discount: float | None = None,
+    num_critics: int | None = None,
+    bc_deviation_max: float = 0.0,
+    bc_deviation_weight: float = 1.0,
+    actor_lr: float = 0.0,
+    actor_lr_min: float = 0.0,
 ):
     from armnet_rlt.config import RLTConfig
 
@@ -125,9 +135,21 @@ def _config(
         "max_demo_pretrain_steps": max_demo_pretrain_steps,
         "online_steps": online_steps,
         "policy_uses_delta_actions": True,
+        "online_batch_fraction": online_batch_fraction,
+        "q_loss_normalization": q_loss_normalization,
+        "bc_deviation_max": bc_deviation_max,
+        "bc_deviation_weight": bc_deviation_weight,
     }
+    if discount is not None:
+        kwargs["discount"] = discount
+    if num_critics is not None:
+        kwargs["num_critics"] = num_critics
     if utd_ratio is not None:
         kwargs["utd_ratio"] = utd_ratio
+    # The cosine schedule restarts at actor_lr.
+    if actor_lr > 0:
+        kwargs["actor_lr"] = actor_lr
+        kwargs["actor_lr_min"] = actor_lr_min if actor_lr_min > 0 else actor_lr / 4
     return RLTConfig(**kwargs)
 
 
@@ -135,7 +157,7 @@ def _config(
     image=image,
     gpu=GPU,
     volumes={str(VOLUME_MOUNT): volume},
-    secrets=[auth_secret],
+    secrets=[auth_secret, dotenv_secret],
     timeout=FUNCTION_TIMEOUT_S,
 )
 def serve_learner(
@@ -144,6 +166,10 @@ def serve_learner(
     embodiment: str = "so101",
     resume: bool = False,
     wandb_project: str = "",
+    online_batch_fraction: float = 0.5,
+    q_loss_normalization: bool = False,
+    discount: float = 0.0,
+    num_critics: int = 0,
 ) -> dict:
     """Train and serve an online learner through Modal's HTTP/2 TLS tunnel."""
     from armnet_rlt.learner import run_learner
@@ -152,6 +178,10 @@ def serve_learner(
         embodiment=embodiment,
         config_name=config_name,
         run_id=run_id,
+        online_batch_fraction=online_batch_fraction,
+        q_loss_normalization=q_loss_normalization,
+        discount=discount or None,
+        num_critics=num_critics or None,
     )
     cfg.actor_learner.server_bind_host = "0.0.0.0"
     cfg.actor_learner.learner_port = LEARNER_PORT
@@ -309,6 +339,196 @@ def smoke_bimanual() -> dict:
     return result
 
 
+@app.function(
+    image=image,
+    gpu=GPU,
+    volumes={str(VOLUME_MOUNT): volume},
+    secrets=[auth_secret, dotenv_secret],
+    timeout=FUNCTION_TIMEOUT_S,
+)
+def train_bc(
+    config_name: str,
+    run_id: str,
+    steps: int = 5_000,
+    embodiment: str = "so101",
+    wandb_project: str = "",
+    cache_name: str = "rlt_bc_cache.pt",
+) -> dict:
+    """Clone recorded actions from the cache named by ``cache_name``."""
+    from pathlib import Path
+
+    from armnet_rlt.learner import run_bc_training
+
+    cfg = _config(
+        embodiment=embodiment, config_name=config_name, run_id=run_id
+    )
+    cfg.demo_cache_path = str(Path(cfg.demo_cache_path).with_name(cache_name))
+    result = run_bc_training(
+        cfg, steps=steps, wandb_project=wandb_project or None
+    )
+    volume.commit()
+    return result
+
+
+@app.local_entrypoint()
+def bc(
+    config_name: str,
+    run_id: str,
+    steps: int = 5_000,
+    embodiment: str = "so101",
+    wandb_project: str = "",
+    cache_name: str = "rlt_bc_cache.pt",
+) -> None:
+    """Train an actor by cloning recorded actions."""
+    print(train_bc.remote(
+        config_name=config_name,
+        run_id=run_id,
+        steps=steps,
+        embodiment=embodiment,
+        wandb_project=wandb_project,
+        cache_name=cache_name,
+    ))
+
+
+@app.function(
+    image=image,
+    gpu=GPU,
+    volumes={str(VOLUME_MOUNT): volume},
+    secrets=[auth_secret, dotenv_secret],
+    timeout=FUNCTION_TIMEOUT_S,
+)
+def serve_streaming_bc(
+    config_name: str,
+    run_id: str,
+    embodiment: str = "so101",
+    wandb_project: str = "",
+    min_success_transitions: int = 32,
+    steps_per_transition: int = 1,
+    online_steps: int = 0,
+    init_run_id: str = "",
+    init_step: int = 0,
+    min_shaped_reward: float = 0.0,
+    base_batch_fraction: float = 0.0,
+    bc_deviation_max: float = 0.0,
+    bc_deviation_weight: float = 1.0,
+    episodes_per_round: str = "0",
+    steps_per_round: int = 0,
+    actor_lr: float = 0.0,
+    idle_timeout_s: float = 600.0,
+    idle_min_episodes: int = 5,
+) -> dict:
+    """Serve a learner that clones the successful episodes a live actor sends."""
+    from pathlib import Path
+
+    from armnet_rlt.learner import run_streaming_bc
+
+    cfg = _config(
+        embodiment=embodiment,
+        config_name=config_name,
+        run_id=run_id,
+        bc_deviation_max=bc_deviation_max,
+        bc_deviation_weight=bc_deviation_weight,
+        actor_lr=actor_lr,
+    )
+    if online_steps:
+        cfg.online_steps = online_steps
+    cfg.actor_learner.server_bind_host = "0.0.0.0"
+    cfg.actor_learner.learner_port = LEARNER_PORT
+    cfg.actor_learner.auth_token = os.environ["RLT_LEARNER_AUTH_TOKEN"]
+
+    init_checkpoint = None
+    if init_run_id:
+        root = cfg.checkpoint_dir.parent / init_run_id
+        if init_step:
+            init_checkpoint = root / f"step_{init_step:06d}" / "checkpoint.pt"
+        else:
+            found = sorted(root.glob("step_*/checkpoint.pt"))
+            if not found:
+                raise FileNotFoundError(f"no checkpoint under {root}")
+            init_checkpoint = found[-1]
+        if not init_checkpoint.exists():
+            raise FileNotFoundError(str(init_checkpoint))
+
+    key = rendezvous_key(config_name, run_id)
+    with modal.forward(LEARNER_PORT, h2_enabled=True) as tunnel:
+        host, port = tunnel.tls_socket
+        rendezvous[key] = {
+            "host": host,
+            "port": port,
+            "use_tls": True,
+            "config_name": config_name,
+            "run_id": run_id,
+        }
+        print(f"[RLT] rendezvous {key}: {host}:{port} (TLS/h2)", flush=True)
+        try:
+            result = run_streaming_bc(
+                cfg,
+                wandb_project=wandb_project or None,
+                min_success_transitions=min_success_transitions,
+                steps_per_transition=steps_per_transition,
+                init_checkpoint=Path(init_checkpoint)
+                if init_checkpoint
+                else None,
+                min_shaped_reward=min_shaped_reward,
+                base_batch_fraction=base_batch_fraction,
+                episodes_per_round=episodes_per_round,
+                steps_per_round=steps_per_round,
+                idle_timeout_s=idle_timeout_s,
+                idle_min_episodes=idle_min_episodes,
+            )
+        finally:
+            rendezvous.pop(key, None)
+    volume.commit()
+    return result
+
+
+@app.local_entrypoint()
+def streaming_bc(
+    config_name: str,
+    run_id: str = "",
+    embodiment: str = "so101",
+    wandb_project: str = "",
+    min_success_transitions: int = 32,
+    steps_per_transition: int = 1,
+    online_steps: int = 0,
+    init_run_id: str = "",
+    init_step: int = 0,
+    min_shaped_reward: float = 0.0,
+    base_batch_fraction: float = 0.0,
+    bc_deviation_max: float = 0.0,
+    bc_deviation_weight: float = 1.0,
+    episodes_per_round: str = "0",
+    steps_per_round: int = 0,
+    actor_lr: float = 0.0,
+    idle_timeout_s: float = 600.0,
+    idle_min_episodes: int = 5,
+) -> None:
+    """Start the streaming-BC learner. Use `modal run --detach` for long runs."""
+    run_id = run_id or dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
+    key = rendezvous_key(config_name, run_id)
+    print(f"[RLT] learner key: {key}", flush=True)
+    serve_streaming_bc.remote(
+        config_name=config_name,
+        run_id=run_id,
+        embodiment=embodiment,
+        wandb_project=wandb_project,
+        min_success_transitions=min_success_transitions,
+        steps_per_transition=steps_per_transition,
+        online_steps=online_steps,
+        init_run_id=init_run_id,
+        init_step=init_step,
+        min_shaped_reward=min_shaped_reward,
+        base_batch_fraction=base_batch_fraction,
+        bc_deviation_max=bc_deviation_max,
+        bc_deviation_weight=bc_deviation_weight,
+        actor_lr=actor_lr,
+        episodes_per_round=episodes_per_round,
+        steps_per_round=steps_per_round,
+        idle_timeout_s=idle_timeout_s,
+        idle_min_episodes=idle_min_episodes,
+    )
+
+
 @app.local_entrypoint()
 def main(
     config_name: str,
@@ -316,6 +536,10 @@ def main(
     embodiment: str = "so101",
     resume: bool = False,
     wandb_project: str = "",
+    online_batch_fraction: float = 0.5,
+    q_loss_normalization: bool = False,
+    discount: float = 0.0,
+    num_critics: int = 0,
 ) -> None:
     """Start the online learner. Use `modal run --detach` for long runs."""
     run_id = run_id or dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
@@ -327,7 +551,23 @@ def main(
         embodiment=embodiment,
         resume=resume,
         wandb_project=wandb_project,
+        online_batch_fraction=online_batch_fraction,
+        q_loss_normalization=q_loss_normalization,
+        discount=discount,
+        num_critics=num_critics,
     )
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @app.local_entrypoint()
@@ -337,3 +577,7 @@ def address(key: str) -> None:
     if not entry:
         raise SystemExit(f"No active learner at {key!r} in {RENDEZVOUS_DICT!r}")
     print(f"{key}: {entry['host']}:{entry['port']} tls={entry['use_tls']}")
+
+
+
+

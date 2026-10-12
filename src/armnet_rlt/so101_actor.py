@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import threading
 import time
@@ -429,14 +430,67 @@ def _load_parameters(actor: Any, payload: Any) -> int | None:
     return int(raw_step)
 
 
+def _await_learner_round(
+    transport: Any,
+    actor: Any,
+    current_step: int | None,
+    *,
+    steps_per_round: int,
+    timeout_s: float,
+) -> tuple[int | None, int]:
+    """Block until the learner has applied ``steps_per_round`` more steps.
+
+    The learner pushes parameters on a timer, so the first payload after a round
+    starts already reports a higher step; waiting for any advance would resume
+    collection mid-round. The target is taken from the learner's own step at the
+    moment the wait begins. Returns the loaded step and how many payloads were
+    applied. On timeout the latest step is returned, so a round in which the
+    learner had nothing to clone does not stall collection.
+    """
+    deadline = time.monotonic() + timeout_s
+    reloads = 0
+    latest = current_step
+    update = transport.latest_parameters()
+    if update is not None:
+        loaded = _load_parameters(actor, update)
+        reloads += 1
+        if loaded is not None:
+            latest = loaded
+    target = (latest or 0) + max(1, steps_per_round)
+    while time.monotonic() < deadline:
+        update = transport.latest_parameters()
+        if update is not None:
+            loaded = _load_parameters(actor, update)
+            reloads += 1
+            if loaded is not None:
+                latest = loaded
+                if loaded >= target:
+                    return loaded, reloads
+        time.sleep(0.05)
+    log.warning(
+        "learner reached step %s of the %d expected within %.0fs; continuing "
+        "on the parameters already loaded",
+        latest,
+        target,
+        timeout_s,
+    )
+    return latest, reloads
+
+
 def _policy_variant(
     *,
     frozen_eval: bool,
     include_base: bool,
     rollout_index: int,
+    base_only: bool = False,
+    warmup_episodes: int = 0,
 ) -> str:
     if not frozen_eval:
+        if warmup_episodes and rollout_index <= warmup_episodes:
+            return "base"
         return "online_rlt"
+    if base_only:
+        return "base"
     if include_base:
         pair_index = (rollout_index - 1) // 2
         position_in_pair = (rollout_index - 1) % 2
@@ -532,6 +586,67 @@ def _button_press_counts(robot: Any) -> dict[str, int]:
     }
 
 
+def _correlated_noise(
+    predicted_len: int,
+    action_dim: int,
+    correlation: float,
+    *,
+    device: Any,
+    dtype: Any,
+) -> torch.Tensor:
+    """Gaussian noise whose adjacent timesteps are correlated.
+
+    Independent noise on every point in a 20 Hz action chunk creates command
+    acceleration that is absent from demonstrations and can trip the edge
+    oscillation gate. This keeps the same marginal standard deviation while
+    correlating neighbours.
+    """
+    innovations = torch.randn((1, predicted_len, action_dim), device=device, dtype=dtype)
+    noise = torch.empty_like(innovations)
+    noise[:, 0] = innovations[:, 0]
+    innovation_scale = math.sqrt(1.0 - correlation**2)
+    for index in range(1, predicted_len):
+        noise[:, index] = (
+            correlation * noise[:, index - 1] + innovation_scale * innovations[:, index]
+        )
+    return noise
+
+
+def _jitter_chunk(
+    actor: Any,
+    chunk: torch.Tensor,
+    proprioception: torch.Tensor,
+    *,
+    predicted_len: int,
+    action_dim: int,
+    exploration_correlation: float,
+    exploration_scale: float,
+) -> torch.Tensor:
+    """Add exploration noise to an action chunk the actor did not produce.
+
+    Used to explore around the base policy's own chunk, where there is no actor
+    output to perturb. The noise is applied in normalized action space so its
+    scale matches the actor's.
+    """
+    with torch.inference_mode():
+        normalized = actor.normalize_action(
+            chunk.flatten().unsqueeze(0), proprioception.unsqueeze(0)
+        )
+        noise = _correlated_noise(
+            predicted_len,
+            action_dim,
+            exploration_correlation,
+            device=normalized.device,
+            dtype=normalized.dtype,
+        )
+        jittered = (
+            normalized
+            + noise.flatten(1) * actor.action_std.reshape(1, -1) * exploration_scale
+        ).clamp(-1.0, 1.0)
+        action = actor.unnormalize_action(jittered, proprioception.unsqueeze(0))
+    return action.reshape(predicted_len, action_dim).detach()
+
+
 def _refine_chunk(
     actor: Any,
     token: torch.Tensor,
@@ -554,19 +669,13 @@ def _refine_chunk(
         # command acceleration that is absent from demonstrations and can trip
         # the edge oscillation gate. Preserve the same marginal exploration
         # standard deviation while correlating adjacent timesteps.
-        innovations = torch.randn(
-            (1, predicted_len, action_dim),
+        noise = _correlated_noise(
+            predicted_len,
+            action_dim,
+            exploration_correlation,
             device=mean.device,
             dtype=mean.dtype,
         )
-        noise = torch.empty_like(innovations)
-        noise[:, 0] = innovations[:, 0]
-        innovation_scale = math.sqrt(1.0 - exploration_correlation**2)
-        for index in range(1, predicted_len):
-            noise[:, index] = (
-                exploration_correlation * noise[:, index - 1]
-                + innovation_scale * innovations[:, index]
-            )
         normalized = (
             mean
             + noise.flatten(1)
@@ -674,8 +783,42 @@ def run_actor(
         raise ValueError("exploration_scale must be finite and nonnegative")
     frozen_eval = bool(_field(cfg, "frozen_eval", False))
     include_base = bool(_field(cfg, "eval_include_base", False))
-    if frozen_eval and exploration_scale != 0:
+    collect = bool(_field(cfg, "collect", False))
+    if frozen_eval and not collect and exploration_scale != 0:
         raise ValueError("frozen RLT evaluation requires exploration_scale=0")
+    from armnet_rlt.config import episodes_for_round, parse_round_schedule
+
+    round_schedule = parse_round_schedule(
+        _field(cfg, "episodes_per_round", 0)
+    )
+    steps_per_round = int(_field(cfg, "steps_per_round", 0))
+    if steps_per_round < 0:
+        raise ValueError("steps_per_round must be nonnegative")
+    if round_schedule and not steps_per_round:
+        raise ValueError(
+            "steps_per_round is required when episodes_per_round is set; "
+            "it must match the learner's value"
+        )
+    round_wait_timeout_s = float(_field(cfg, "round_wait_timeout_s", 120.0))
+    if round_wait_timeout_s <= 0:
+        raise ValueError("round_wait_timeout_s must be positive")
+    bc_warmup_episodes = int(_field(cfg, "bc_warmup_episodes", 0))
+    if bc_warmup_episodes < 0:
+        raise ValueError("bc_warmup_episodes must be nonnegative")
+    # Noise on the base chunk during warmup; the head path uses exploration_scale.
+    warmup_exploration_scale = float(
+        _field(cfg, "warmup_exploration_scale", exploration_scale)
+    )
+    if not math.isfinite(warmup_exploration_scale) or warmup_exploration_scale < 0:
+        raise ValueError(
+            "warmup_exploration_scale must be finite and nonnegative"
+        )
+    base_only = bool(_field(cfg, "base_only", False))
+    base_exploration_scale = float(_field(cfg, "base_exploration_scale", 0.0))
+    if not math.isfinite(base_exploration_scale) or base_exploration_scale < 0:
+        raise ValueError("base_exploration_scale must be finite and nonnegative")
+    if base_only and not frozen_eval:
+        raise ValueError("base_only requires frozen_eval")
     reward_target_button = str(
         _field(cfg, "reward_target_button", "") or ""
     )
@@ -771,6 +914,7 @@ def run_actor(
 
     completed = successes = 0
     session_id = uuid.uuid4().hex
+    cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
     transitions: list[_ChunkTransition] = []
     previous: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None
@@ -801,8 +945,43 @@ def run_actor(
         warm_obs = robot.get_observation()
         policy.infer(build_policy_observation(warm_obs, instruction))
 
+        rounds_done = 0
+        next_round_at = (
+            episodes_for_round(round_schedule, 1) if round_schedule else 0
+        )
         while not operator.should_stop():
             tick = time.perf_counter()
+            if (
+                round_schedule
+                and state_machine.state is EpisodeState.END_EPISODE
+                and completed >= next_round_at
+            ):
+                rounds_done += 1
+                next_round_at += episodes_for_round(
+                    round_schedule, rounds_done + 1
+                )
+                print(
+                    f"[rlt round] round {rounds_done} boundary at {completed} "
+                    f"rollouts; waiting for {steps_per_round} learner steps "
+                    f"past {current_policy_step}",
+                    flush=True,
+                )
+                current_policy_step, applied = _await_learner_round(
+                    transport,
+                    actor,
+                    current_policy_step,
+                    steps_per_round=steps_per_round,
+                    timeout_s=round_wait_timeout_s,
+                )
+                policy_reload_count += applied
+                release = getattr(operator, "release_round_retries", None)
+                released = release() if callable(release) else 0
+                print(
+                    f"[rlt round] resuming at learner step "
+                    f"{current_policy_step}"
+                    + (f"; {released} scene(s) queued for retry" if released else ""),
+                    flush=True,
+                )
             previous_state = state_machine.state
             for event, _grade in operator.poll_events(state_machine.state):
                 state_machine.handle_event(event)
@@ -825,7 +1004,9 @@ def run_actor(
                 episode_policy_step_start = current_policy_step
                 policy_variant = _policy_variant(
                     frozen_eval=frozen_eval,
-                    include_base=include_base,
+                    include_base=include_base or base_only,
+                    base_only=base_only,
+                    warmup_episodes=bc_warmup_episodes,
                     rollout_index=int(
                         getattr(operator, "rollout_index", completed + 1)
                     ),
@@ -884,6 +1065,7 @@ def run_actor(
                 )
                 record = EpisodeRecord(
                     session_id=session_id,
+                    cell_id=cell_id,
                     policy_variant=policy_variant,
                     session_rollout_index=int(
                         getattr(operator, "rollout_index", completed + 1)
@@ -922,7 +1104,16 @@ def run_actor(
                 )
                 interaction = _serialize_interaction(record)
                 transport.send_episode(payload, interaction)
-                per_rollout.append(record.to_dict())
+                rollout_record = record.to_dict()
+                per_rollout.append(rollout_record)
+                # Emit each rollout label as it finishes, not at job end.
+                print(
+                    "[rlt rollout] " + json.dumps(rollout_record, default=str),
+                    flush=True,
+                )
+                record_outcome = getattr(operator, "record_outcome", None)
+                if callable(record_outcome):
+                    record_outcome(outcome is EpisodeOutcome.SUCCESS)
                 completed += 1
                 successes += int(outcome is EpisodeOutcome.SUCCESS)
                 if use_rerun:
@@ -1011,6 +1202,21 @@ def run_actor(
                     )
                 if policy_variant == "base":
                     chunk = reference[:predicted_len].detach().clone()
+                    base_scale = (
+                        base_exploration_scale
+                        if frozen_eval
+                        else warmup_exploration_scale
+                    )
+                    if base_scale > 0:
+                        chunk = _jitter_chunk(
+                            actor,
+                            chunk,
+                            proprioception,
+                            predicted_len=predicted_len,
+                            action_dim=action_dim,
+                            exploration_correlation=exploration_correlation,
+                            exploration_scale=base_scale,
+                        )
                 else:
                     chunk = _refine_chunk(
                         actor,
