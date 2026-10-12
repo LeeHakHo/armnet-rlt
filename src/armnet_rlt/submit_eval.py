@@ -10,10 +10,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from armnet_rlt.resources import report_job_outcome
-from armnet_client.variation import (
-    DEFAULT_VARIATION_SEED,
-    variation_job_args,
-)
+from armnet_client.variation import variation_job_args
 
 from armnet_rlt.rerun_view import (
     add_rerun_argument,
@@ -23,6 +20,7 @@ from armnet_rlt.rerun_view import (
 
 
 SO101_EMBODIMENT = "lerobot/so-101"
+EVAL_VARIATION_SEED = 1042
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -107,7 +105,7 @@ def _parser() -> argparse.ArgumentParser:
         "--armnet.variation-seed",
         dest="variation_seed",
         type=int,
-        default=DEFAULT_VARIATION_SEED,
+        default=EVAL_VARIATION_SEED,
     )
     parser.add_argument(
         "--armnet.variation-episode-offset",

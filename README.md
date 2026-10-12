@@ -196,7 +196,7 @@ uv run --env-file .env rlt-submit-eval \
     "volume://rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt" \
   --language-instruction "push the green button" \
   --num-rollouts 20 --episode-timeout-s 45 \
-  --armnet.variation --armnet.variation-seed <seed> \
+  --armnet.variation --armnet.variation-seed 1042 \
   --image-ref <pushed-actor-image>
 ```
 
