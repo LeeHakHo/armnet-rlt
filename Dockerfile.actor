@@ -51,7 +51,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \
         'transformers[vision]>=4.57,<5.0' 'huggingface-hub>=0.30,<1.0' \
-        accelerate datasets einops diffusers numpy pandas polars pyarrow scipy \
+        accelerate 'datasets>=4.0,<5' einops diffusers numpy pandas polars pyarrow scipy \
         opencv-python-headless safetensors grpcio==1.73.1 \
         'protobuf>=6.33.5,<7' \
         'jax[cuda12]==0.5.3' jaxlib==0.5.3 flax==0.10.2 \
