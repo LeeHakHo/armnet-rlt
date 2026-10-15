@@ -23,8 +23,22 @@ class RLTNetworkConfig:
     fixed_action_std: float = 0.05
     ref_action_dropout: float = 0.25
     delta_action_mask: tuple[bool, ...] = (True, True, True, True, True, False)
+    # Optional structural variants. Defaults keep the original behaviour.
+    #   residual_actor: the actor outputs ``reference + residual_scale * tanh(head)``
+    #     with the head initialised to zero, so it starts exactly at the VLA chunk.
+    #     Reference dropout is disabled in this mode (the base needs the reference).
+    #   critic_action_residual: the critic sees ``critic_action_gain * (action -
+    #     reference chunk)`` instead of the raw normalized action.
+    residual_actor: bool = False
+    residual_scale: float = 0.25
+    critic_action_residual: bool = False
+    critic_action_gain: float = 10.0
 
     def __post_init__(self) -> None:
+        if not 0.0 < self.residual_scale <= 1.0:
+            raise ValueError("residual_scale must be in (0, 1]")
+        if not math.isfinite(self.critic_action_gain) or self.critic_action_gain <= 0:
+            raise ValueError("critic_action_gain must be finite and positive")
         if not self.hidden_dims or any(size <= 0 for size in self.hidden_dims):
             raise ValueError("hidden_dims must contain positive layer sizes")
         for name in (

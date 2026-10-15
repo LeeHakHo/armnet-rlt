@@ -116,7 +116,14 @@ def _q_stats(
     data_action = actor.normalize_action(
         batch["action"], proprioception
     ).clamp(-1.0, 1.0)
-    per_critic = ensemble(token, proprioception, data_action)
+    reference_chunk = (
+        actor.normalize_action(
+            reference[:, : policy.predicted_action_dim], proprioception
+        ).clamp(-1.0, 1.0)
+        if ensemble.action_residual
+        else None
+    )
+    per_critic = ensemble(token, proprioception, data_action, reference_chunk)
     q = per_critic.min(dim=0).values.reshape(-1)
     reward = batch["reward"].reshape(-1)
     stats = {
@@ -156,7 +163,11 @@ def _q_stats(
     )
 
     def min_q(action: Tensor) -> Tensor:
-        return ensemble(token, proprioception, action).min(dim=0).values
+        return (
+            ensemble(token, proprioception, action, reference_chunk)
+            .min(dim=0)
+            .values
+        )
 
     stats["learner/q_reference_mean"] = float(min_q(reference_action).mean())
     stats["learner/q_actor_mean"] = float(min_q(actor_mean).mean())
@@ -215,6 +226,7 @@ def _train_step(
             next_state["proprioception"],
             next_state["reference_action"],
             batch["done"],
+            reference_action=state["reference_action"],
         )
         critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()

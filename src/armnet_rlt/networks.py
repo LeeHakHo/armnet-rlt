@@ -108,6 +108,14 @@ class RLTActor(nn.Module):
             "action_std",
             torch.full((self.predicted_action_dim,), config.fixed_action_std),
         )
+        # Registered as buffers so the mode travels with the state dict: an
+        # actor that loads learner weights also loads the learner's architecture.
+        self.register_buffer(
+            "residual_mode", torch.tensor(bool(config.residual_actor))
+        )
+        self.register_buffer(
+            "residual_scale", torch.tensor(float(config.residual_scale))
+        )
         mask = torch.tensor(config.delta_action_mask, dtype=torch.float32)
         self.register_buffer(
             "delta_prop_mask", mask.repeat(self.predicted_action_len)
@@ -128,7 +136,11 @@ class RLTActor(nn.Module):
             previous = hidden
         self.trunk = nn.Sequential(*layers)
         self.mean_head = nn.Linear(previous, self.predicted_action_dim)
-        if config.init_final is not None:
+        if config.residual_actor:
+            # delta == 0 at initialisation, so the actor equals the reference.
+            nn.init.zeros_(self.mean_head.weight)
+            nn.init.zeros_(self.mean_head.bias)
+        elif config.init_final is not None:
             nn.init.uniform_(
                 self.mean_head.weight, -config.init_final, config.init_final
             )
@@ -140,6 +152,14 @@ class RLTActor(nn.Module):
         _register_norm_buffers(self, "ns", config.proprioception_dim)
         _register_norm_buffers(self, "na", self.predicted_action_dim)
         _register_norm_buffers(self, "na_ref", self.reference_action_dim)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # State dicts written before residual mode existed lack these buffers.
+        for name in ("residual_mode", "residual_scale"):
+            state_dict.setdefault(
+                prefix + name, getattr(self, name).detach().clone()
+            )
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def set_norm_stats(
         self, norm_stats: dict[str, NormStats], *, use_quantiles: bool = False
@@ -248,7 +268,12 @@ class RLTActor(nn.Module):
         )
         reference = self._normalize_reference(reference_action, proprioception)
         hidden = self.trunk(torch.cat((rl_token, state, reference), dim=-1))
-        mean = torch.tanh(self.mean_head(hidden))
+        head = torch.tanh(self.mean_head(hidden))
+        if bool(self.residual_mode):
+            base = reference[:, : self.predicted_action_dim].clamp(-1.0, 1.0)
+            mean = (base + self.residual_scale * head).clamp(-1.0, 1.0)
+        else:
+            mean = head
         if sample and self.training:
             action = (mean + torch.randn_like(mean) * self.action_std).clamp(
                 -1.0, 1.0
@@ -274,6 +299,8 @@ class RLTCritic(nn.Module):
             previous = hidden
         layers.append(nn.Linear(previous, 1))
         self.net = nn.Sequential(*layers)
+        self.action_residual = bool(config.critic_action_residual)
+        self.action_gain = float(config.critic_action_gain)
         self.register_buffer("_use_quantiles", torch.tensor(False))
         _register_norm_buffers(self, "ns", config.proprioception_dim)
 
@@ -286,13 +313,25 @@ class RLTCritic(nn.Module):
         )
 
     def forward(
-        self, rl_token: Tensor, proprioception: Tensor, action: Tensor
+        self,
+        rl_token: Tensor,
+        proprioception: Tensor,
+        action: Tensor,
+        reference_chunk: Tensor | None = None,
     ) -> Tensor:
+        """``reference_chunk`` is the normalized reference for the executed
+        steps (same space as ``action``); only used with ``critic_action_residual``."""
         if action.shape[-1] != self.predicted_action_dim:
             raise ValueError(
                 f"action has last dimension {action.shape[-1]}, "
                 f"expected {self.predicted_action_dim}"
             )
+        if self.action_residual:
+            if reference_chunk is None:
+                raise ValueError(
+                    "critic_action_residual needs the normalized reference chunk"
+                )
+            action = (action - reference_chunk) * self.action_gain
         state = _norm(
             proprioception,
             self.ns_mean,
@@ -317,12 +356,20 @@ class RLTCriticEnsemble(nn.Module):
         for critic in self.critics:
             critic.set_norm_stats(norm_stats, use_quantiles=use_quantiles)
 
+    @property
+    def action_residual(self) -> bool:
+        return self.critics[0].action_residual
+
     def forward(
-        self, rl_token: Tensor, proprioception: Tensor, action: Tensor
+        self,
+        rl_token: Tensor,
+        proprioception: Tensor,
+        action: Tensor,
+        reference_chunk: Tensor | None = None,
     ) -> Tensor:
         return torch.stack(
             [
-                critic(rl_token, proprioception, action)
+                critic(rl_token, proprioception, action, reference_chunk)
                 for critic in self.critics
             ]
         )

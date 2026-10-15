@@ -110,3 +110,30 @@ def test_main_returns_none_so_the_console_script_exits_cleanly(tmp_path: Path) -
     with pytest.raises(FileNotFoundError):
         main(["--data-dir", str(tmp_path), "--device", "cpu"])
     assert main.__annotations__["return"] == "None"
+
+
+def test_structural_flags_reach_the_network_config(tmp_path: Path) -> None:
+    args = _parser().parse_args(
+        [
+            "--data-dir", str(tmp_path),
+            "--residual-actor", "--residual-scale", "0.5",
+            "--critic-action-residual", "--critic-action-gain", "5",
+        ]
+    )
+
+    network = build_config(args).network
+
+    assert network.residual_actor is True
+    assert network.residual_scale == 0.5
+    assert network.critic_action_residual is True
+    assert network.critic_action_gain == 5.0
+    assert network.reference_action_len == 30
+
+
+def test_structural_flags_default_to_off(tmp_path: Path) -> None:
+    network = build_config(
+        _parser().parse_args(["--data-dir", str(tmp_path)])
+    ).network
+
+    assert network.residual_actor is False
+    assert network.critic_action_residual is False

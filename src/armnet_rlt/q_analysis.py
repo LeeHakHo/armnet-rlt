@@ -90,10 +90,18 @@ def _per_transition_q(
     reference = state["reference_action"]
     actor = policy.actor
 
+    reference_chunk = (
+        actor.normalize_action(
+            reference[:, : policy.predicted_action_dim], proprioception
+        ).clamp(-1.0, 1.0)
+        if policy.critic_ensemble.action_residual
+        else None
+    )
+
     def min_q(action: Tensor) -> Tensor:
-        return policy.critic_ensemble(token, proprioception, action).min(
-            dim=0
-        ).values
+        return policy.critic_ensemble(
+            token, proprioception, action, reference_chunk
+        ).min(dim=0).values
 
     data = actor.normalize_action(batch["action"], proprioception).clamp(
         -1.0, 1.0

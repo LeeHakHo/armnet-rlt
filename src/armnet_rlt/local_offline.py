@@ -18,7 +18,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from armnet_rlt.config import RLTConfig
+from armnet_rlt.config import RLTConfig, so101_network_config
 from armnet_rlt.local_cache import DEFAULT_OUT_DIR, MULTITASK_CONFIG, output_paths
 
 
@@ -56,6 +56,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-q", type=float)
     parser.add_argument("--critic-lr", type=float)
     parser.add_argument("--actor-lr", type=float)
+    # Structural variants (see RLTNetworkConfig).
+    parser.add_argument(
+        "--residual-actor",
+        action="store_true",
+        help="actor outputs reference + residual_scale * tanh(head), head starts at 0",
+    )
+    parser.add_argument("--residual-scale", type=float)
+    parser.add_argument(
+        "--critic-action-residual",
+        action="store_true",
+        help="critic sees gain * (action - reference chunk)",
+    )
+    parser.add_argument("--critic-action-gain", type=float)
     return parser
 
 
@@ -100,6 +113,16 @@ def build_config(args: argparse.Namespace) -> RLTConfig:
         value = getattr(args, name)
         if value is not None:
             values[name] = value
+    network_overrides: dict[str, Any] = {}
+    if args.residual_actor:
+        network_overrides["residual_actor"] = True
+    if args.critic_action_residual:
+        network_overrides["critic_action_residual"] = True
+    for name in ("residual_scale", "critic_action_gain"):
+        if getattr(args, name) is not None:
+            network_overrides[name] = getattr(args, name)
+    if network_overrides:
+        values["network"] = so101_network_config(**network_overrides)
     return RLTConfig.for_embodiment("so101", **values)
 
 

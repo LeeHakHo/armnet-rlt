@@ -110,11 +110,25 @@ def _config(
     online_steps: int = 300_000,
     utd_ratio: int | None = None,
     online_batch_fraction: float = 0.5,
+    residual_actor: bool = False,
+    residual_scale: float = 0.25,
+    critic_action_residual: bool = False,
+    critic_action_gain: float = 10.0,
 ):
+    import dataclasses
+
     from armnet_rlt.config import RLTConfig
 
     cache_path, assets_dir, production_output = task_paths(config_name)
     network, jerk = _network(embodiment, reference_action_len=30)
+    if residual_actor or critic_action_residual:
+        network = dataclasses.replace(
+            network,
+            residual_actor=residual_actor,
+            residual_scale=residual_scale,
+            critic_action_residual=critic_action_residual,
+            critic_action_gain=critic_action_gain,
+        )
     kwargs = {
         "embodiment": embodiment,
         "network": network,
@@ -149,6 +163,10 @@ def serve_learner(
     resume: bool = False,
     wandb_project: str = "",
     online_batch_fraction: float = 0.5,
+    residual_actor: bool = False,
+    residual_scale: float = 0.25,
+    critic_action_residual: bool = False,
+    critic_action_gain: float = 10.0,
 ) -> dict:
     """Train and serve an online learner through Modal's HTTP/2 TLS tunnel."""
     from armnet_rlt.learner import run_learner
@@ -158,6 +176,10 @@ def serve_learner(
         config_name=config_name,
         run_id=run_id,
         online_batch_fraction=online_batch_fraction,
+        residual_actor=residual_actor,
+        residual_scale=residual_scale,
+        critic_action_residual=critic_action_residual,
+        critic_action_gain=critic_action_gain,
     )
     cfg.actor_learner.server_bind_host = "0.0.0.0"
     cfg.actor_learner.learner_port = LEARNER_PORT
@@ -323,6 +345,10 @@ def main(
     resume: bool = False,
     wandb_project: str = "",
     online_batch_fraction: float = 0.5,
+    residual_actor: bool = False,
+    residual_scale: float = 0.25,
+    critic_action_residual: bool = False,
+    critic_action_gain: float = 10.0,
 ) -> None:
     """Start the online learner. Use `modal run --detach` for long runs."""
     run_id = run_id or dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
@@ -335,6 +361,10 @@ def main(
         resume=resume,
         wandb_project=wandb_project,
         online_batch_fraction=online_batch_fraction,
+        residual_actor=residual_actor,
+        residual_scale=residual_scale,
+        critic_action_residual=critic_action_residual,
+        critic_action_gain=critic_action_gain,
     )
 
 

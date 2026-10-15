@@ -33,7 +33,13 @@ class RLTPolicy(nn.Module):
         self.reference_action_dim = config.network.reference_action_dim
         self.chunk_discount = config.discount**self.predicted_action_len
         self._chunk_discount = self.chunk_discount
-        self.ref_dropout = config.network.ref_action_dropout
+        # The residual base is the reference itself, so it cannot be dropped.
+        self.ref_dropout = (
+            0.0
+            if config.network.residual_actor
+            else config.network.ref_action_dropout
+        )
+        self.critic_action_residual = config.network.critic_action_residual
         self.bc_beta = config.bc_beta
         self.jerk_lambda = config.jerk_lambda
         self.target_policy_noise = config.target_policy_noise
@@ -97,6 +103,20 @@ class RLTPolicy(nn.Module):
         )
         return reference_action * keep
 
+    def _critic_reference(
+        self, reference_action: Tensor | None, proprioception: Tensor
+    ) -> Tensor | None:
+        """Normalized reference chunk for the critic, or None when unused."""
+        if not self.critic_action_residual:
+            return None
+        if reference_action is None:
+            raise ValueError(
+                "critic_action_residual needs reference_action for the state"
+            )
+        return self.actor.normalize_action(
+            reference_action[:, : self.predicted_action_dim], proprioception
+        ).clamp(-1.0, 1.0)
+
     def compute_loss_critic(
         self,
         rl_token: Tensor,
@@ -107,10 +127,17 @@ class RLTPolicy(nn.Module):
         next_proprioception: Tensor,
         next_reference_action: Tensor,
         done: Tensor,
+        reference_action: Tensor | None = None,
     ) -> Tensor:
         self._validate_predicted(action, "action")
         self._validate_reference(
             next_reference_action, "next_reference_action"
+        )
+        state_reference = self._critic_reference(
+            reference_action, proprioception
+        )
+        next_state_reference = self._critic_reference(
+            next_reference_action, next_proprioception
         )
         normalized_action = self.actor.normalize_action(
             action, proprioception
@@ -128,7 +155,10 @@ class RLTPolicy(nn.Module):
             ).clamp(-self.target_noise_clip, self.target_noise_clip)
             next_action = (next_mean + noise).clamp(-1.0, 1.0)
             target_values = self.critic_target(
-                next_rl_token, next_proprioception, next_action
+                next_rl_token,
+                next_proprioception,
+                next_action,
+                next_state_reference,
             )
             minimum_target = target_values.min(dim=0).values
             target = (
@@ -140,7 +170,7 @@ class RLTPolicy(nn.Module):
                     -self.config.max_q, self.config.max_q
                 )
         predictions = self.critic_ensemble(
-            rl_token, proprioception, normalized_action
+            rl_token, proprioception, normalized_action, state_reference
         )
         return functional.mse_loss(
             predictions,
@@ -201,7 +231,12 @@ class RLTPolicy(nn.Module):
         action, _ = self.actor(
             rl_token, proprioception, actor_input, sample=True
         )
-        q_values = self.critic_ensemble(rl_token, proprioception, action)
+        q_values = self.critic_ensemble(
+            rl_token,
+            proprioception,
+            action,
+            self._critic_reference(reference_action, proprioception),
+        )
         minimum_q = q_values.min(dim=0).values
         reference = reference_action[:, : self.predicted_action_dim]
         normalized_reference = self.actor.normalize_action(
