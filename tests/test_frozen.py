@@ -124,3 +124,48 @@ def test_paired_summary_reports_matched_delta() -> None:
     assert summary["frozen_rlt_only"] == 1
     assert summary["both_success"] == 1
     assert summary["delta_percentage_points"] == 50.0
+
+
+def test_freeze_cli_reads_a_local_checkpoint_without_modal(tmp_path) -> None:
+    from armnet_rlt.freeze_checkpoint import main
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    torch.save(_learner_checkpoint(), checkpoint)
+    output = tmp_path / "out" / "frozen_actor.pt"
+
+    main(
+        [
+            "--config-name", "cfg",
+            "--run-id", "local-run",
+            "--checkpoint-path", str(checkpoint),
+            "--output", str(output),
+        ]
+    )
+
+    artifact = load_frozen_checkpoint(output)
+    assert artifact["learner_step"] == 123
+    assert artifact["source"]["local_path"] == str(checkpoint)
+    assert "modal_volume" not in artifact["source"]
+
+
+def test_residual_mode_survives_freezing(tmp_path) -> None:
+    checkpoint = _learner_checkpoint()
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=3,
+        predicted_action_len=3,
+        residual_actor=True,
+        residual_scale=0.5,
+    )
+    config = RLTConfig(
+        network=network, actions_to_execute=3, use_subsampling=False
+    )
+    checkpoint["config"] = asdict(config)
+    checkpoint["policy_state_dict"] = RLTPolicy(config).state_dict()
+
+    artifact = freeze_learner_checkpoint(checkpoint)
+    rebuilt = config_from_frozen_checkpoint(artifact)
+
+    assert rebuilt.network.residual_actor is True
+    assert rebuilt.network.residual_scale == 0.5
+    assert bool(artifact["actor_state_dict"]["residual_mode"])
