@@ -9,7 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from armnet_rlt.resources import report_job_outcome
+from armnet_rlt.resources import report_job_outcome, scheduled_cell
 from armnet_client.variation import variation_job_args
 
 from armnet_rlt.rerun_view import (
@@ -92,7 +92,8 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Abort at startup unless the scheduler assigns one of these cells "
-            "(comma separated). Base and frozen RLT share one job, so pinning the "
+            "(comma separated). A single cell is also sent to the scheduler, so "
+            "the job waits for that cell. Base and frozen RLT share one job, so pinning the "
             "job pins the pair."
         ),
     )
@@ -253,6 +254,7 @@ def main(argv: list[str] | None = None) -> None:
         stream_logs=not args.detach,
         use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
+        cell=scheduled_cell(str(getattr(args, "require_cell", "") or "")),
     )
     report_job_outcome(result, prefix="rlt eval")
 

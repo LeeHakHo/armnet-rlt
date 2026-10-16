@@ -27,7 +27,7 @@ dev = [
     "pytest>=8",
 ]
 submit = [
-    "armnet-client[local,viz]==0.3.4",
+    "armnet-client[local,viz]==0.3.5",
     "modal>=1.5.4",
     "python-dotenv>=1.2.3",
 ]

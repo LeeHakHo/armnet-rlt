@@ -21,6 +21,7 @@ from armnet_rlt.resources import (
     local_rendezvous_path,
     read_local_rendezvous,
     report_job_outcome,
+    scheduled_cell,
 )
 
 
@@ -59,7 +60,8 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Abort at startup unless the scheduler assigns one of these cells "
-            "(comma separated, e.g. cell-01)"
+            "(comma separated, e.g. cell-01). A single cell is also sent to the "
+            "scheduler, so the job waits for that cell"
         ),
     )
     parser.add_argument(
@@ -424,6 +426,7 @@ def main(argv: list[str] | None = None) -> None:
         stream_logs=not args.detach,
         use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
+        cell=scheduled_cell(str(getattr(args, "require_cell", "") or "")),
     )
     report_job_outcome(result, prefix="rlt")
 

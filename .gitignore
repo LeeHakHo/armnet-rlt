@@ -12,3 +12,5 @@ learner_snapshots/
 .DS_Store
 meeting
 tools/
+frozen_checkpoints/
+wandb/
