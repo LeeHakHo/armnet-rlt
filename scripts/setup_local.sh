@@ -2,6 +2,7 @@
 # Build the `rlt-local` environments under tools/.
 #   scripts/setup_local.sh learner   torch + LeRobot transport (bc, streaming-bc)
 #   scripts/setup_local.sh openpi    OpenPI/JAX (cache, bc-cache)
+#   scripts/setup_local.sh act       LeRobot ACT/SmolVLA training and armnet-lerobot-eval
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -86,8 +87,27 @@ setup_openpi() {
     "$venv/bin/python" -c "from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); from openpi.training.config import get_config; get_config('pi05_rlt_busybox_multitask_singlearm_minmax'); from lerobot.datasets.lerobot_dataset import LeRobotDataset; print('RLT cache env OK')"
 }
 
+setup_act() {
+    local venv="$TOOLS/venv-act" overrides="$TOOLS/act-overrides.txt"
+    uv venv --python 3.12 --allow-existing "$venv"
+    printf '%s\n' \
+        'pynput>=0.0.0; sys_platform == "never"' \
+        'evdev>=0.0.0; sys_platform == "never"' \
+        'torchcodec>=0.0.0; sys_platform == "never"' \
+        'torch==2.8.0' \
+        'torchvision==0.23.0' \
+        > "$overrides"
+    uv pip install --python "$venv" --override "$overrides" \
+        --extra-index-url "$TORCH_INDEX" \
+        --index-strategy unsafe-best-match \
+        'lerobot[smolvla]==0.5.1' armnet-client==0.3.5 'wandb>=0.24,<0.25' python-dotenv \
+        torch==2.8.0 torchvision==0.23.0
+    "$venv/bin/python" -c "import torch; from lerobot.policies.act.modeling_act import ACTPolicy; from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy; import armnet_client.lerobot_eval; print('ACT env OK', torch.__version__)"
+}
+
 case "${1:-}" in
     learner) setup_learner ;;
     openpi) setup_openpi ;;
-    *) echo "usage: $0 learner|openpi" >&2; exit 2 ;;
+    act) setup_act ;;
+    *) echo "usage: $0 learner|openpi|act" >&2; exit 2 ;;
 esac

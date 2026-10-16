@@ -1250,6 +1250,8 @@ def run_learner(
     offline_only: bool = False,
     resume: bool = False,
     wandb_project: str | None = None,
+    idle_timeout_s: float = 0.0,
+    idle_min_episodes: int = 5,
 ) -> dict[str, object]:
     if not config.assets_dir:
         raise ValueError("assets_dir is required")
@@ -1459,6 +1461,8 @@ def run_learner(
             maxlen=config.online_buffer_capacity,
         )
         pending_updates = 0
+        session_episodes = 0
+        last_arrival = time.monotonic()
         try:
             while (
                 not shutdown_event.is_set()
@@ -1477,7 +1481,7 @@ def run_learner(
                 pending_updates = _schedule_online_updates(
                     pending_updates, added
                 )
-                episode_count += _drain_interactions(
+                finished = _drain_interactions(
                     interaction_queue,
                     rolling,
                     rollout_log=rollout_log,
@@ -1485,7 +1489,22 @@ def run_learner(
                     learner_step=completed_steps,
                     wandb_run=wandb_run,
                 )
+                episode_count += finished
+                session_episodes += finished
                 now = time.monotonic()
+                if added or finished:
+                    last_arrival = now
+                elif (
+                    idle_timeout_s > 0
+                    and session_episodes >= idle_min_episodes
+                    and now - last_arrival >= idle_timeout_s
+                ):
+                    print(
+                        f"[RLT] no actor traffic for {idle_timeout_s:.0f}s "
+                        f"after {session_episodes} episodes; stopping",
+                        flush=True,
+                    )
+                    break
                 if (
                     now - last_push
                     >= config.actor_learner.policy_parameters_push_frequency

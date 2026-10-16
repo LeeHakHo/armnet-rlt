@@ -244,7 +244,11 @@ def build_task_cache(
     from huggingface_hub import snapshot_download
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    checkpoint = snapshot_download(checkpoint_repo)
+    checkpoint = (
+        checkpoint_repo
+        if Path(checkpoint_repo).is_dir()
+        else snapshot_download(checkpoint_repo)
+    )
     print(f"[RLT cache] checkpoint={checkpoint}", flush=True)
     policy = OpenPIRLTPolicy.from_checkpoint(
         checkpoint,

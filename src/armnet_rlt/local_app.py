@@ -205,6 +205,10 @@ def cmd_cache(args: argparse.Namespace) -> None:
         ),
     }
     config_name, checkpoint, dataset, prompt = presets[args.preset]
+    config_name = args.config_name or config_name
+    checkpoint = args.checkpoint or checkpoint
+    dataset = args.dataset or dataset
+    prompt = args.prompt or prompt
     build_task_cache(
         config_name=config_name,
         checkpoint_repo=checkpoint,
@@ -241,26 +245,19 @@ def cmd_bc(args: argparse.Namespace) -> None:
     run_bc_training(cfg, steps=args.steps, wandb_project=args.wandb_project or None)
 
 
-def cmd_streaming_bc(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
+def _learner_token() -> str:
     token = os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
     if not token:
         raise SystemExit(
             "RLT_LEARNER_AUTH_TOKEN is missing. Export it or put it in .env; it "
             "must equal the Armnet secret the actor is submitted with."
         )
-    from armnet_rlt.learner import run_streaming_bc
-    from armnet_rlt.learner_config import resolve_init_checkpoint
+    return token
 
-    ensure_norm_stats(args.config_name, args.checkpoint_repo)
-    cfg = _config(
-        args,
-        bc_deviation_max=args.bc_deviation_max,
-        bc_deviation_weight=args.bc_deviation_weight,
-        actor_lr=args.actor_lr,
-    )
-    if args.online_steps:
-        cfg.online_steps = args.online_steps
+
+@contextlib.contextmanager
+def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
+    """Configure the gRPC transport and publish the rendezvous entry."""
     transport = cfg.actor_learner
     transport.learner_port = args.port
     transport.policy_parameters_push_frequency = args.push_interval_s
@@ -280,7 +277,6 @@ def cmd_streaming_bc(args: argparse.Namespace) -> None:
         transport.tls_server_key_path = str(tls_key)
         entry["tls_server_name"] = TLS_SERVER_NAME
         entry["tls_root_cert_pem"] = certificate.read_text()
-    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
 
     key = rendezvous_key(args.config_name, args.run_id)
     entry_path = local_rendezvous_path(key)
@@ -296,23 +292,66 @@ def cmd_streaming_bc(args: argparse.Namespace) -> None:
             flush=True,
         )
         try:
-            run_streaming_bc(
-                cfg,
-                wandb_project=args.wandb_project or None,
-                min_success_transitions=args.min_success_transitions,
-                steps_per_transition=args.steps_per_transition,
-                init_checkpoint=init_checkpoint,
-                min_shaped_reward=args.min_shaped_reward,
-                base_batch_fraction=args.base_batch_fraction,
-                episodes_per_round=args.episodes_per_round,
-                steps_per_round=args.steps_per_round,
-                idle_timeout_s=args.idle_timeout_s,
-                idle_min_episodes=args.idle_min_episodes,
-                # Skip pushes of unchanged weights.
-                push_unchanged_weights=False,
-            )
+            yield
         finally:
             entry_path.unlink(missing_ok=True)
+
+
+def cmd_streaming_bc(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    token = _learner_token()
+    from armnet_rlt.learner import run_streaming_bc
+    from armnet_rlt.learner_config import resolve_init_checkpoint
+
+    ensure_norm_stats(args.config_name, args.checkpoint_repo)
+    cfg = _config(
+        args,
+        bc_deviation_max=args.bc_deviation_max,
+        bc_deviation_weight=args.bc_deviation_weight,
+        actor_lr=args.actor_lr,
+    )
+    if args.online_steps:
+        cfg.online_steps = args.online_steps
+    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
+    with _serve(args, cfg, token):
+        run_streaming_bc(
+            cfg,
+            wandb_project=args.wandb_project or None,
+            min_success_transitions=args.min_success_transitions,
+            steps_per_transition=args.steps_per_transition,
+            init_checkpoint=init_checkpoint,
+            min_shaped_reward=args.min_shaped_reward,
+            base_batch_fraction=args.base_batch_fraction,
+            episodes_per_round=args.episodes_per_round,
+            steps_per_round=args.steps_per_round,
+            idle_timeout_s=args.idle_timeout_s,
+            idle_min_episodes=args.idle_min_episodes,
+            # Skip pushes of unchanged weights.
+            push_unchanged_weights=False,
+        )
+
+
+def cmd_online(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    token = _learner_token()
+    from armnet_rlt.learner import run_learner
+
+    ensure_norm_stats(args.config_name, args.checkpoint_repo)
+    cfg = _config(
+        args,
+        max_demo_pretrain_steps=args.pretrain_steps,
+        online_steps=args.online_steps,
+        online_batch_fraction=args.online_batch_fraction,
+    )
+    with _serve(args, cfg, token):
+        run_learner(
+            cfg,
+            offline_only=False,
+            resume=args.resume,
+            wandb_project=args.wandb_project or None,
+            idle_timeout_s=args.idle_timeout_s,
+            idle_min_episodes=args.idle_min_episodes,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -338,6 +377,25 @@ def _parser() -> argparse.ArgumentParser:
             help="HuggingFace checkpoint to take normalization stats from",
         )
 
+    def add_transport(command: argparse.ArgumentParser, push_help: str) -> None:
+        command.add_argument(
+            "--push-interval-s", type=float, default=5.0, help=push_help
+        )
+        command.add_argument("--bind-host", default="0.0.0.0")
+        command.add_argument("--port", type=int, default=LEARNER_PORT)
+        command.add_argument(
+            "--tunnel",
+            choices=("ngrok", "ngrok-tcp", "none"),
+            default="ngrok",
+            help="How the Armnet cell reaches this machine: an ngrok HTTPS "
+            "endpoint, a raw ngrok TCP tunnel (paid accounts), or --public-endpoint",
+        )
+        command.add_argument(
+            "--public-endpoint",
+            default="",
+            help="<host>:<port> the cell connects to; skips starting a tunnel",
+        )
+
     assets = add("assets", cmd_assets, "download the normalization stats")
     assets.add_argument("--config-name", default=MULTITASK_CONFIG)
     assets.add_argument("--checkpoint-repo", default="")
@@ -347,6 +405,14 @@ def _parser() -> argparse.ArgumentParser:
         "--preset", choices=("multitask", "green-button"), default="multitask"
     )
     cache.add_argument("--inference-batch-size", type=int, default=4)
+    cache.add_argument("--config-name", default="", help="Overrides the preset")
+    cache.add_argument(
+        "--checkpoint",
+        default="",
+        help="HuggingFace repo or local OpenPI checkpoint; overrides the preset",
+    )
+    cache.add_argument("--dataset", default="", help="Overrides the preset")
+    cache.add_argument("--prompt", default="", help="Overrides the preset")
 
     bc_cache = add(
         "bc-cache", cmd_bc_cache, "build a cache from recorded rollouts (needs OpenPI)"
@@ -385,27 +451,25 @@ def _parser() -> argparse.ArgumentParser:
     streaming.add_argument("--actor-lr", type=float, default=0.0)
     streaming.add_argument("--idle-timeout-s", type=float, default=600.0)
     streaming.add_argument("--idle-min-episodes", type=int, default=5)
-    streaming.add_argument(
-        "--push-interval-s",
-        type=float,
-        default=5.0,
-        help="Seconds between weight pushes while a round is training; a "
-        "finished round always pushes",
+    add_transport(
+        streaming,
+        "Seconds between weight pushes while a round is training; a finished "
+        "round always pushes",
     )
-    streaming.add_argument("--bind-host", default="0.0.0.0")
-    streaming.add_argument("--port", type=int, default=LEARNER_PORT)
-    streaming.add_argument(
-        "--tunnel",
-        choices=("ngrok", "ngrok-tcp", "none"),
-        default="ngrok",
-        help="How the Armnet cell reaches this machine: an ngrok HTTPS "
-        "endpoint, a raw ngrok TCP tunnel (paid accounts), or --public-endpoint",
+
+    online = add(
+        "online",
+        cmd_online,
+        "serve the TD3 learner: demo pretraining, then online updates",
     )
-    streaming.add_argument(
-        "--public-endpoint",
-        default="",
-        help="<host>:<port> the cell connects to; skips starting a tunnel",
-    )
+    add_run(online)
+    online.add_argument("--pretrain-steps", type=int, default=5_000)
+    online.add_argument("--online-steps", type=int, default=300_000)
+    online.add_argument("--online-batch-fraction", type=float, default=0.5)
+    online.add_argument("--resume", action="store_true")
+    online.add_argument("--idle-timeout-s", type=float, default=600.0)
+    online.add_argument("--idle-min-episodes", type=int, default=5)
+    add_transport(online, "Seconds between weight pushes")
     return parser
 
 
