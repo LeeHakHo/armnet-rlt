@@ -326,6 +326,17 @@ def run(ctx: Context) -> dict[str, Any]:
             args.get("reward_target_button")
             or ("green_button" if ctx.task == "push_green_button" else "")
         ),
+        remote_policy_host=str(args.get("remote_policy_host", "") or ""),
+        remote_policy_port=int(args.get("remote_policy_port", 443)),
+        remote_policy_use_tls=_as_bool(args.get("remote_policy_use_tls"), True),
+        remote_policy_timeout_s=float(args.get("remote_policy_timeout_s", 5.0)),
+        remote_policy_image_codec=str(
+            args.get("remote_policy_image_codec", "png")
+        ),
+        remote_policy_auth_token=str(
+            (getattr(ctx, "secrets", None) or {}).get("RLT_LEARNER_AUTH_TOKEN")
+            or os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
+        ),
         so101=so101,
     )
 

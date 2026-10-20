@@ -214,6 +214,25 @@ srun --gres=gpu:1 --cpus-per-task=8 --mem=32G \
   tools/venv-learner/bin/rlt-local streaming-bc --run-id "$RLT_RUN_ID"
 ```
 
+Remote inference on a local GPU:
+
+```bash
+srun --gres=gpu:1 --cpus-per-task=8 --mem=48G \
+  tools/venv-openpi/bin/rlt-local policy-server \
+  --config-name "$RLT_CONFIG" \
+  --checkpoint experiment-data/openpi/<checkpoint-name>
+```
+
+The server loads the OpenPI checkpoint, opens an ngrok tunnel and registers
+`experiment-data/rendezvous/policy__<config>.json`. Add `--remote-policy` to
+`rlt-submit-actor` or `rlt-submit-eval` and the cell sends observations to this
+server instead of loading π0.5 on its own GPU. The cell resizes images to
+224×224 and sends them as PNG, so the result matches local inference.
+`--remote-policy-image-codec jpeg` sends about 5 times less data but changes the
+RL token. The server checks the same token as the learner
+(`RLT_LEARNER_AUTH_TOKEN`), so pass the matching `--auth-secret`. The local
+checkpoint must be the same one the cell would load.
+
 ## How actor-to-learner discovery works
 
 There is no hard-coded IP address or DNS name in this repository:

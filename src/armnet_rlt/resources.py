@@ -65,6 +65,51 @@ def read_local_rendezvous(key: str) -> dict[str, Any] | None:
     return json.loads(path.read_text())
 
 
+def policy_rendezvous_key(config_name: str) -> str:
+    """Key a local policy server registers its endpoint under."""
+    clean_config = config_name.strip().replace("/", "-")
+    if not clean_config:
+        raise ValueError("config_name is required for rendezvous")
+    return f"policy:{clean_config}"
+
+
+def add_remote_policy_arguments(parser: Any) -> None:
+    parser.add_argument(
+        "--remote-policy",
+        action="store_true",
+        help="Run OpenPI inference on the local `rlt-local policy-server` "
+        "instead of the cell GPU",
+    )
+    parser.add_argument("--remote-policy-timeout-s", type=float, default=5.0)
+    parser.add_argument(
+        "--remote-policy-image-codec", choices=("png", "jpeg", "raw"), default="png"
+    )
+
+
+def remote_policy_job_args(
+    config_name: str, *, timeout_s: float, image_codec: str
+) -> dict[str, Any]:
+    """Job args pointing the cell at the local policy server for ``config_name``."""
+    key = policy_rendezvous_key(config_name)
+    entry = read_local_rendezvous(key)
+    if entry is None:
+        raise RuntimeError(
+            f"No policy server registered at {local_rendezvous_path(key)}. "
+            "Start `rlt-local policy-server` first."
+        )
+    if entry.get("config_name") != config_name:
+        raise ValueError(
+            f"policy server serves {entry.get('config_name')!r}, "
+            f"not {config_name!r}"
+        )
+    return {
+        "remote_policy_host": entry["host"],
+        "remote_policy_port": int(entry["port"]),
+        "remote_policy_use_tls": bool(entry["use_tls"]),
+        "remote_policy_timeout_s": float(timeout_s),
+        "remote_policy_image_codec": image_codec,
+    }
+
 
 def scheduled_cell(require_cell: str) -> str | None:
     """The cell to dispatch to when ``require_cell`` names exactly one."""

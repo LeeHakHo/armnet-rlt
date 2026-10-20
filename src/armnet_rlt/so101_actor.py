@@ -380,38 +380,110 @@ def _auth_interceptor(metadata: list[tuple[str, str]]) -> Any:
     return Interceptor()
 
 
-def _connect_learner(cfg: Any) -> tuple[Any, Any]:
+def _grpc_channel(
+    host: str,
+    port: int,
+    *,
+    use_tls: bool,
+    token: str = "",
+    server_name: str = "",
+    root_cert_path: str = "",
+) -> Any:
     import grpc
-    from lerobot.transport import services_pb2, services_pb2_grpc
     from lerobot.transport.utils import grpc_channel_options
 
-    host = str(_field(cfg, "learner_host", ""))
-    port = int(_field(cfg, "learner_port", 443))
-    if not host:
-        raise ValueError("learner_host is required")
     options = list(grpc_channel_options())
-    server_name = str(_field(cfg, "tls_server_name", "") or "")
     if server_name:
         options.append(("grpc.ssl_target_name_override", server_name))
     target = f"{host}:{port}"
-    if bool(_field(cfg, "use_tls", True)):
-        root = None
-        root_path = str(_field(cfg, "tls_root_cert_path", "") or "")
-        if root_path:
-            root = Path(root_path).read_bytes()
+    if use_tls:
+        root = Path(root_cert_path).read_bytes() if root_cert_path else None
         channel = grpc.secure_channel(
             target, grpc.ssl_channel_credentials(root_certificates=root), options
         )
     else:
         channel = grpc.insecure_channel(target, options)
-    token = str(_field(cfg, "auth_token", "") or "")
     if token:
         channel = grpc.intercept_channel(
             channel, _auth_interceptor([("authorization", f"Bearer {token}")])
         )
+    return channel
+
+
+def _connect_learner(cfg: Any) -> tuple[Any, Any]:
+    from lerobot.transport import services_pb2, services_pb2_grpc
+
+    host = str(_field(cfg, "learner_host", ""))
+    port = int(_field(cfg, "learner_port", 443))
+    if not host:
+        raise ValueError("learner_host is required")
+    channel = _grpc_channel(
+        host,
+        port,
+        use_tls=bool(_field(cfg, "use_tls", True)),
+        token=str(_field(cfg, "auth_token", "") or ""),
+        server_name=str(_field(cfg, "tls_server_name", "") or ""),
+        root_cert_path=str(_field(cfg, "tls_root_cert_path", "") or ""),
+    )
     stub = services_pb2_grpc.LearnerServiceStub(channel)
     stub.Ready(services_pb2.Empty(), timeout=30)
+    _log_learner_rtt(stub, services_pb2.Empty())
     return channel, stub
+
+
+def _make_policy(cfg: Any) -> Any:
+    """Load the OpenPI policy locally, or connect to a remote policy server."""
+    host = str(_field(cfg, "remote_policy_host", "") or "")
+    if not host:
+        return OpenPIRLTPolicy.from_checkpoint(
+            str(cfg.checkpoint_dir),
+            str(cfg.config_name),
+            default_prompt=str(_field(cfg, "language_instruction", "") or ""),
+            rl_token_dim=2048,
+        )
+    from armnet_rlt.remote_policy import RemoteOpenPIRLTPolicy
+
+    port = int(_field(cfg, "remote_policy_port", 443))
+    channel = _grpc_channel(
+        host,
+        port,
+        use_tls=bool(_field(cfg, "remote_policy_use_tls", True)),
+        token=str(_field(cfg, "remote_policy_auth_token", "") or ""),
+    )
+    policy = RemoteOpenPIRLTPolicy(
+        channel,
+        timeout_s=float(_field(cfg, "remote_policy_timeout_s", 5.0)),
+        image_codec=str(_field(cfg, "remote_policy_image_codec", "png")),
+    )
+    print(f"[rlt] remote policy {host}:{port}", flush=True)
+    return policy
+
+
+def _log_learner_rtt(stub: Any, request: Any, samples: int = 20) -> None:
+    """Print the round-trip time of empty Ready calls to the learner."""
+    rtts = []
+    for _ in range(samples):
+        start = time.perf_counter()
+        try:
+            stub.Ready(request, timeout=10)
+        except Exception:
+            log.warning("learner RTT probe failed", exc_info=True)
+            return
+        rtts.append((time.perf_counter() - start) * 1000.0)
+    rtts.sort()
+    print(
+        "[rlt rtt] "
+        + json.dumps(
+            {
+                "samples": samples,
+                "min_ms": round(rtts[0], 1),
+                "p50_ms": round(rtts[len(rtts) // 2], 1),
+                "p95_ms": round(rtts[int(len(rtts) * 0.95) - 1], 1),
+                "max_ms": round(rtts[-1], 1),
+            }
+        ),
+        flush=True,
+    )
 
 
 def _load_parameters(actor: Any, payload: Any) -> int | None:
@@ -741,12 +813,8 @@ def run_actor(
             robot.connect()
 
     try:
-        policy = policy or OpenPIRLTPolicy.from_checkpoint(
-            str(cfg.checkpoint_dir),
-            str(cfg.config_name),
-            default_prompt=str(_field(cfg, "language_instruction", "") or ""),
-            rl_token_dim=2048,
-        )
+        if policy is None:
+            policy = _make_policy(cfg)
 
         from armnet_rlt.networks import RLTActor
 

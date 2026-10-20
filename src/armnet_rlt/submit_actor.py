@@ -18,11 +18,13 @@ from armnet_rlt.rerun_view import (
 )
 from armnet_rlt.resources import (
     RENDEZVOUS_DICT,
+    add_remote_policy_arguments,
     camera_aim_args,
     device_override_args,
     local_rendezvous_path,
     preflight_device_overrides,
     read_local_rendezvous,
+    remote_policy_job_args,
     report_job_outcome,
     scheduled_cell,
 )
@@ -237,6 +239,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--auth-secret", default="armnet-rlt-auth")
+    add_remote_policy_arguments(parser)
     parser.add_argument(
         "--hf-secret",
         default=os.environ.get("RLT_HF_SECRET", "huggingface-token"),
@@ -415,6 +418,14 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         job_args["tls_root_cert_pem"] = cert
     if server_name := entry.get("tls_server_name"):
         job_args["tls_server_name"] = server_name
+    if bool(getattr(args, "remote_policy", False)):
+        job_args.update(
+            remote_policy_job_args(
+                args.config_name,
+                timeout_s=args.remote_policy_timeout_s,
+                image_codec=args.remote_policy_image_codec,
+            )
+        )
     return job_args
 
 

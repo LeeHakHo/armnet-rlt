@@ -10,9 +10,11 @@ from typing import Any
 from dotenv import load_dotenv
 
 from armnet_rlt.resources import (
+    add_remote_policy_arguments,
     camera_aim_args,
     device_override_args,
     preflight_device_overrides,
+    remote_policy_job_args,
     report_job_outcome,
     scheduled_cell,
 )
@@ -193,6 +195,13 @@ def _parser() -> argparse.ArgumentParser:
         "(actor default 30)",
     )
     parser.add_argument("--timeout-seconds", type=int, default=10800)
+    add_remote_policy_arguments(parser)
+    parser.add_argument(
+        "--auth-secret",
+        default="armnet-rlt-auth",
+        help="Armnet secret holding the policy server token; used with "
+        "--remote-policy",
+    )
     parser.add_argument("--image-name", default="armnet-rlt-frozen-eval")
     parser.add_argument(
         "--image-ref",
@@ -279,6 +288,14 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell
+    if bool(getattr(args, "remote_policy", False)):
+        job_args.update(
+            remote_policy_job_args(
+                args.config_name,
+                timeout_s=args.remote_policy_timeout_s,
+                image_codec=args.remote_policy_image_codec,
+            )
+        )
     return job_args
 
 
@@ -291,6 +308,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     job_args = build_job_args(args)
     secrets = {"HF_TOKEN": args.hf_secret} if args.hf_secret else {}
+    if args.remote_policy:
+        secrets["RLT_LEARNER_AUTH_TOKEN"] = args.auth_secret
     print(f"[rlt eval] task={args.task} args={job_args}")
     print(f"[rlt eval] secrets={secrets}")
     if args.image_ref:
