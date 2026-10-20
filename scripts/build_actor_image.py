@@ -1,7 +1,7 @@
 """Build and push the RLT actor image and print its registry ref.
 
-The build context is staged from Dockerfile.actor, pyproject.toml, README.md
-and src/, so the ref depends only on those files.
+The build context is staged from Dockerfile.actor, pyproject.toml, README.md,
+src/ and third_party/lerobot/, so the ref depends only on those files.
 """
 
 from __future__ import annotations
@@ -22,11 +22,12 @@ CONTEXT_FILES = ("Dockerfile.actor", "pyproject.toml", "README.md")
 def stage_context(context_dir: Path) -> Path:
     for name in CONTEXT_FILES:
         shutil.copy2(ROOT / name, context_dir / name)
-    shutil.copytree(
-        ROOT / "src",
-        context_dir / "src",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    for name in ("src", "third_party/lerobot"):
+        shutil.copytree(
+            ROOT / name,
+            context_dir / name,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.egg-info"),
+        )
     return context_dir / "Dockerfile.actor"
 
 

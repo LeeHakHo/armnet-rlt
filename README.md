@@ -146,7 +146,13 @@ Setup:
 ```bash
 scripts/setup_local.sh learner
 scripts/setup_local.sh openpi
+scripts/setup_local.sh act
 ```
+
+LeRobot is installed from `third_party/lerobot`, a copy of upstream commit
+`4eecbad` (0.5.2). The local environments install it in editable mode, so edits
+under `third_party/lerobot/src/lerobot` apply without reinstalling. The actor
+image copies the same directory, so rebuild the image after editing it.
 
 Offline BC:
 

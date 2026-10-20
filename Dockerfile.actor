@@ -2,7 +2,6 @@
 FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
 
 ARG OPENPI_REVISION=90490b9c42a1accafde514f7ee610fbd7bc53376
-ARG LEROBOT_REVISION=4eecbad32b0380c64bd5574bbf74e56e5255bdea
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -62,12 +61,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         'treescope>=0.1.7' rich chex 'av>=18,<19' pydantic \
         feetech-servo-sdk pyserial termcolor draccus==0.10.0 deepdiff
 
-# LeRobot's RL transport is not in the 0.5.1 release used by normal Armnet
-# evals, so actor and learner intentionally share this exact commit.
+# LeRobot from third_party/lerobot.
+COPY third_party/lerobot /app/lerobot
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-deps \
         --override /tmp/overrides.txt \
-        "lerobot @ git+https://github.com/huggingface/lerobot.git@${LEROBOT_REVISION}"
+        /app/lerobot
 
 # Armnet is consumed exactly like an external customer project: published
 # wheels, never workspace source.

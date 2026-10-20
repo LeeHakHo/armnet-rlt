@@ -14,3 +14,4 @@ meeting
 tools/
 frozen_checkpoints/
 wandb/
+*.egg-info/

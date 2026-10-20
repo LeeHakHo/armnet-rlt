@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="$ROOT/tools"
-LEROBOT_REVISION=4eecbad32b0380c64bd5574bbf74e56e5255bdea
+LEROBOT="$ROOT/third_party/lerobot"
 OPENPI_REVISION=90490b9c42a1accafde514f7ee610fbd7bc53376
 TORCH_INDEX=https://download.pytorch.org/whl/cu129
 export UV_HTTP_TIMEOUT=600
@@ -33,7 +33,7 @@ setup_learner() {
         'numpy>=2.0,<2.3' tqdm 'wandb>=0.24,<0.25' \
         'huggingface-hub>=1,<2' python-dotenv
     uv pip install --python "$venv" --no-deps --override "$overrides" \
-        "lerobot @ git+https://github.com/huggingface/lerobot.git@${LEROBOT_REVISION}"
+        -e "$LEROBOT"
     uv pip install --python "$venv" --no-deps -e "$ROOT"
     # Install the CUDA torch wheels.
     uv pip install --python "$venv" --upgrade --override "$overrides" \
@@ -69,7 +69,7 @@ setup_openpi() {
         'numpydantic>=1.6.6' orbax-checkpoint==0.11.13 sentencepiece \
         'tqdm-loggable>=0.2' 'tyro>=0.9.5' wandb beartype==0.19.0 \
         'treescope>=0.1.7' rich chex python-dotenv \
-        lerobot==0.5.1
+        -e "$LEROBOT"
     if [ ! -d "$openpi/.git" ]; then
         git clone --recurse-submodules https://github.com/pravsels/openpi "$openpi"
     fi
@@ -100,7 +100,7 @@ setup_act() {
     uv pip install --python "$venv" --override "$overrides" \
         --extra-index-url "$TORCH_INDEX" \
         --index-strategy unsafe-best-match \
-        'lerobot[smolvla]==0.5.1' armnet-client==0.3.5 'wandb>=0.24,<0.25' python-dotenv \
+        -e "$LEROBOT[smolvla]" armnet-client==0.3.5 'wandb>=0.24,<0.25' python-dotenv \
         torch==2.8.0 torchvision==0.23.0
     "$venv/bin/python" -c "import torch; from lerobot.policies.act.modeling_act import ACTPolicy; from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy; import armnet_client.lerobot_eval; print('ACT env OK', torch.__version__)"
 }
