@@ -25,6 +25,7 @@ Edit `.env`:
 ```dotenv
 ARMNET_API_KEY=<your-armnet-api-key>
 HF_TOKEN=<your-huggingface-token>
+RLT_HF_SECRET=huggingface-token-<you>
 ```
 
 Install the locked environment and authenticate the Modal CLI:
@@ -54,7 +55,7 @@ uv run modal secret create armnet-rlt-auth \
 uv run armnet secret create armnet-rlt-auth "$LEARNER_TOKEN"
 
 uv run modal secret create huggingface-secret HF_TOKEN="$HF_TOKEN"
-uv run armnet secret create huggingface-token "$HF_TOKEN"
+uv run armnet secret create "$RLT_HF_SECRET" "$HF_TOKEN"
 
 unset LEARNER_TOKEN
 ```

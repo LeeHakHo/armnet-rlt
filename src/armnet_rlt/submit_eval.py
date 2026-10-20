@@ -9,7 +9,13 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from armnet_rlt.resources import report_job_outcome, scheduled_cell
+from armnet_rlt.resources import (
+    camera_aim_args,
+    device_override_args,
+    preflight_device_overrides,
+    report_job_outcome,
+    scheduled_cell,
+)
 from armnet_client.variation import variation_job_args
 
 from armnet_rlt.rerun_view import (
@@ -103,6 +109,51 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     parser.add_argument(
+        "--armnet.variation-rail",
+        dest="variation_rail",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override rail variation independently",
+    )
+    parser.add_argument(
+        "--armnet.variation-cameras",
+        dest="variation_cameras",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override camera variation independently",
+    )
+    parser.add_argument(
+        "--armnet.variation-lighting",
+        dest="variation_lighting",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override lighting variation independently",
+    )
+    parser.add_argument(
+        "--armnet.rail",
+        dest="rail",
+        type=float,
+        default=None,
+        help="Rail position for the job as 0-1 of the usable rail; omit to leave the rail as the cell has it",
+    )
+    parser.add_argument(
+        "--armnet.lightbox-brightness",
+        dest="lightbox_brightness",
+        type=int,
+        default=None,
+        help="Lightbox brightness for the job, percent 0-100; omit to leave the lightbox as the cell has it",
+    )
+    parser.add_argument(
+        "--armnet.camera-aim",
+        dest="camera_aim",
+        default=None,
+        help=(
+            "Aim pan/tilt cameras for the job as 0-1 of each axis's travel, "
+            "e.g. top.tilt=0.6; turns camera variation off. Defaults to the "
+            "aim in CELL_CAMERA_AIM for the required cell; '' for none"
+        ),
+    )
+    parser.add_argument(
         "--armnet.variation-seed",
         dest="variation_seed",
         type=int,
@@ -128,7 +179,11 @@ def _parser() -> argparse.ArgumentParser:
         default="full",
     )
     parser.add_argument("--robot-telemetry-strict", action="store_true")
-    parser.add_argument("--hf-secret", default="huggingface-token")
+    parser.add_argument(
+        "--hf-secret",
+        default=os.environ.get("RLT_HF_SECRET", "huggingface-token"),
+        help="Armnet secret holding the HF token; defaults to $RLT_HF_SECRET",
+    )
     add_rerun_argument(parser)
     parser.add_argument(
         "--episode-timeout-s",
@@ -191,6 +246,22 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         variation_job_args(
             bool(args.variation),
             int(args.variation_seed),
+            rail=getattr(args, "variation_rail", None),
+            cameras=getattr(args, "variation_cameras", None),
+            lighting=getattr(args, "variation_lighting", None),
+        )
+    )
+    job_args.update(
+        camera_aim_args(
+            getattr(args, "camera_aim", None),
+            str(getattr(args, "require_cell", "") or ""),
+            job_args,
+        )
+    )
+    job_args.update(
+        device_override_args(
+            getattr(args, "rail", None),
+            getattr(args, "lightbox_brightness", None),
         )
     )
     if args.variation_episode_offset:
@@ -235,6 +306,8 @@ def main(argv: list[str] | None = None) -> None:
         start_live_view()
 
     from armnet_client import Image, execute
+
+    preflight_device_overrides(args, embodiment=SO101_EMBODIMENT)
 
     if args.image_ref:
         image = Image.from_ref(args.image_ref)
