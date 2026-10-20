@@ -183,6 +183,154 @@ def _check_required_cell(actual: str, required: str) -> str:
     return actual
 
 
+def _configure_learner(ctx: Context, learner: Any) -> None:
+    """Fill the actor's learner connection from job args and secrets."""
+    args = ctx.args
+    learner.learner_host = str(
+        args.get("learner_host")
+        or os.environ.get("RLT_LEARNER_HOST", "")
+    )
+    learner.learner_port = int(
+        args.get("learner_port")
+        or os.environ.get("RLT_LEARNER_PORT", 443)
+    )
+    learner.auth_token = str(
+        ctx.secrets.get("RLT_LEARNER_AUTH_TOKEN")
+        or os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
+    )
+    learner.use_tls = _as_bool(
+        args.get(
+            "use_tls",
+            os.environ.get("RLT_LEARNER_USE_TLS", "1"),
+        ),
+        True,
+    )
+    learner.tls_server_name = str(
+        args.get("tls_server_name", "") or ""
+    )
+    if not learner.learner_host:
+        raise ValueError("learner_host is required")
+    if not learner.auth_token:
+        raise ValueError("RLT_LEARNER_AUTH_TOKEN is required")
+
+
+def _make_operator(
+    ctx: Context, *, total_rollouts: int | None, include_base: bool
+) -> Any:
+    from armnet_rlt.operator_control import (
+        CellOperatorControl,
+        VariationCurriculumConfig,
+    )
+
+    args = ctx.args
+    return CellOperatorControl(
+        ctx.cell,
+        total_rollouts=total_rollouts,
+        ctx=ctx,
+        variation_episode_offset=int(
+            args.get("variation_episode_offset", 0)
+        ),
+        variation_repeat=2 if include_base else 1,
+        scene_retry_delay=int(args.get("scene_retry_delay", 0)),
+        scene_retry_limit=int(args.get("scene_retry_limit", 1)),
+        retry_after_round=_as_bool(args.get("retry_after_round"), False),
+        variation_curriculum=VariationCurriculumConfig(
+            enabled=_as_bool(args.get("variation_curriculum"), False),
+            start_scale=float(args.get("variation_scale_start", 0.25)),
+            min_scale=float(args.get("variation_scale_min", 0.1)),
+            max_scale=float(args.get("variation_scale_max", 1.0)),
+            step_up=float(args.get("variation_scale_step_up", 0.05)),
+            step_down=float(
+                args.get("variation_scale_step_down", 0.1)
+            ),
+            window=int(args.get("variation_window", 20)),
+            promote_threshold=float(
+                args.get("variation_promote_threshold", 0.8)
+            ),
+            demote_threshold=float(
+                args.get("variation_demote_threshold", 0.55)
+            ),
+            frontier_fraction=float(
+                args.get("variation_frontier_fraction", 0.2)
+            ),
+        ),
+    )
+
+
+def _run_act(ctx: Context, cell_id: str) -> dict[str, Any]:
+    """Roll out a LeRobot ACT policy against an ACT streaming BC learner."""
+    from armnet_rlt.act_actor import resolve_act_policy_dir, run_act_actor
+    from armnet_rlt.config import RLTActorLearnerConfig
+
+    args = ctx.args
+    cameras = dict(ctx.camera_configs)
+    value = str(args.get("checkpoint_dir") or "")
+    if not value:
+        raise ValueError("an ACT actor needs args['checkpoint_dir']")
+    if value.startswith("volume://"):
+        value = str(ctx.volume.path(value.removeprefix("volume://")))
+    elif not Path(value).is_absolute() and getattr(ctx.volume, "root", None):
+        value = str(ctx.volume.path(value))
+    policy_dir = resolve_act_policy_dir(value)
+    robot_id, calibration_dir = _calibration_lookup(ctx)
+    temporary_calibration = (
+        calibration_dir if ctx.cell.calibration_file_path else None
+    )
+    learner = RLTActorLearnerConfig()
+    _configure_learner(ctx, learner)
+    cert_path, temporary_cert = _tls_root_cert_file(args)
+    learner.tls_root_cert_path = cert_path
+    cfg = SimpleNamespace(
+        policy_dir=str(policy_dir),
+        device=str(args.get("device", "cuda")),
+        seed=int(args.get("seed", 42)),
+        language_instruction=str(
+            args.get("language_instruction")
+            or getattr(ctx.cell, "language_instruction", "")
+            or ctx.task
+        ),
+        command_fps=int(args.get("command_fps", 20)),
+        episode_timeout_s=float(args.get("episode_timeout_s", 30.0)),
+        n_action_steps=int(args.get("act_n_action_steps", 0)),
+        exploration_scale=float(args.get("exploration_scale", 0.0)),
+        exploration_correlation=float(
+            args.get("exploration_correlation", 0.85)
+        ),
+        episodes_per_round=str(args.get("episodes_per_round", "0")),
+        steps_per_round=int(args.get("steps_per_round", 0)),
+        round_wait_timeout_s=float(args.get("round_wait_timeout_s", 600.0)),
+        reward_target_button=str(
+            args.get("reward_target_button")
+            or ("green_button" if ctx.task == "push_green_button" else "")
+        ),
+        actor_learner=learner,
+        so101=SimpleNamespace(
+            robot_port=ctx.cell.robot_port,
+            robot_id=robot_id,
+            calibration_dir=calibration_dir,
+            cameras=cameras,
+            max_relative_target=ctx.cell.safety_limit,
+        ),
+    )
+    operator = _make_operator(
+        ctx,
+        total_rollouts=int(args.get("num_rollouts", 0)) or None,
+        include_base=False,
+    )
+    ctx.report_progress(
+        f"starting single-arm ACT actor on {cell_id or '<unknown>'}: "
+        f"cameras={sorted(cameras)}, policy={policy_dir}, "
+        f"learner={learner.learner_host}:{learner.learner_port}"
+    )
+    try:
+        return run_act_actor(ctx, cfg, operator=operator)
+    finally:
+        if temporary_cert:
+            Path(temporary_cert).unlink(missing_ok=True)
+        if temporary_calibration:
+            shutil.rmtree(temporary_calibration, ignore_errors=True)
+
+
 @main
 def run(ctx: Context) -> dict[str, Any]:
     # Validate before downloads, OpenPI imports, or robot construction.
@@ -201,10 +349,6 @@ def run(ctx: Context) -> dict[str, Any]:
         config_from_frozen_checkpoint,
         load_frozen_checkpoint,
     )
-    from armnet_rlt.operator_control import (
-        CellOperatorControl,
-        VariationCurriculumConfig,
-    )
     from armnet_rlt.so101_actor import run_actor
 
     args = ctx.args
@@ -215,6 +359,8 @@ def run(ctx: Context) -> dict[str, Any]:
     ctx.report_progress(f"running on cell {cell_id or '<unknown>'}")
     if not ctx.cell.robot_port:
         raise ValueError("ctx.cell.robot_port is empty; no robot connector is available")
+    if str(args.get("policy_type", "rlt")) == "act":
+        return _run_act(ctx, cell_id)
     cameras = dict(ctx.camera_configs)
     config_name = str(args.get("config_name", "pi05_rlt_so101"))
     required_cameras = {"front"}
@@ -342,32 +488,7 @@ def run(ctx: Context) -> dict[str, Any]:
 
     learner = cfg.actor_learner
     if frozen_artifact is None:
-        learner.learner_host = str(
-            args.get("learner_host")
-            or os.environ.get("RLT_LEARNER_HOST", "")
-        )
-        learner.learner_port = int(
-            args.get("learner_port")
-            or os.environ.get("RLT_LEARNER_PORT", 443)
-        )
-        learner.auth_token = str(
-            ctx.secrets.get("RLT_LEARNER_AUTH_TOKEN")
-            or os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
-        )
-        learner.use_tls = _as_bool(
-            args.get(
-                "use_tls",
-                os.environ.get("RLT_LEARNER_USE_TLS", "1"),
-            ),
-            True,
-        )
-        learner.tls_server_name = str(
-            args.get("tls_server_name", "") or ""
-        )
-        if not learner.learner_host:
-            raise ValueError("learner_host is required")
-        if not learner.auth_token:
-            raise ValueError("RLT_LEARNER_AUTH_TOKEN is required")
+        _configure_learner(ctx, learner)
 
     cert_path, temporary_cert = _tls_root_cert_file(args)
     learner.tls_root_cert_path = cert_path
@@ -379,37 +500,8 @@ def run(ctx: Context) -> dict[str, Any]:
     total_rollouts = (
         requested_rollouts * (2 if include_base else 1)
     ) or None
-    operator = CellOperatorControl(
-        ctx.cell,
-        total_rollouts=total_rollouts,
-        ctx=ctx,
-        variation_episode_offset=int(
-            args.get("variation_episode_offset", 0)
-        ),
-        variation_repeat=2 if include_base else 1,
-        scene_retry_delay=int(args.get("scene_retry_delay", 0)),
-        scene_retry_limit=int(args.get("scene_retry_limit", 1)),
-        retry_after_round=_as_bool(args.get("retry_after_round"), False),
-        variation_curriculum=VariationCurriculumConfig(
-            enabled=_as_bool(args.get("variation_curriculum"), False),
-            start_scale=float(args.get("variation_scale_start", 0.25)),
-            min_scale=float(args.get("variation_scale_min", 0.1)),
-            max_scale=float(args.get("variation_scale_max", 1.0)),
-            step_up=float(args.get("variation_scale_step_up", 0.05)),
-            step_down=float(
-                args.get("variation_scale_step_down", 0.1)
-            ),
-            window=int(args.get("variation_window", 20)),
-            promote_threshold=float(
-                args.get("variation_promote_threshold", 0.8)
-            ),
-            demote_threshold=float(
-                args.get("variation_demote_threshold", 0.55)
-            ),
-            frontier_fraction=float(
-                args.get("variation_frontier_fraction", 0.2)
-            ),
-        ),
+    operator = _make_operator(
+        ctx, total_rollouts=total_rollouts, include_base=include_base
     )
     transport = None
     if frozen_artifact is not None:

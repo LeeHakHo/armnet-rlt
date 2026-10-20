@@ -2,7 +2,7 @@
 # Build the `rlt-local` environments under tools/.
 #   scripts/setup_local.sh learner   torch + LeRobot transport (bc, streaming-bc)
 #   scripts/setup_local.sh openpi    OpenPI/JAX (cache, bc-cache)
-#   scripts/setup_local.sh act       LeRobot ACT/SmolVLA training and armnet-lerobot-eval
+#   scripts/setup_local.sh act       LeRobot ACT/SmolVLA training, armnet-lerobot-eval, act-streaming-bc
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -101,8 +101,10 @@ setup_act() {
         --extra-index-url "$TORCH_INDEX" \
         --index-strategy unsafe-best-match \
         -e "$LEROBOT[smolvla]" armnet-client==0.3.5 'wandb>=0.24,<0.25' python-dotenv \
-        torch==2.8.0 torchvision==0.23.0
-    "$venv/bin/python" -c "import torch; from lerobot.policies.act.modeling_act import ACTPolicy; from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy; import armnet_client.lerobot_eval; print('ACT env OK', torch.__version__)"
+        grpcio==1.73.1 torch==2.8.0 torchvision==0.23.0
+    # armnet_rlt for rlt-local act-streaming-bc.
+    uv pip install --python "$venv" --no-deps -e "$ROOT"
+    "$venv/bin/python" -c "import torch; from lerobot.policies.act.modeling_act import ACTPolicy; from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy; import armnet_client.lerobot_eval; from armnet_rlt.act_learner import run_act_streaming_bc; print('ACT env OK', torch.__version__)"
 }
 
 case "${1:-}" in

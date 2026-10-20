@@ -164,3 +164,23 @@ def test_job_args_can_name_the_rlt_eval_dataset() -> None:
         "villekuosmanen/eval_rlt_green"
     )
     assert result["hf_user"] == "villekuosmanen"
+
+
+def test_act_job_args_select_the_act_actor() -> None:
+    args = _args(
+        policy_type="act",
+        config_name="act",
+        checkpoint_dir="volume://act/run/step_1",
+        hf_checkpoint_repo=None,
+        act_n_action_steps=20,
+    )
+    result = build_job_args(args, _entry(config_name="act"))
+    assert result["policy_type"] == "act"
+    assert result["act_n_action_steps"] == 20
+    assert result["checkpoint_dir"] == "volume://act/run/step_1"
+
+
+def test_act_job_args_need_a_volume_checkpoint() -> None:
+    args = _args(policy_type="act", config_name="act")
+    with pytest.raises(ValueError, match="--checkpoint-dir"):
+        build_job_args(args, _entry(config_name="act"))

@@ -37,6 +37,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True, help="Armnet task slug")
+    parser.add_argument(
+        "--policy-type",
+        choices=("rlt", "act"),
+        default="rlt",
+        help="rlt: OpenPI with the RL-token actor; act: a LeRobot ACT policy "
+        "served by `rlt-local act-streaming-bc` (--config-name act)",
+    )
     parser.add_argument("--config-name", required=True, help="OpenPI RLT config")
     checkpoint = parser.add_mutually_exclusive_group(required=True)
     checkpoint.add_argument(
@@ -45,6 +52,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     checkpoint.add_argument("--hf-checkpoint-repo")
     parser.add_argument("--hf-checkpoint-revision", default="")
+    parser.add_argument(
+        "--upload-checkpoint",
+        default="",
+        help="Local directory to upload to the --checkpoint-dir volume path "
+        "before submitting",
+    )
+    parser.add_argument(
+        "--act-n-action-steps",
+        type=int,
+        default=0,
+        help="ACT actions executed per inference; 0 keeps the policy's n_action_steps",
+    )
     parser.add_argument("--language-instruction", required=True)
     parser.add_argument(
         "--learner-key",
@@ -325,6 +344,12 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         ),
         "use_rerun": rerun_job_enabled(args),
     }
+    if getattr(args, "policy_type", "rlt") == "act":
+        if not args.checkpoint_dir:
+            raise ValueError("--policy-type act needs --checkpoint-dir")
+        job_args["policy_type"] = "act"
+        if getattr(args, "act_n_action_steps", 0):
+            job_args["act_n_action_steps"] = int(args.act_n_action_steps)
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell
@@ -429,6 +454,27 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
     return job_args
 
 
+def upload_checkpoint(local_path: str, checkpoint_dir: str | None) -> None:
+    """Copy a local checkpoint directory to the Armnet volume path."""
+    if not checkpoint_dir or not checkpoint_dir.startswith("volume://"):
+        raise SystemExit("--upload-checkpoint needs --checkpoint-dir volume://<path>")
+    from armnet_client.client import OrchestratorClient
+    from armnet_client.volume import upload_to_cloud_volume
+
+    volume_path = checkpoint_dir.removeprefix("volume://")
+    with OrchestratorClient() as client:
+        username = client.whoami().username
+        credentials = client.get_volume_credentials()
+    upload_to_cloud_volume(
+        credentials=credentials,
+        username=username,
+        local_path=local_path,
+        volume_path=volume_path,
+        overwrite=True,
+    )
+    print(f"[rlt] uploaded {local_path} -> {checkpoint_dir}")
+
+
 def main(argv: list[str] | None = None) -> None:
     load_dotenv(PROJECT_ROOT / ".env")
     args = _parser().parse_args(argv)
@@ -463,6 +509,8 @@ def main(argv: list[str] | None = None) -> None:
 
     from armnet_client import Image, execute
 
+    if args.upload_checkpoint:
+        upload_checkpoint(args.upload_checkpoint, args.checkpoint_dir)
     preflight_device_overrides(args, embodiment=SO101_EMBODIMENT)
 
     if args.image_ref:

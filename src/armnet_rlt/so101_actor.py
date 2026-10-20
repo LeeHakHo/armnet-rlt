@@ -775,6 +775,130 @@ def _close_robot_and_cell(robot: Any, cell: Any) -> None:
                 log.warning("cell instrumentation cleanup failed", exc_info=True)
 
 
+def open_rollout_recording(
+    ctx: Any,
+    cfg: Any,
+    robot: Any,
+    instruction: str,
+    *,
+    action_source: str,
+) -> tuple[Any, Any, Any, str | None]:
+    """Create the eval dataset, its frame writer and the telemetry session.
+
+    Returns ``(None, None, None, None)`` when ``record_dataset`` is off.
+    """
+    args = getattr(ctx, "args", {})
+    if not bool(_field(args, "record_dataset", True)):
+        return None, None, None, None
+    from armnet_rlt.dataset_recording import (
+        DEFAULT_ENCODER_THREADS,
+        DEFAULT_STREAMING_ENCODING,
+        DEFAULT_VCODEC,
+        DatasetFrameWriter,
+        create_rlt_eval_dataset,
+        dataset_features,
+        generate_rlt_eval_repo_id,
+    )
+
+    eval_repo_id = str(
+        _field(args, "record_dataset_repo_id", "")
+        or generate_rlt_eval_repo_id(ctx)
+    )
+    features = dataset_features(robot)
+    ctx.report_progress(f"creating RLT eval dataset {eval_repo_id}")
+    eval_dataset = create_rlt_eval_dataset(
+        eval_repo_id,
+        features,
+        int(_field(cfg, "command_fps", 20)),
+        streaming_encoding=bool(
+            _field(args, "streaming_encoding", DEFAULT_STREAMING_ENCODING)
+        ),
+        vcodec=str(_field(args, "vcodec", DEFAULT_VCODEC) or DEFAULT_VCODEC),
+        encoder_threads=int(
+            _field(args, "encoder_threads", DEFAULT_ENCODER_THREADS)
+        ),
+        num_cameras=len(getattr(robot, "cameras", {})),
+    )
+    frame_writer = DatasetFrameWriter(
+        eval_dataset,
+        features=features,
+        task=instruction,
+    )
+    ctx.cell.attach_dataset(eval_dataset.root)
+    from armnet_client.robot_telemetry.session import RobotTelemetrySession
+
+    telemetry = RobotTelemetrySession(
+        eval_dataset.root,
+        context=ctx,
+        mode=str(_field(args, "robot_telemetry", "full")),
+        motor_layout="single_arm",
+        fps=int(_field(cfg, "command_fps", 20)),
+        action_source=action_source,
+        strict=bool(_field(args, "robot_telemetry_strict", False)),
+        max_buffered_rows=100_000,
+    )
+    return eval_dataset, frame_writer, telemetry, eval_repo_id
+
+
+def record_rollout_frame(
+    ctx: Any,
+    cfg: Any,
+    frame_writer: Any,
+    telemetry: Any,
+    *,
+    raw_obs: dict[str, Any],
+    requested_action: dict[str, float],
+    actual_action: dict[str, float],
+    task: str,
+    frame_index: int,
+    period_s: float,
+    tick: float,
+    action_write_s: float,
+) -> None:
+    """Write one control tick to the eval dataset and the telemetry sidecar."""
+    if frame_writer is None:
+        return
+    frame_writer.submit_observation(raw_obs, actual_action, task=task)
+    ctx.cell.record_frame()
+    if telemetry is not None:
+        telemetry.submit_frame(
+            frame_index=frame_index,
+            dataset_timestamp_s=frame_index
+            / max(1, int(_field(cfg, "command_fps", 20))),
+            action=requested_action,
+            client_clipped_action=actual_action,
+            observation=raw_obs,
+            safety_outcome="accepted",
+            loop_period_s=period_s,
+            loop_overrun_s=max(0.0, time.perf_counter() - tick - period_s),
+            action_to_write_latency_s=action_write_s,
+        )
+
+
+def finish_rollout_recording(
+    ctx: Any,
+    eval_dataset: Any,
+    frame_writer: Any,
+    telemetry: Any,
+    eval_repo_id: str | None,
+) -> str | None:
+    """Finalize the eval dataset and push it unless ``no_push_to_hub`` is set."""
+    if eval_dataset is None or frame_writer is None or eval_repo_id is None:
+        return None
+    from armnet_rlt.dataset_recording import finish_dataset
+
+    return finish_dataset(
+        ctx,
+        eval_dataset,
+        frame_writer,
+        repo_id=eval_repo_id,
+        push_to_hub=not bool(
+            _field(getattr(ctx, "args", {}), "no_push_to_hub", False)
+        ),
+        telemetry=telemetry,
+    )
+
+
 def run_actor(
     ctx: Any,
     cfg: Any,
@@ -902,83 +1026,10 @@ def run_actor(
         or getattr(ctx, "task", "")
     )
     use_rerun = as_bool(_field(getattr(ctx, "args", {}), "use_rerun", False))
-    eval_dataset = None
-    frame_writer = None
-    telemetry = None
-    eval_repo_id: str | None = None
     eval_dataset_url: str | None = None
-    record_dataset = bool(_field(getattr(ctx, "args", {}), "record_dataset", True))
-    if record_dataset:
-        from armnet_rlt.dataset_recording import (
-            DEFAULT_ENCODER_THREADS,
-            DEFAULT_STREAMING_ENCODING,
-            DEFAULT_VCODEC,
-            DatasetFrameWriter,
-            create_rlt_eval_dataset,
-            dataset_features,
-            generate_rlt_eval_repo_id,
-        )
-
-        eval_repo_id = str(
-            _field(getattr(ctx, "args", {}), "record_dataset_repo_id", "")
-            or generate_rlt_eval_repo_id(ctx)
-        )
-        features = dataset_features(robot)
-        ctx.report_progress(f"creating RLT eval dataset {eval_repo_id}")
-        eval_dataset = create_rlt_eval_dataset(
-            eval_repo_id,
-            features,
-            int(_field(cfg, "command_fps", 20)),
-            streaming_encoding=bool(
-                _field(
-                    getattr(ctx, "args", {}),
-                    "streaming_encoding",
-                    DEFAULT_STREAMING_ENCODING,
-                )
-            ),
-            vcodec=str(
-                _field(getattr(ctx, "args", {}), "vcodec", DEFAULT_VCODEC)
-                or DEFAULT_VCODEC
-            ),
-            encoder_threads=int(
-                _field(
-                    getattr(ctx, "args", {}),
-                    "encoder_threads",
-                    DEFAULT_ENCODER_THREADS,
-                )
-            ),
-            num_cameras=len(getattr(robot, "cameras", {})),
-        )
-        frame_writer = DatasetFrameWriter(
-            eval_dataset,
-            features=features,
-            task=instruction,
-        )
-        ctx.cell.attach_dataset(eval_dataset.root)
-        from armnet_client.robot_telemetry.session import RobotTelemetrySession
-
-        telemetry = RobotTelemetrySession(
-            eval_dataset.root,
-            context=ctx,
-            mode=str(
-                _field(
-                    getattr(ctx, "args", {}),
-                    "robot_telemetry",
-                    "full",
-                )
-            ),
-            motor_layout="single_arm",
-            fps=int(_field(cfg, "command_fps", 20)),
-            action_source="rlt_policy",
-            strict=bool(
-                _field(
-                    getattr(ctx, "args", {}),
-                    "robot_telemetry_strict",
-                    False,
-                )
-            ),
-            max_buffered_rows=100_000,
-        )
+    eval_dataset, frame_writer, telemetry, eval_repo_id = open_rollout_recording(
+        ctx, cfg, robot, instruction, action_source="rlt_policy"
+    )
 
     completed = successes = 0
     session_id = uuid.uuid4().hex
@@ -1329,36 +1380,24 @@ def run_actor(
                     variant=rerun_variant,
                     kind=KIND_RUNNING,
                 )
-            if frame_writer is not None:
-                frame_writer.submit_observation(
-                    raw_obs,
-                    actual_action,
-                    task=(
-                        instruction
-                        if not frozen_eval
-                        else f"{instruction} [{policy_variant}]"
-                    ),
-                )
-                ctx.cell.record_frame()
-                if telemetry is not None:
-                    telemetry.submit_frame(
-                        frame_index=command_ticks,
-                        dataset_timestamp_s=command_ticks
-                        / max(
-                            1,
-                            int(_field(cfg, "command_fps", 20)),
-                        ),
-                        action=requested_action,
-                        client_clipped_action=actual_action,
-                        observation=raw_obs,
-                        safety_outcome="accepted",
-                        loop_period_s=period_s,
-                        loop_overrun_s=max(
-                            0.0,
-                            time.perf_counter() - tick - period_s,
-                        ),
-                        action_to_write_latency_s=action_write_s,
-                    )
+            record_rollout_frame(
+                ctx,
+                cfg,
+                frame_writer,
+                telemetry,
+                raw_obs=raw_obs,
+                requested_action=requested_action,
+                actual_action=actual_action,
+                task=(
+                    instruction
+                    if not frozen_eval
+                    else f"{instruction} [{policy_variant}]"
+                ),
+                frame_index=command_ticks,
+                period_s=period_s,
+                tick=tick,
+                action_write_s=action_write_s,
+            )
             if any(
                 not math.isclose(
                     float(actual_action.get(key, requested_action[key])),
@@ -1386,27 +1425,9 @@ def run_actor(
     finally:
         try:
             operator.stop()
-            if (
-                eval_dataset is not None
-                and frame_writer is not None
-                and eval_repo_id is not None
-            ):
-                from armnet_rlt.dataset_recording import finish_dataset
-
-                eval_dataset_url = finish_dataset(
-                    ctx,
-                    eval_dataset,
-                    frame_writer,
-                    repo_id=eval_repo_id,
-                    push_to_hub=not bool(
-                        _field(
-                            getattr(ctx, "args", {}),
-                            "no_push_to_hub",
-                            False,
-                        )
-                    ),
-                    telemetry=telemetry,
-                )
+            eval_dataset_url = finish_rollout_recording(
+                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id
+            )
         finally:
             transport.close()
             _close_robot_and_cell(robot, ctx.cell)

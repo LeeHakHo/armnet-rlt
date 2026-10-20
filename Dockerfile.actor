@@ -11,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
     HF_HOME=/tmp/huggingface \
+    TORCH_HOME=/opt/torch \
     XLA_PYTHON_CLIENT_PREALLOCATE=false \
     XLA_PYTHON_CLIENT_MEM_FRACTION=0.90
 
@@ -96,7 +97,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --extra-index-url https://download.pytorch.org/whl/cu129 \
         torch==2.8.0 torchvision==0.23.0
 
-RUN python -c "import torch, jax, lerobot, armnet_runtime; from armnet_client.robot_telemetry.session import RobotTelemetrySession; from lerobot.datasets.lerobot_dataset import LeRobotDataset; from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig; from lerobot.motors.feetech import FeetechMotorsBus; import openpi.models.pi0_rl; import armnet_rlt.actor_job, armnet_rlt.dataset_recording; from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); import openpi.policies.policy_config; print('RLT actor imports OK')" \
+# ResNet18 ImageNet weights for the ACT backbone.
+RUN python -c "import torchvision; torchvision.models.resnet18(weights='IMAGENET1K_V1')" \
+    && chmod -R a+rX /opt/torch
+
+RUN python -c "import torch, jax, lerobot, armnet_runtime; from armnet_client.robot_telemetry.session import RobotTelemetrySession; from lerobot.datasets.lerobot_dataset import LeRobotDataset; from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig; from lerobot.motors.feetech import FeetechMotorsBus; import openpi.models.pi0_rl; import armnet_rlt.actor_job, armnet_rlt.dataset_recording, armnet_rlt.act_actor; from lerobot.policies.act.modeling_act import ACTPolicy; from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); import openpi.policies.policy_config; print('RLT actor imports OK')" \
     && python -c "from armnet_core.environment import environment_for; environment_for('busybox'); print('BusyBox plugin OK')"
 
 CMD ["armnet-runtime", "/app/rlt/src/armnet_rlt/actor_job.py"]

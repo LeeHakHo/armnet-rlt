@@ -392,6 +392,36 @@ def cmd_streaming_bc(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_act_streaming_bc(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    token = _learner_token()
+    from types import SimpleNamespace
+
+    from armnet_rlt.act_learner import run_act_streaming_bc
+    from armnet_rlt.config import RLTActorLearnerConfig
+
+    cfg = SimpleNamespace(actor_learner=RLTActorLearnerConfig())
+    with _serve(args, cfg, token):
+        run_act_streaming_bc(
+            cfg,
+            policy_path=args.policy_path,
+            run_dir=local_data_root() / "act-sbc" / args.run_id,
+            run_id=args.run_id,
+            episodes_per_round=args.episodes_per_round,
+            steps_per_round=args.steps_per_round,
+            batch_size=args.batch_size,
+            online_steps=args.online_steps,
+            lr=args.lr,
+            base_dataset=args.base_dataset,
+            base_batch_fraction=args.base_batch_fraction,
+            num_workers=args.num_workers,
+            min_shaped_reward=args.min_shaped_reward,
+            idle_timeout_s=args.idle_timeout_s,
+            idle_min_episodes=args.idle_min_episodes,
+            wandb_project=args.wandb_project or None,
+        )
+
+
 def cmd_online(args: argparse.Namespace) -> None:
     _select_gpu(args.gpu)
     token = _learner_token()
@@ -517,6 +547,37 @@ def _parser() -> argparse.ArgumentParser:
         streaming,
         "Seconds between weight pushes while a round is training; a finished "
         "round always pushes",
+    )
+
+    act_streaming = add(
+        "act-streaming-bc",
+        cmd_act_streaming_bc,
+        "serve a learner that fine-tunes ACT on the successes a live ACT actor sends",
+    )
+    act_streaming.add_argument("--config-name", default="act")
+    act_streaming.add_argument("--run-id", default="")
+    act_streaming.add_argument("--wandb-project", default="")
+    act_streaming.add_argument(
+        "--policy-path", required=True, help="Local ACT pretrained_model directory"
+    )
+    act_streaming.add_argument("--episodes-per-round", default="30,30,10")
+    act_streaming.add_argument("--steps-per-round", type=int, default=500)
+    act_streaming.add_argument("--batch-size", type=int, default=32)
+    act_streaming.add_argument("--online-steps", type=int, default=30_000)
+    act_streaming.add_argument(
+        "--lr", type=float, default=0.0, help="0 keeps the policy's optimizer_lr"
+    )
+    act_streaming.add_argument(
+        "--base-dataset", default="", help="Offline LeRobot dataset mixed into every batch"
+    )
+    act_streaming.add_argument("--base-batch-fraction", type=float, default=0.0)
+    act_streaming.add_argument("--num-workers", type=int, default=8)
+    act_streaming.add_argument("--min-shaped-reward", type=float, default=0.0)
+    act_streaming.add_argument("--idle-timeout-s", type=float, default=600.0)
+    act_streaming.add_argument("--idle-min-episodes", type=int, default=5)
+    add_transport(
+        act_streaming,
+        "Minimum seconds between weight pushes; weights are pushed when a round finishes",
     )
 
     online = add(
