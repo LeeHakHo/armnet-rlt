@@ -51,6 +51,7 @@ def learner_config(
     bc_deviation_weight: float = 1.0,
     actor_lr: float = 0.0,
     actor_lr_min: float = 0.0,
+    save_freq: int | None = None,
     device: str = "cuda",
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
@@ -79,6 +80,8 @@ def learner_config(
         kwargs["num_critics"] = num_critics
     if utd_ratio is not None:
         kwargs["utd_ratio"] = utd_ratio
+    if save_freq is not None:
+        kwargs["save_freq"] = save_freq
     # Override the actor learning rate and its floor.
     if actor_lr > 0:
         kwargs["actor_lr"] = actor_lr

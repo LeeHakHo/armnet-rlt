@@ -403,6 +403,7 @@ def cmd_online(args: argparse.Namespace) -> None:
         max_demo_pretrain_steps=args.pretrain_steps,
         online_steps=args.online_steps,
         online_batch_fraction=args.online_batch_fraction,
+        save_freq=args.save_freq,
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -527,6 +528,9 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument("--pretrain-steps", type=int, default=5_000)
     online.add_argument("--online-steps", type=int, default=300_000)
     online.add_argument("--online-batch-fraction", type=float, default=0.5)
+    online.add_argument(
+        "--save-freq", type=int, default=None, help="Learner steps between checkpoints (config default 500)"
+    )
     online.add_argument("--resume", action="store_true")
     online.add_argument("--idle-timeout-s", type=float, default=600.0)
     online.add_argument("--idle-min-episodes", type=int, default=5)
