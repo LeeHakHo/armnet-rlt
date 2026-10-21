@@ -16,7 +16,11 @@ from armnet_rlt.rerun_view import (
     rerun_job_enabled,
     start_live_view,
 )
-from armnet_rlt.resources import RENDEZVOUS_DICT, report_job_outcome
+from armnet_rlt.resources import (
+    RENDEZVOUS_DICT,
+    report_job_outcome,
+    scheduled_cell,
+)
 
 
 SO101_EMBODIMENT = "lerobot/so-101"
@@ -321,6 +325,7 @@ def main(argv: list[str] | None = None) -> None:
         stream_logs=not args.detach,
         use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
+        cell=scheduled_cell(str(getattr(args, "require_cell", "") or "")),
     )
     report_job_outcome(result, prefix="rlt")
 

@@ -59,3 +59,12 @@ def test_frozen_eval_requires_volume_paths(field: str) -> None:
 def test_frozen_eval_rejects_invalid_rollout_count() -> None:
     with pytest.raises(ValueError, match="positive"):
         build_job_args(_args(num_rollouts=0))
+
+
+def test_scheduled_cell_only_pins_a_single_cell() -> None:
+    from armnet_rlt.resources import scheduled_cell
+
+    assert scheduled_cell("cell-01") == "cell-01"
+    assert scheduled_cell(" cell-01 ") == "cell-01"
+    assert scheduled_cell("") is None
+    assert scheduled_cell("cell-01,cell-04") is None

@@ -36,6 +36,12 @@ def rendezvous_key(config_name: str, run_id: str) -> str:
     return f"{clean_config}:{clean_run}"
 
 
+def scheduled_cell(require_cell: str) -> str | None:
+    """The cell to dispatch to when ``require_cell`` names exactly one."""
+    cells = [name.strip() for name in require_cell.split(",") if name.strip()]
+    return cells[0] if len(cells) == 1 else None
+
+
 def report_job_outcome(result: Any, *, prefix: str) -> None:
     """Print the job outcome and raise on FAILED, TIMEOUT or CANCELLED.
 

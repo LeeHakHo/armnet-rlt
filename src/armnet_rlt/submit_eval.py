@@ -9,7 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from armnet_rlt.resources import report_job_outcome
+from armnet_rlt.resources import report_job_outcome, scheduled_cell
 from armnet_client.variation import (
     DEFAULT_VARIATION_SEED,
     variation_job_args,
@@ -195,6 +195,7 @@ def main(argv: list[str] | None = None) -> None:
         stream_logs=not args.detach,
         use_rerun=rerun_job_enabled(args),
         timeout_seconds=args.timeout_seconds,
+        cell=scheduled_cell(str(getattr(args, "require_cell", "") or "")),
     )
     report_job_outcome(result, prefix="rlt eval")
 
