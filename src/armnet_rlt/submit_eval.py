@@ -68,6 +68,14 @@ def _parser() -> argparse.ArgumentParser:
         dest="variation",
         action="store_true",
     )
+    for axis in ("rail", "cameras", "lighting"):
+        parser.add_argument(
+            f"--armnet.variation-{axis}",
+            dest=f"variation_{axis}",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=f"Override {axis} variation independently of --armnet.variation",
+        )
     parser.add_argument(
         "--armnet.variation-seed",
         dest="variation_seed",
@@ -135,11 +143,21 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
         "use_rerun": rerun_job_enabled(args),
     }
+    # Same semantics as rlt-submit-actor: an axis flag overrides --armnet.variation
+    # for that axis only, and turning any axis on enables variation.
+    selectors = {
+        name: getattr(args, name, None)
+        for name in ("variation_rail", "variation_cameras", "variation_lighting")
+    }
     job_args.update(
         variation_job_args(
-            bool(args.variation),
+            bool(args.variation)
+            or any(value is True for value in selectors.values()),
             int(args.variation_seed),
         )
+    )
+    job_args.update(
+        {name: bool(value) for name, value in selectors.items() if value is not None}
     )
     if args.variation_episode_offset:
         job_args["variation_episode_offset"] = int(

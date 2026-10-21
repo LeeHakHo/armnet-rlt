@@ -68,3 +68,33 @@ def test_scheduled_cell_only_pins_a_single_cell() -> None:
     assert scheduled_cell(" cell-01 ") == "cell-01"
     assert scheduled_cell("") is None
     assert scheduled_cell("cell-01,cell-04") is None
+
+
+def test_variation_axes_are_off_by_default_and_overridable() -> None:
+    plain = build_job_args(_args())
+    assert "variation_cameras" not in plain
+
+    fixed_cameras = build_job_args(_args(variation_cameras=False))
+    assert fixed_cameras["variation_cameras"] is False
+    assert fixed_cameras["variation"] is True
+
+    only_rail = build_job_args(_args(variation=False, variation_rail=True))
+    assert only_rail["variation"] is True
+    assert only_rail["variation_rail"] is True
+
+
+def test_eval_cli_accepts_the_axis_flags() -> None:
+    from armnet_rlt.submit_eval import _parser
+
+    args = _parser().parse_args(
+        [
+            "--task", "push_green_button",
+            "--config-name", "cfg",
+            "--checkpoint-dir", "volume://openpi/checkpoints/x",
+            "--frozen-rlt-checkpoint", "volume://rlt/frozen/a.pt",
+            "--language-instruction", "push the green button",
+            "--armnet.variation", "--no-armnet.variation-cameras",
+        ]
+    )
+    assert args.variation_cameras is False
+    assert args.variation_rail is None
