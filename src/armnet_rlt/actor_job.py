@@ -292,6 +292,11 @@ def _run_act(ctx: Context, cell_id: str) -> dict[str, Any]:
         command_fps=int(args.get("command_fps", 20)),
         episode_timeout_s=float(args.get("episode_timeout_s", 30.0)),
         n_action_steps=int(args.get("act_n_action_steps", 0)),
+        temporal_ensemble_coeff=(
+            float(args["act_temporal_ensemble_coeff"])
+            if args.get("act_temporal_ensemble_coeff") is not None
+            else None
+        ),
         image_size=str(args.get("policy_image_size", "") or ""),
         stream_episodes=bool(args.get("stream_episodes", True)),
         exploration_scale=float(args.get("exploration_scale", 0.0)),

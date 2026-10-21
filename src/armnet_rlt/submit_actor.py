@@ -67,6 +67,12 @@ def _parser() -> argparse.ArgumentParser:
         help="ACT actions executed per inference; 0 keeps the policy's n_action_steps",
     )
     parser.add_argument(
+        "--act-temporal-ensemble-coeff",
+        type=float,
+        default=None,
+        help="Run ACT with temporal ensembling at this coefficient (0.01 in the ACT paper)",
+    )
+    parser.add_argument(
         "--policy-image-size",
         default="",
         help="<height>x<width> camera images are resized to for a LeRobot policy; "
@@ -365,6 +371,10 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         job_args["policy_type"] = policy_type
         if getattr(args, "act_n_action_steps", 0):
             job_args["act_n_action_steps"] = int(args.act_n_action_steps)
+        if getattr(args, "act_temporal_ensemble_coeff", None) is not None:
+            job_args["act_temporal_ensemble_coeff"] = float(
+                args.act_temporal_ensemble_coeff
+            )
         if getattr(args, "policy_image_size", ""):
             job_args["policy_image_size"] = str(args.policy_image_size)
         if not getattr(args, "stream_episodes", True):

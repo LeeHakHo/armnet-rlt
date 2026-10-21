@@ -268,6 +268,19 @@ def run_act_actor(
         raise
     policy_type = str(policy.config.type)
     is_act = policy_type == ACT_CONFIG_NAME
+    ensemble_coeff = _field(cfg, "temporal_ensemble_coeff", None)
+    if ensemble_coeff is not None:
+        if not is_act:
+            raise ValueError(f"temporal_ensemble_coeff needs an ACT policy, not {policy_type}")
+        from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
+
+        policy.config.temporal_ensemble_coeff = float(ensemble_coeff)
+        policy.config.n_action_steps = 1
+        policy.temporal_ensembler = ACTTemporalEnsembler(
+            float(ensemble_coeff), policy.config.chunk_size
+        )
+    # ACT without temporal ensembling executes whole chunks; everything else uses select_action.
+    chunked = is_act and policy.config.temporal_ensemble_coeff is None
     n_action_steps = int(_field(cfg, "n_action_steps", 0)) or int(
         policy.config.n_action_steps
     )
@@ -290,8 +303,10 @@ def run_act_actor(
     exploration_scale = float(_field(cfg, "exploration_scale", 0.0))
     if not math.isfinite(exploration_scale) or exploration_scale < 0:
         raise ValueError("exploration_scale must be finite and nonnegative")
-    if exploration_scale > 0 and not is_act:
-        raise ValueError(f"exploration_scale needs an ACT policy, not {policy_type}")
+    if exploration_scale > 0 and not chunked:
+        raise ValueError(
+            f"exploration_scale needs an ACT policy without temporal ensembling, not {policy_type}"
+        )
     from armnet_rlt.config import episodes_for_round, parse_round_schedule
 
     round_schedule = parse_round_schedule(_field(cfg, "episodes_per_round", 0))
@@ -348,7 +363,7 @@ def run_act_actor(
 
         # Run one inference before the first rollout.
         warm_state, warm_images = act_observation(robot.get_observation(), shapes)
-        if is_act:
+        if chunked:
             _predict_chunk(
                 policy,
                 preprocessor,
@@ -524,7 +539,7 @@ def run_act_actor(
 
             raw_obs = robot.get_observation()
             state, images = act_observation(raw_obs, shapes)
-            if not is_act:
+            if not chunked:
                 chunk = _select_action(
                     policy, preprocessor, postprocessor, act_frame(state, images, task)
                 )
