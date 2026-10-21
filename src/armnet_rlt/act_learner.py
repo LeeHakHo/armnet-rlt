@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from armnet_rlt.act_actor import EPISODE_SCHEMA, decode_jpeg, load_act_policy
+from armnet_rlt.act_actor import EPISODE_SCHEMA, decode_jpeg, load_lerobot_policy
 from armnet_rlt.config import episodes_for_round, parse_round_schedule
 from armnet_rlt.jsonl_log import append_jsonl
 from armnet_rlt.learner import (
@@ -181,7 +181,7 @@ def run_act_streaming_bc(
     rollout_log = run_dir / "rollout_metrics.jsonl"
     training_log = run_dir / "training_metrics.jsonl"
 
-    policy, preprocessor, postprocessor = load_act_policy(policy_path, device)
+    policy, preprocessor, postprocessor = load_lerobot_policy(policy_path, device)
     policy.train()
     chunk_size = int(policy.config.chunk_size)
     image_keys = list(policy.config.image_features)

@@ -493,7 +493,16 @@ def _load_parameters(actor: Any, payload: Any) -> int | None:
         from lerobot.transport.utils import bytes_to_state_dict
 
         state = bytes_to_state_dict(payload)
-    actor.load_state_dict(state.get("policy", state))
+    weights = state.get("policy", state)
+    if bool(state.get("partial", False)):
+        # A subset of the tensors; the rest keep their loaded values.
+        result = actor.load_state_dict(weights, strict=False)
+        if result.unexpected_keys:
+            raise ValueError(
+                f"learner sent unknown parameters: {result.unexpected_keys[:5]}"
+            )
+    else:
+        actor.load_state_dict(weights)
     raw_step = state.get("learner_step") if isinstance(state, dict) else None
     if raw_step is None:
         return None

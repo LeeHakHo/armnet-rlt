@@ -184,3 +184,20 @@ def test_act_job_args_need_a_volume_checkpoint() -> None:
     args = _args(policy_type="act", config_name="act")
     with pytest.raises(ValueError, match="--checkpoint-dir"):
         build_job_args(args, _entry(config_name="act"))
+
+
+def test_lerobot_job_args_carry_image_size_and_episode_streaming() -> None:
+    args = _args(
+        policy_type="lerobot",
+        config_name="eval",
+        checkpoint_dir="volume://eval/run/base",
+        hf_checkpoint_repo=None,
+        act_n_action_steps=0,
+        policy_image_size="240x426",
+        stream_episodes=False,
+    )
+    result = build_job_args(args, _entry(config_name="eval"))
+    assert result["policy_type"] == "lerobot"
+    assert result["policy_image_size"] == "240x426"
+    assert result["stream_episodes"] is False
+    assert "act_n_action_steps" not in result

@@ -258,7 +258,7 @@ def _make_operator(
 
 
 def _run_act(ctx: Context, cell_id: str) -> dict[str, Any]:
-    """Roll out a LeRobot ACT policy against an ACT streaming BC learner."""
+    """Roll out a LeRobot policy against an ACT streaming BC or checkpoint-eval learner."""
     from armnet_rlt.act_actor import resolve_act_policy_dir, run_act_actor
     from armnet_rlt.config import RLTActorLearnerConfig
 
@@ -266,7 +266,7 @@ def _run_act(ctx: Context, cell_id: str) -> dict[str, Any]:
     cameras = dict(ctx.camera_configs)
     value = str(args.get("checkpoint_dir") or "")
     if not value:
-        raise ValueError("an ACT actor needs args['checkpoint_dir']")
+        raise ValueError("a LeRobot policy actor needs args['checkpoint_dir']")
     if value.startswith("volume://"):
         value = str(ctx.volume.path(value.removeprefix("volume://")))
     elif not Path(value).is_absolute() and getattr(ctx.volume, "root", None):
@@ -292,6 +292,8 @@ def _run_act(ctx: Context, cell_id: str) -> dict[str, Any]:
         command_fps=int(args.get("command_fps", 20)),
         episode_timeout_s=float(args.get("episode_timeout_s", 30.0)),
         n_action_steps=int(args.get("act_n_action_steps", 0)),
+        image_size=str(args.get("policy_image_size", "") or ""),
+        stream_episodes=bool(args.get("stream_episodes", True)),
         exploration_scale=float(args.get("exploration_scale", 0.0)),
         exploration_correlation=float(
             args.get("exploration_correlation", 0.85)
@@ -359,7 +361,7 @@ def run(ctx: Context) -> dict[str, Any]:
     ctx.report_progress(f"running on cell {cell_id or '<unknown>'}")
     if not ctx.cell.robot_port:
         raise ValueError("ctx.cell.robot_port is empty; no robot connector is available")
-    if str(args.get("policy_type", "rlt")) == "act":
+    if str(args.get("policy_type", "rlt")) in {"act", "lerobot"}:
         return _run_act(ctx, cell_id)
     cameras = dict(ctx.camera_configs)
     config_name = str(args.get("config_name", "pi05_rlt_so101"))

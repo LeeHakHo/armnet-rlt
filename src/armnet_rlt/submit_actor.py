@@ -39,10 +39,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", required=True, help="Armnet task slug")
     parser.add_argument(
         "--policy-type",
-        choices=("rlt", "act"),
+        choices=("rlt", "act", "lerobot"),
         default="rlt",
         help="rlt: OpenPI with the RL-token actor; act: a LeRobot ACT policy "
-        "served by `rlt-local act-streaming-bc` (--config-name act)",
+        "served by `rlt-local act-streaming-bc` (--config-name act); lerobot: "
+        "any LeRobot policy (ACT, DiT, SmolVLA) served by `rlt-local "
+        "checkpoint-eval` (--config-name eval)",
     )
     parser.add_argument("--config-name", required=True, help="OpenPI RLT config")
     checkpoint = parser.add_mutually_exclusive_group(required=True)
@@ -63,6 +65,18 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="ACT actions executed per inference; 0 keeps the policy's n_action_steps",
+    )
+    parser.add_argument(
+        "--policy-image-size",
+        default="",
+        help="<height>x<width> camera images are resized to for a LeRobot policy; "
+        "empty uses the shapes in the policy config",
+    )
+    parser.add_argument(
+        "--no-stream-episodes",
+        dest="stream_episodes",
+        action="store_false",
+        help="Do not send successful LeRobot policy episodes to the learner",
     )
     parser.add_argument("--language-instruction", required=True)
     parser.add_argument(
@@ -344,12 +358,17 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         ),
         "use_rerun": rerun_job_enabled(args),
     }
-    if getattr(args, "policy_type", "rlt") == "act":
+    policy_type = getattr(args, "policy_type", "rlt")
+    if policy_type in {"act", "lerobot"}:
         if not args.checkpoint_dir:
-            raise ValueError("--policy-type act needs --checkpoint-dir")
-        job_args["policy_type"] = "act"
+            raise ValueError(f"--policy-type {policy_type} needs --checkpoint-dir")
+        job_args["policy_type"] = policy_type
         if getattr(args, "act_n_action_steps", 0):
             job_args["act_n_action_steps"] = int(args.act_n_action_steps)
+        if getattr(args, "policy_image_size", ""):
+            job_args["policy_image_size"] = str(args.policy_image_size)
+        if not getattr(args, "stream_episodes", True):
+            job_args["stream_episodes"] = False
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell

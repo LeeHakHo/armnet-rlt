@@ -1,4 +1,4 @@
-"""Single-arm SO-101 actor that rolls out a LeRobot ACT policy for streaming BC."""
+"""Single-arm SO-101 actor that rolls out a LeRobot policy (ACT, DiT, SmolVLA, ...)."""
 
 from __future__ import annotations
 
@@ -49,21 +49,22 @@ JPEG_QUALITY = 90
 
 
 def resolve_act_policy_dir(path: str | Path) -> Path:
-    """Return the directory holding ACT's ``config.json``."""
+    """Return the directory holding the policy's ``config.json``."""
     root = Path(path)
     for candidate in (root, root / "pretrained_model"):
         if (candidate / "config.json").is_file():
             return candidate
-    raise FileNotFoundError(f"no ACT config.json under {root}")
+    raise FileNotFoundError(f"no policy config.json under {root}")
 
 
-def load_act_policy(path: str | Path, device: str) -> tuple[Any, Any, Any]:
-    """Load an ACT policy with its pre- and post-processors."""
-    from lerobot.policies.act.modeling_act import ACTPolicy
-    from lerobot.policies.factory import make_pre_post_processors
+def load_lerobot_policy(path: str | Path, device: str) -> tuple[Any, Any, Any]:
+    """Load a LeRobot policy of the type in its config with its pre- and post-processors."""
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
     policy_dir = resolve_act_policy_dir(path)
-    policy = ACTPolicy.from_pretrained(str(policy_dir))
+    policy_type = PreTrainedConfig.from_pretrained(str(policy_dir)).type
+    policy = get_policy_class(policy_type).from_pretrained(str(policy_dir))
     policy.config.device = device
     policy.to(device)
     preprocessor, postprocessor = make_pre_post_processors(
@@ -74,12 +75,41 @@ def load_act_policy(path: str | Path, device: str) -> tuple[Any, Any, Any]:
     return policy, preprocessor, postprocessor
 
 
-def image_shapes(policy: Any) -> dict[str, tuple[int, int]]:
-    """Map each ACT image feature to the (height, width) it was trained on."""
+def policy_rename_map(path: str | Path) -> dict[str, str]:
+    """The dataset-to-policy key renames from the checkpoint's ``train_config.json``."""
+    train_config = resolve_act_policy_dir(path) / "train_config.json"
+    if not train_config.is_file():
+        return {}
+    return dict(json.loads(train_config.read_text()).get("rename_map") or {})
+
+
+def image_shapes(
+    policy: Any,
+    *,
+    rename_map: dict[str, str] | None = None,
+    size: tuple[int, int] | None = None,
+) -> dict[str, tuple[int, int]]:
+    """Map each image key the preprocessor takes to the (height, width) fed to it.
+
+    Keys are the dataset keys before ``rename_map``; ``size`` replaces the
+    shapes in the policy config.
+    """
+    dataset_keys = {new: old for old, new in (rename_map or {}).items()}
     return {
-        key: (int(feature.shape[1]), int(feature.shape[2]))
+        dataset_keys.get(key, key): size
+        or (int(feature.shape[1]), int(feature.shape[2]))
         for key, feature in policy.config.image_features.items()
     }
+
+
+def parse_image_size(value: str | None) -> tuple[int, int] | None:
+    """Parse ``<height>x<width>``."""
+    if not value:
+        return None
+    height, _, width = str(value).partition("x")
+    if not height.isdigit() or not width.isdigit():
+        raise ValueError(f"image size must be <height>x<width>, got {value!r}")
+    return int(height), int(width)
 
 
 def resize_image(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
@@ -129,11 +159,15 @@ def act_observation(
     return state, images
 
 
-def act_frame(state: np.ndarray, images: dict[str, np.ndarray]) -> dict[str, torch.Tensor]:
-    """One unbatched ACT input frame; images become CHW floats in [0, 1]."""
-    frame = {"observation.state": torch.from_numpy(state)}
+def act_frame(
+    state: np.ndarray, images: dict[str, np.ndarray], task: str | None = None
+) -> dict[str, Any]:
+    """One unbatched policy input frame; images become CHW floats in [0, 1]."""
+    frame: dict[str, Any] = {"observation.state": torch.from_numpy(state)}
     for key, image in images.items():
         frame[key] = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+    if task is not None:
+        frame["task"] = task
     return frame
 
 
@@ -181,6 +215,15 @@ def _predict_chunk(
     return actions.reshape(-1, actions.shape[-1]).cpu().numpy()
 
 
+def _select_action(
+    policy: Any, preprocessor: Any, postprocessor: Any, frame: dict[str, Any]
+) -> np.ndarray:
+    """One action from the policy's own action queue."""
+    with torch.inference_mode():
+        action = postprocessor(policy.select_action(preprocessor(frame)))
+    return action.reshape(1, -1).cpu().numpy()
+
+
 def run_act_actor(
     ctx: Any,
     cfg: Any,
@@ -189,7 +232,12 @@ def run_act_actor(
     robot: Any = None,
     transport: LearnerTransport | None = None,
 ) -> dict[str, Any]:
-    """Roll out ACT on one Armnet SO-101 cell and stream successes to the learner."""
+    """Roll out a LeRobot policy on one Armnet SO-101 cell and report to the learner.
+
+    ACT predicts a chunk of ``n_action_steps`` with optional exploration noise;
+    other policy types use ``select_action``. Successful episodes are streamed
+    to the learner unless ``stream_episodes`` is false.
+    """
     device_name = str(_field(cfg, "device", "cuda"))
     device = (
         device_name if device_name != "cuda" or torch.cuda.is_available() else "cpu"
@@ -206,22 +254,29 @@ def run_act_actor(
             robot.connect()
 
     try:
-        policy, preprocessor, postprocessor = load_act_policy(
+        policy, preprocessor, postprocessor = load_lerobot_policy(
             cfg.policy_dir, device
         )
         policy.eval()
-        shapes = image_shapes(policy)
+        shapes = image_shapes(
+            policy,
+            rename_map=policy_rename_map(cfg.policy_dir),
+            size=parse_image_size(_field(cfg, "image_size", None)),
+        )
     except Exception:
         _close_robot_and_cell(robot, ctx.cell)
         raise
+    policy_type = str(policy.config.type)
+    is_act = policy_type == ACT_CONFIG_NAME
     n_action_steps = int(_field(cfg, "n_action_steps", 0)) or int(
         policy.config.n_action_steps
     )
-    if not 1 <= n_action_steps <= int(policy.config.chunk_size):
+    if is_act and not 1 <= n_action_steps <= int(policy.config.chunk_size):
         raise ValueError(
             f"n_action_steps={n_action_steps} must be in "
             f"[1, chunk_size={policy.config.chunk_size}]"
         )
+    stream_episodes = bool(_field(cfg, "stream_episodes", True))
 
     transport = transport or LearnerTransport(cfg.actor_learner)
     operator = operator or CellOperatorControl(ctx.cell)
@@ -235,6 +290,8 @@ def run_act_actor(
     exploration_scale = float(_field(cfg, "exploration_scale", 0.0))
     if not math.isfinite(exploration_scale) or exploration_scale < 0:
         raise ValueError("exploration_scale must be finite and nonnegative")
+    if exploration_scale > 0 and not is_act:
+        raise ValueError(f"exploration_scale needs an ACT policy, not {policy_type}")
     from armnet_rlt.config import episodes_for_round, parse_round_schedule
 
     round_schedule = parse_round_schedule(_field(cfg, "episodes_per_round", 0))
@@ -251,8 +308,9 @@ def run_act_actor(
         or getattr(ctx.cell, "language_instruction", "")
         or getattr(ctx, "task", "")
     )
+    task = None if is_act else instruction
     eval_dataset, frame_writer, telemetry, eval_repo_id = open_rollout_recording(
-        ctx, cfg, robot, instruction, action_source="act_policy"
+        ctx, cfg, robot, instruction, action_source=f"{policy_type}_policy"
     )
     eval_dataset_url: str | None = None
 
@@ -282,24 +340,29 @@ def run_act_actor(
         )
         policy.eval()
         print(
-            f"[act] policy {cfg.policy_dir}: images={shapes} "
-            f"chunk={policy.config.chunk_size} n_action_steps={n_action_steps} "
-            f"learner_step={current_policy_step}",
+            f"[act] {policy_type} policy {cfg.policy_dir}: images={shapes} "
+            f"n_action_steps={n_action_steps} learner_step={current_policy_step}",
             flush=True,
         )
         operator.start()
 
         # Run one inference before the first rollout.
         warm_state, warm_images = act_observation(robot.get_observation(), shapes)
-        _predict_chunk(
-            policy,
-            preprocessor,
-            postprocessor,
-            act_frame(warm_state, warm_images),
-            n_action_steps=n_action_steps,
-            exploration_scale=0.0,
-            exploration_correlation=exploration_correlation,
-        )
+        if is_act:
+            _predict_chunk(
+                policy,
+                preprocessor,
+                postprocessor,
+                act_frame(warm_state, warm_images),
+                n_action_steps=n_action_steps,
+                exploration_scale=0.0,
+                exploration_correlation=exploration_correlation,
+            )
+        else:
+            _select_action(
+                policy, preprocessor, postprocessor, act_frame(warm_state, warm_images, task)
+            )
+            policy.reset()
 
         rounds_done = 0
         next_round_at = (
@@ -386,13 +449,13 @@ def run_act_actor(
                 # Frames for successful rollouts only.
                 payload = (
                     serialize_act_episode(states, actions, frames)
-                    if success and states
+                    if stream_episodes and success and states
                     else None
                 )
                 record = EpisodeRecord(
                     session_id=session_id,
                     cell_id=cell_id,
-                    policy_variant="act",
+                    policy_variant=policy_type,
                     session_rollout_index=int(
                         getattr(operator, "rollout_index", completed + 1)
                     ),
@@ -461,7 +524,12 @@ def run_act_actor(
 
             raw_obs = robot.get_observation()
             state, images = act_observation(raw_obs, shapes)
-            if chunk is None or chunk_index >= len(chunk):
+            if not is_act:
+                chunk = _select_action(
+                    policy, preprocessor, postprocessor, act_frame(state, images, task)
+                )
+                chunk_index = 0
+            elif chunk is None or chunk_index >= len(chunk):
                 chunk = _predict_chunk(
                     policy,
                     preprocessor,
@@ -515,8 +583,9 @@ def run_act_actor(
                     dtype=np.float32,
                 )
             )
-            for key, image in images.items():
-                frames[key].append(encode_jpeg(image))
+            if stream_episodes:
+                for key, image in images.items():
+                    frames[key].append(encode_jpeg(image))
             chunk_index += 1
             command_ticks += 1
             remaining = period_s - (time.perf_counter() - tick)

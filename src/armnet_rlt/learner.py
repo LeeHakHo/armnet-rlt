@@ -323,6 +323,7 @@ def _start_online_transport(
     *,
     learner_step: int,
     on_parameter_stream: Callable[[], None] | None = None,
+    partial: bool = False,
 ) -> tuple[Any, Queue, Queue, Queue]:
     import grpc
     from lerobot.rl.learner_service import LearnerService
@@ -336,6 +337,7 @@ def _start_online_transport(
         parameters_queue,
         policy,
         learner_step=learner_step,
+        partial=partial,
     )
     transport = config.actor_learner
 
@@ -381,16 +383,21 @@ def _start_online_transport(
 
 
 def _push_weights(
-    parameters_queue: Queue, policy: RLTPolicy, *, learner_step: int
+    parameters_queue: Queue,
+    policy: RLTPolicy,
+    *,
+    learner_step: int,
+    partial: bool = False,
 ) -> None:
     from lerobot.transport.utils import state_to_bytes
 
-    payload = state_to_bytes(
-        {
-            "policy": policy.actor_state_bytes(),
-            "learner_step": torch.tensor(learner_step, dtype=torch.int64),
-        }
-    )
+    state: dict[str, Any] = {
+        "policy": policy.actor_state_bytes(),
+        "learner_step": torch.tensor(learner_step, dtype=torch.int64),
+    }
+    if partial:
+        state["partial"] = torch.tensor(True)
+    payload = state_to_bytes(state)
     while True:
         try:
             parameters_queue.get_nowait()

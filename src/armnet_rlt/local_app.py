@@ -422,6 +422,28 @@ def cmd_act_streaming_bc(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_checkpoint_eval(args: argparse.Namespace) -> None:
+    token = _learner_token()
+    from types import SimpleNamespace
+
+    from armnet_rlt.checkpoint_eval import run_checkpoint_eval
+    from armnet_rlt.config import RLTActorLearnerConfig
+
+    cfg = SimpleNamespace(actor_learner=RLTActorLearnerConfig())
+    with _serve(args, cfg, token):
+        run_checkpoint_eval(
+            cfg,
+            train_dir=args.train_dir,
+            base_checkpoint=args.base_checkpoint,
+            run_dir=local_data_root() / "checkpoint-eval" / args.run_id,
+            run_id=args.run_id,
+            rollouts_per_checkpoint=args.rollouts_per_checkpoint,
+            final_step=args.final_step,
+            first_step=args.first_step,
+            wandb_project=args.wandb_project or None,
+        )
+
+
 def cmd_online(args: argparse.Namespace) -> None:
     _select_gpu(args.gpu)
     token = _learner_token()
@@ -579,6 +601,31 @@ def _parser() -> argparse.ArgumentParser:
         act_streaming,
         "Minimum seconds between weight pushes; weights are pushed when a round finishes",
     )
+
+    checkpoint_eval = add(
+        "checkpoint-eval",
+        cmd_checkpoint_eval,
+        "serve a lerobot-train run's checkpoints to a cell actor and log each one's success rate",
+    )
+    checkpoint_eval.add_argument("--config-name", default="eval")
+    checkpoint_eval.add_argument("--run-id", default="")
+    checkpoint_eval.add_argument("--wandb-project", default="")
+    checkpoint_eval.add_argument(
+        "--train-dir", required=True, help="lerobot-train --output_dir"
+    )
+    checkpoint_eval.add_argument(
+        "--base-checkpoint",
+        required=True,
+        help="pretrained_model directory the actor loads at start",
+    )
+    checkpoint_eval.add_argument("--rollouts-per-checkpoint", type=int, default=10)
+    checkpoint_eval.add_argument(
+        "--final-step", type=int, required=True, help="Stop after this checkpoint"
+    )
+    checkpoint_eval.add_argument(
+        "--first-step", type=int, default=0, help="Skip checkpoints before this step"
+    )
+    add_transport(checkpoint_eval, "Minimum seconds between weight pushes")
 
     online = add(
         "online",
