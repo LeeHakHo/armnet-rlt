@@ -105,6 +105,41 @@ def test_offline_smoke_finishes_without_lerobot(tmp_path) -> None:
     assert checkpoint.is_relative_to(tmp_path / "runs" / "smoke")
 
 
+def test_dsrl_learner_needs_no_demonstration_cache(tmp_path) -> None:
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=2,
+        predicted_action_len=2,
+    )
+    assets, _cache = _write_artifacts(tmp_path, network)
+    config = RLTConfig(
+        network=network,
+        algorithm="dsrl",
+        assets_dir=assets,
+        output_dir=tmp_path / "runs",
+        run_id="dsrl-smoke",
+        actions_to_execute=1,
+        use_subsampling=False,
+        num_critics=2,
+        utd_ratio=1,
+        batch_size=2,
+        max_demo_pretrain_steps=0,
+        online_batch_fraction=1.0,
+        online_steps=1,
+        device="cpu",
+        save_freq=0,
+    )
+
+    summary = run_learner(config, offline_only=True)
+
+    assert summary["transition_count"] == 0
+    assert summary["predicted_action_dim"] == 12
+    assert summary["completed_steps"] == 0
+    checkpoint = torch.load(summary["checkpoint_path"], weights_only=False)
+    assert checkpoint["config"]["algorithm"] == "dsrl"
+    assert "actor.noise_bound" in checkpoint["policy_state_dict"]
+
+
 def test_interactions_are_persisted_with_learner_step(
     monkeypatch, tmp_path: Path
 ) -> None:

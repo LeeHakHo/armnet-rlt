@@ -100,10 +100,19 @@ def config_from_frozen_checkpoint(artifact: Mapping[str, Any]) -> RLTConfig:
     jerk = tuple(
         raw.get("jerk_joint_weights", SO101_JERK_JOINT_WEIGHTS)
     )
+    algorithm = str(raw.get("algorithm", "rlt"))
     return RLTConfig(
         embodiment=embodiment,
         network=network,
-        actions_to_execute=network.predicted_action_len,
+        algorithm=algorithm,
+        dsrl_noise_bound=float(raw.get("dsrl_noise_bound", 2.0)),
+        actions_to_execute=(
+            int(raw.get("actions_to_execute", 10))
+            if algorithm == "dsrl"
+            else network.predicted_action_len
+        ),
+        max_demo_pretrain_steps=0 if algorithm == "dsrl" else 500,
+        online_batch_fraction=1.0 if algorithm == "dsrl" else 0.5,
         use_subsampling=bool(raw.get("use_subsampling", True)),
         sub_chunk_stride=int(raw.get("sub_chunk_stride", 2)),
         use_quantile_norm=bool(raw.get("use_quantile_norm", True)),

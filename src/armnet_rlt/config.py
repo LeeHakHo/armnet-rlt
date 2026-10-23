@@ -198,6 +198,12 @@ class RLTConfig:
 
     use_quantile_norm: bool = True
     policy_uses_delta_actions: bool = False
+    # "rlt": the actor outputs an action chunk refined from the base policy's.
+    # "dsrl": the actor outputs the base flow policy's initial noise (Wagenmaker
+    # et al., 2025); the base policy turns it into the executed chunk.
+    algorithm: str = "rlt"
+    # DSRL noise actions live in [-dsrl_noise_bound, dsrl_noise_bound].
+    dsrl_noise_bound: float = 2.0
     device: str = "cuda"
     storage_device: str = "cpu"
     log_freq: int = 10
@@ -216,7 +222,28 @@ class RLTConfig:
                 f"{self.embodiment} requires action_dim={expected_dim}, "
                 f"got {self.network.action_dim}"
             )
-        if self.actions_to_execute != self.network.predicted_action_len:
+        if self.algorithm not in {"rlt", "dsrl"}:
+            raise ValueError("algorithm must be 'rlt' or 'dsrl'")
+        if self.algorithm == "dsrl":
+            # The noise covers the base policy's whole chunk; the actor executes
+            # a prefix of the chunk the base policy produces from it.
+            if self.network.predicted_action_len != self.network.reference_action_len:
+                raise ValueError(
+                    "dsrl requires network.predicted_action_len to equal "
+                    "network.reference_action_len"
+                )
+            if not 1 <= self.actions_to_execute <= self.network.predicted_action_len:
+                raise ValueError(
+                    "dsrl requires 1 <= actions_to_execute <= "
+                    "network.predicted_action_len"
+                )
+            if not math.isfinite(self.dsrl_noise_bound) or self.dsrl_noise_bound <= 0:
+                raise ValueError("dsrl_noise_bound must be finite and positive")
+            if self.max_demo_pretrain_steps:
+                raise ValueError("dsrl has no demonstration pretraining")
+            if self.online_batch_fraction != 1.0:
+                raise ValueError("dsrl trains on online transitions only")
+        elif self.actions_to_execute != self.network.predicted_action_len:
             raise ValueError(
                 "actions_to_execute must equal network.predicted_action_len"
             )

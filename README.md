@@ -233,6 +233,34 @@ RL token. The server checks the same token as the learner
 (`RLT_LEARNER_AUTH_TOKEN`), so pass the matching `--auth-secret`. The local
 checkpoint must be the same one the cell would load.
 
+DSRL (diffusion steering via RL, Wagenmaker et al. 2025) on π0.5:
+
+```bash
+sbatch tools/rlt-online-remote.sbatch "$RLT_RUN_ID" \
+  --algorithm dsrl --pretrain-steps 0 --tunnel ngrok-tcp --online-steps 30000
+
+ROLLOUTS=1200 tools/submit-online-actor-cell03.sh "$RLT_RUN_ID" \
+  --image-ref <pushed-actor-image> --remote-policy \
+  --algorithm dsrl --exploration-scale 1.0
+```
+
+`--algorithm dsrl` keeps π0.5 frozen and learns the initial noise of its flow
+instead of an action chunk: the actor maps the RL token and joint state to a
+`30×6` noise, clipped to `±--dsrl-noise-bound` (default 2), and the policy server
+denoises from it, so the robot always executes a chunk π0.5 itself produced.
+The cell forwards every learner update to the policy server (`SetSteering`),
+which keeps inference at one round trip per chunk. Transitions store the noise
+as `action` and the chunk it produced as `reference_action`; the critic is the
+same TD3 ensemble as RLT. There is no demonstration cache or pretraining, and
+`--exploration-scale` is the standard deviation of Gaussian noise added to the
+actor's output in noise units, so 1.0 at initialization behaves like π0.5
+sampling on its own. Frozen evaluation (`rlt-freeze-checkpoint` and
+`rlt-submit-eval --remote-policy`) works unchanged: the artifact records the
+algorithm, exploration 0 steers deterministically, and `--include-base` pairs it
+with unsteered π0.5. `tools/queue-dsrl.sh` runs learner, actor, freeze and a
+10-rollout evaluation on cell-03 end to end. The actor image must contain
+`src/armnet_rlt/dsrl.py`, so rebuild it before submitting.
+
 ## How actor-to-learner discovery works
 
 There is no hard-coded IP address or DNS name in this repository:

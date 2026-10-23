@@ -511,6 +511,22 @@ def _load_parameters(actor: Any, payload: Any) -> int | None:
     return int(raw_step)
 
 
+def _sync_steering(
+    policy: Any, actor: Any, *, network: Any, learner_step: int | None
+) -> None:
+    """Hand the DSRL actor's current weights to the policy that applies them."""
+    from armnet_rlt.dsrl import steering_payload
+
+    policy.set_steering(
+        steering_payload(
+            actor.state_dict(),
+            network=network,
+            noise_bound=float(actor.noise_bound),
+            learner_step=learner_step,
+        )
+    )
+
+
 def _await_learner_round(
     transport: Any,
     actor: Any,
@@ -923,6 +939,11 @@ def run_actor(
     action_dim = int(network.action_dim)
     predicted_len = int(network.predicted_action_len)
     reference_len = int(network.reference_action_len)
+    dsrl = str(_field(cfg, "algorithm", "rlt")) == "dsrl"
+    # DSRL's actor covers the whole base chunk and executes a prefix of it.
+    execute_len = int(_field(cfg, "actions_to_execute", predicted_len)) if dsrl else predicted_len
+    if not 1 <= execute_len <= reference_len:
+        raise ValueError("actions_to_execute must be within the reference chunk")
     if action_dim != 6 or int(network.proprioception_dim) != 6:
         raise ValueError("production SO-101 actor requires 6-D action and proprioception")
     if int(network.rl_token_dim) != 2048:
@@ -949,21 +970,35 @@ def run_actor(
         if policy is None:
             policy = _make_policy(cfg)
 
-        from armnet_rlt.networks import RLTActor
-
         delta_actions = _delta_action_mode(cfg, policy)
-        actor = RLTActor(
-            network,
-            delta_actions=delta_actions,
-        )
-        actor.set_norm_stats(
-            policy.norm_stats,
-            use_quantiles=policy.use_quantile_norm,
-        )
+        if dsrl:
+            from armnet_rlt.dsrl import DSRLActor
+
+            # The noise actor is evaluated inside the policy server; this copy
+            # only receives learner updates and forwards them there.
+            actor: Any = DSRLActor(
+                network, noise_bound=float(_field(cfg, "dsrl_noise_bound", 2.0))
+            )
+            actor.set_norm_stats(
+                policy.norm_stats,
+                use_quantiles=policy.use_quantile_norm,
+            )
+            actor.eval()
+        else:
+            from armnet_rlt.networks import RLTActor
+
+            actor = RLTActor(
+                network,
+                delta_actions=delta_actions,
+            )
+            actor.set_norm_stats(
+                policy.norm_stats,
+                use_quantiles=policy.use_quantile_norm,
+            )
+            # RLTActor samples fixed exploration only in training mode. It has no
+            # dropout/batch-norm layers, so this affects exploration only.
+            actor.to(device).train()
         log.info("RLT actor delta-action mode: %s", delta_actions)
-        # RLTActor samples fixed exploration only in training mode. It has no
-        # dropout/batch-norm layers, so this affects exploration only.
-        actor.to(device).train()
     except Exception:
         _close_robot_and_cell(robot, ctx.cell)
         raise
@@ -1067,11 +1102,18 @@ def run_actor(
         current_policy_step = _load_parameters(
             actor, transport.wait_for_initial_parameters()
         )
+        if dsrl:
+            _sync_steering(policy, actor, network=network, learner_step=current_policy_step)
         operator.start()
 
         # Compile the combined Pi0RL path before opening the first rollout.
         warm_obs = robot.get_observation()
-        policy.infer(build_policy_observation(warm_obs, instruction))
+        if dsrl:
+            policy.infer(
+                build_policy_observation(warm_obs, instruction), exploration_std=0.0
+            )
+        else:
+            policy.infer(build_policy_observation(warm_obs, instruction))
 
         rounds_done = 0
         next_round_at = (
@@ -1102,6 +1144,10 @@ def run_actor(
                     timeout_s=round_wait_timeout_s,
                 )
                 policy_reload_count += applied
+                if dsrl and applied:
+                    _sync_steering(
+                        policy, actor, network=network, learner_step=current_policy_step
+                    )
                 release = getattr(operator, "release_round_retries", None)
                 released = release() if callable(release) else 0
                 print(
@@ -1128,6 +1174,13 @@ def run_actor(
                     if loaded_step is not None:
                         current_policy_step = loaded_step
                     policy_reload_count += 1
+                    if dsrl:
+                        _sync_steering(
+                            policy,
+                            actor,
+                            network=network,
+                            learner_step=current_policy_step,
+                        )
                 episode_started_at = datetime.now(UTC).isoformat()
                 episode_policy_step_start = current_policy_step
                 policy_variant = _policy_variant(
@@ -1295,10 +1348,23 @@ def run_actor(
                 dtype=torch.float32,
                 device=device,
             )
-            if chunk is None or chunk_index >= predicted_len:
-                result = policy.infer(
-                    build_policy_observation(raw_obs, instruction)
-                )
+            if chunk is None or chunk_index >= execute_len:
+                if dsrl:
+                    # The base variant is the unsteered base policy: zero-mean
+                    # unit noise. The steered variant explores around the
+                    # actor's noise with exploration_scale as its deviation.
+                    steer = policy_variant != "base"
+                    result = policy.infer(
+                        build_policy_observation(raw_obs, instruction),
+                        exploration_std=exploration_scale if steer else 1.0,
+                        steer=steer,
+                    )
+                    if result.noise is None:
+                        raise RuntimeError("policy server returned no DSRL noise")
+                else:
+                    result = policy.infer(
+                        build_policy_observation(raw_obs, instruction)
+                    )
                 token = torch.from_numpy(result.rl_token).float().to(device)
                 reference_np = result.action_chunk[:reference_len, :action_dim]
                 if reference_np.shape != (reference_len, action_dim):
@@ -1328,7 +1394,9 @@ def run_actor(
                             next_reference_action=reference.flatten().cpu(),
                         )
                     )
-                if policy_variant == "base":
+                if dsrl:
+                    chunk = reference[:execute_len].detach().clone()
+                elif policy_variant == "base":
                     chunk = reference[:predicted_len].detach().clone()
                     base_scale = (
                         base_exploration_scale
@@ -1357,7 +1425,7 @@ def run_actor(
                         exploration_scale=exploration_scale,
                     )
                 deviation = (
-                    chunk - reference[:predicted_len]
+                    chunk - reference[: chunk.shape[0]]
                 ).detach().abs().double().cpu()
                 deviation_sum += deviation.sum(dim=0)
                 deviation_count += int(deviation.shape[0])
@@ -1368,7 +1436,11 @@ def run_actor(
                     token.detach().clone(),
                     proprioception.detach().clone(),
                     reference.detach().clone(),
-                    torch.full_like(chunk, torch.nan),
+                    # DSRL's transition action is the noise itself; RLT's is the
+                    # chunk as executed, filled in step by step below.
+                    torch.from_numpy(result.noise).float().to(device)
+                    if dsrl
+                    else torch.full_like(chunk, torch.nan),
                 )
                 chunk_index = 0
                 state_machine.episode_ctx.total_chunk_count += 1
@@ -1418,14 +1490,15 @@ def run_actor(
             ):
                 hardware_clamp_steps += 1
             assert previous is not None
-            previous[3][chunk_index] = torch.as_tensor(
-                [
-                    actual_action.get(f"{name}.pos", requested_action[f"{name}.pos"])
-                    for name in MOTOR_NAMES
-                ],
-                dtype=chunk.dtype,
-                device=chunk.device,
-            )
+            if not dsrl:
+                previous[3][chunk_index] = torch.as_tensor(
+                    [
+                        actual_action.get(f"{name}.pos", requested_action[f"{name}.pos"])
+                        for name in MOTOR_NAMES
+                    ],
+                    dtype=chunk.dtype,
+                    device=chunk.device,
+                )
             chunk_index += 1
             command_ticks += 1
             remaining = period_s - (time.perf_counter() - tick)

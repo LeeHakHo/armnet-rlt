@@ -1260,9 +1260,10 @@ def run_learner(
     idle_timeout_s: float = 0.0,
     idle_min_episodes: int = 5,
 ) -> dict[str, object]:
+    dsrl = config.algorithm == "dsrl"
     if not config.assets_dir:
         raise ValueError("assets_dir is required")
-    if not config.demo_cache_path:
+    if not config.demo_cache_path and not dsrl:
         raise ValueError("demo_cache_path is required; cache building is unsupported")
 
     run_dir = config.checkpoint_dir
@@ -1291,10 +1292,18 @@ def run_learner(
         use_delta_actions=config.policy_uses_delta_actions,
         network=config.network,
     )
-    transitions, artifact_summary = load_transition_cache(
-        config.demo_cache_path, config.network
-    )
-    policy = RLTPolicy(config)
+    if dsrl:
+        # DSRL learns from its own rollouts only; demonstrations carry no noise.
+        from armnet_rlt.dsrl import DSRLPolicy
+
+        transitions = []
+        artifact_summary = _empty_summary(config.network)
+        policy: Any = DSRLPolicy(config)
+    else:
+        transitions, artifact_summary = load_transition_cache(
+            config.demo_cache_path, config.network
+        )
+        policy = RLTPolicy(config)
     policy.set_norm_stats(
         norm_stats, use_quantiles=config.use_quantile_norm
     )
@@ -1663,6 +1672,22 @@ def run_learner(
         wandb_run.summary.update(summary)
         wandb_run.finish()
     return summary
+
+
+def _empty_summary(network: Any) -> TransitionSummary:
+    return TransitionSummary(
+        transition_count=0,
+        positive_count=0,
+        positive_rate=0.0,
+        terminal_count=0,
+        rl_token_dim=network.rl_token_dim,
+        action_dim=network.action_dim,
+        proprioception_dim=network.proprioception_dim,
+        reference_action_len=network.reference_action_len,
+        reference_action_dim=network.reference_action_dim,
+        predicted_action_len=network.predicted_action_len,
+        predicted_action_dim=network.predicted_action_dim,
+    )
 
 
 def _learner_summary(

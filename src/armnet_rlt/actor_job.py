@@ -397,12 +397,15 @@ def run(ctx: Context) -> dict[str, Any]:
         network = base_cfg.network
     else:
         reference_len = int(args.get("reference_action_len", 30))
-        predicted_len = int(
+        execute_len = int(
             args.get(
                 "predicted_action_len",
                 args.get("actions_to_execute", 10),
             )
         )
+        algorithm = str(args.get("algorithm", "rlt"))
+        # DSRL's actor outputs noise for the whole base chunk and executes a prefix.
+        predicted_len = reference_len if algorithm == "dsrl" else execute_len
         network = so101_network_config(
             reference_action_len=reference_len,
             predicted_action_len=predicted_len,
@@ -413,11 +416,15 @@ def run(ctx: Context) -> dict[str, Any]:
             network=network,
             jerk_joint_weights=list(SO101_JERK_JOINT_WEIGHTS),
             device=str(args.get("device", "cuda")),
-            actions_to_execute=predicted_len,
+            actions_to_execute=execute_len,
             use_quantile_norm=_as_bool(args.get("quantile_norm"), True),
             policy_uses_delta_actions=_as_bool(
                 args.get("delta_actions"), True
             ),
+            algorithm=algorithm,
+            dsrl_noise_bound=float(args.get("dsrl_noise_bound", 2.0)),
+            max_demo_pretrain_steps=0 if algorithm == "dsrl" else 500,
+            online_batch_fraction=1.0 if algorithm == "dsrl" else 0.5,
         )
     if (
         network.action_dim != 6

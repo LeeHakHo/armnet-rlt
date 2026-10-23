@@ -311,17 +311,18 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         args.checkpoint, args.config_name, default_prompt=args.prompt
     )
     height, width = IMAGE_RESOLUTION
-    # Compile the inference function before serving.
-    policy.infer(
-        PolicyObservation(
-            state=np.zeros(6, dtype=np.float32),
-            images={
-                name: np.zeros((height, width, 3), dtype=np.uint8)
-                for name in ("front", "top", "wrist")
-            },
-            prompt=args.prompt,
-        )
+    # Compile the inference functions before serving: the combined sampler
+    # and the split prefix/denoise path DSRL steering uses.
+    warm_observation = PolicyObservation(
+        state=np.zeros(6, dtype=np.float32),
+        images={
+            name: np.zeros((height, width, 3), dtype=np.uint8)
+            for name in ("front", "top", "wrist")
+        },
+        prompt=args.prompt,
     )
+    policy.infer(warm_observation)
+    policy.infer(warm_observation, exploration_std=1.0, steer=False)
     edge_tls = args.tunnel == "ngrok" and not args.public_endpoint
     bind_host = "127.0.0.1" if edge_tls else args.bind_host
     key = policy_rendezvous_key(args.config_name)
@@ -457,6 +458,8 @@ def cmd_online(args: argparse.Namespace) -> None:
         online_steps=args.online_steps,
         online_batch_fraction=args.online_batch_fraction,
         save_freq=args.save_freq,
+        algorithm=args.algorithm,
+        dsrl_noise_bound=args.dsrl_noise_bound,
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -648,6 +651,19 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument("--resume", action="store_true")
     online.add_argument("--idle-timeout-s", type=float, default=600.0)
     online.add_argument("--idle-min-episodes", type=int, default=5)
+    online.add_argument(
+        "--algorithm",
+        choices=("rlt", "dsrl"),
+        default="rlt",
+        help="rlt refines the base chunk; dsrl steers the base policy's noise "
+        "(no demo pretraining, online transitions only)",
+    )
+    online.add_argument(
+        "--dsrl-noise-bound",
+        type=float,
+        default=2.0,
+        help="DSRL noise actions are clipped to [-bound, bound]",
+    )
     add_transport(online, "Seconds between weight pushes")
 
     policy_server = add(

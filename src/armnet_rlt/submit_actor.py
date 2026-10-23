@@ -93,6 +93,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-rollouts", type=int, default=40)
     parser.add_argument("--reference-action-len", type=int, default=30)
     parser.add_argument(
+        "--algorithm",
+        choices=("rlt", "dsrl"),
+        default="rlt",
+        help="Must match the learner: rlt refines the base chunk, dsrl steers "
+        "the base policy's noise through the policy server",
+    )
+    parser.add_argument(
+        "--dsrl-noise-bound",
+        type=float,
+        default=2.0,
+        help="DSRL noise is clipped to [-bound, bound]; must match the learner",
+    )
+    parser.add_argument(
         "--exploration-scale",
         type=float,
         default=0.5,
@@ -337,6 +350,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "learner_port": int(entry["port"]),
         "use_tls": bool(entry["use_tls"]),
         "delta_actions": True,
+        "algorithm": str(getattr(args, "algorithm", "rlt")),
+        "dsrl_noise_bound": float(getattr(args, "dsrl_noise_bound", 2.0)),
         "exploration_scale": float(getattr(args, "exploration_scale", 0.5)),
         "bc_warmup_episodes": int(getattr(args, "bc_warmup_episodes", 0)),
         "warmup_exploration_scale": float(

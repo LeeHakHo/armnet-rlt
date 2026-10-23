@@ -17,16 +17,22 @@ from armnet_rlt.resources import task_paths
 
 
 def network_for(
-    embodiment: str, reference_action_len: int
+    embodiment: str, reference_action_len: int, predicted_action_len: int = 10
 ) -> tuple[RLTNetworkConfig, tuple[float, ...]]:
     if embodiment == "so101":
         return (
-            so101_network_config(reference_action_len=reference_action_len),
+            so101_network_config(
+                reference_action_len=reference_action_len,
+                predicted_action_len=predicted_action_len,
+            ),
             SO101_JERK_JOINT_WEIGHTS,
         )
     if embodiment == "biso101":
         return (
-            biso101_network_config(reference_action_len=reference_action_len),
+            biso101_network_config(
+                reference_action_len=reference_action_len,
+                predicted_action_len=predicted_action_len,
+            ),
             BISO101_JERK_JOINT_WEIGHTS,
         )
     raise ValueError("embodiment must be 'so101' or historical learner-only 'biso101'")
@@ -53,10 +59,23 @@ def learner_config(
     actor_lr_min: float = 0.0,
     save_freq: int | None = None,
     device: str = "cuda",
+    algorithm: str = "rlt",
+    dsrl_noise_bound: float = 2.0,
+    actions_to_execute: int = 10,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
+    if algorithm == "dsrl":
+        # The noise spans the base policy's full 30-step chunk.
+        network, jerk = network_for(
+            embodiment, reference_action_len=30, predicted_action_len=30
+        )
+        max_demo_pretrain_steps = 0
+        online_batch_fraction = 1.0
     kwargs = {
+        "algorithm": algorithm,
+        "dsrl_noise_bound": dsrl_noise_bound,
+        "actions_to_execute": actions_to_execute,
         "embodiment": embodiment,
         "network": network,
         "jerk_joint_weights": jerk,

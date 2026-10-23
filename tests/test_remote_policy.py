@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 from dataclasses import dataclass
 
@@ -31,14 +32,37 @@ class _FakePolicy:
             "actions": _Stats(np.zeros((30, 6)), np.ones((30, 6))),
         }
         self.observations: list[PolicyObservation] = []
+        self.steered: list[tuple[float, bool]] = []
+        self.steering_payloads: list[dict] = []
+        self.steering_step: int | None = None
         self.resets = 0
 
-    def infer(self, observation: PolicyObservation) -> PolicyOutput:
+    def infer(
+        self,
+        observation: PolicyObservation,
+        *,
+        exploration_std: float | None = None,
+        steer: bool = True,
+    ) -> PolicyOutput:
         self.observations.append(observation)
+        if exploration_std is None:
+            return PolicyOutput(
+                action_chunk=np.full((30, 6), observation.state[0], dtype=np.float32),
+                rl_token=np.arange(2048, dtype=np.float32),
+            )
+        self.steered.append((exploration_std, steer))
         return PolicyOutput(
-            action_chunk=np.full((30, 6), observation.state[0], dtype=np.float32),
+            action_chunk=np.full((30, 6), -observation.state[0], dtype=np.float32),
             rl_token=np.arange(2048, dtype=np.float32),
+            noise=np.full((30, 6), exploration_std, dtype=np.float32),
+            steering_step=self.steering_step if steer else None,
         )
+
+    def set_steering(self, payload: dict) -> int | None:
+        self.steering_payloads.append(payload)
+        meta = json.loads(str(payload["meta"]))
+        self.steering_step = meta["learner_step"]
+        return self.steering_step
 
     def reset(self) -> None:
         self.resets += 1
@@ -113,3 +137,28 @@ def test_remote_policy_rejects_a_wrong_token() -> None:
         with pytest.raises(grpc.RpcError) as error:
             RemoteOpenPIRLTPolicy(_channel(port, "wrong"))
     assert error.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_remote_policy_forwards_steering_and_noise() -> None:
+    policy = _FakePolicy()
+    port = _free_port()
+    with serve(
+        policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
+    ):
+        remote = RemoteOpenPIRLTPolicy(_channel(port, "secret"), image_codec="raw")
+        plain = remote.infer(_observation())
+        step = remote.set_steering(
+            {"meta": json.dumps({"learner_step": 7}), "param/w": np.ones((2, 3))}
+        )
+        steered = remote.infer(_observation(), exploration_std=0.5)
+        unsteered = remote.infer(_observation(), exploration_std=1.0, steer=False)
+
+    assert plain.noise is None and plain.steering_step is None
+    assert step == 7 and remote.steering_step == 7
+    np.testing.assert_array_equal(policy.steering_payloads[0]["param/w"], np.ones((2, 3)))
+    assert policy.steered == [(0.5, True), (1.0, False)]
+    np.testing.assert_array_equal(steered.action_chunk, np.full((30, 6), -3.0))
+    np.testing.assert_array_equal(steered.noise, np.full((30, 6), 0.5))
+    assert steered.steering_step == 7
+    assert unsteered.steering_step is None
+    np.testing.assert_array_equal(unsteered.noise, np.full((30, 6), 1.0))

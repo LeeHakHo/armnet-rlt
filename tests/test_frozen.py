@@ -64,6 +64,39 @@ def test_freeze_keeps_only_actor_and_inference_config(tmp_path) -> None:
     assert config.policy_uses_delta_actions is True
 
 
+def test_frozen_dsrl_checkpoint_restores_its_noise_actor(tmp_path) -> None:
+    from armnet_rlt.dsrl import DSRLActor, DSRLPolicy
+
+    network = so101_network_config(
+        hidden_dims=(8,), reference_action_len=3, predicted_action_len=3
+    )
+    config = RLTConfig(
+        network=network,
+        algorithm="dsrl",
+        dsrl_noise_bound=1.5,
+        actions_to_execute=2,
+        use_subsampling=False,
+        max_demo_pretrain_steps=0,
+        online_batch_fraction=1.0,
+        policy_uses_delta_actions=True,
+    )
+    policy = DSRLPolicy(config)
+    artifact = freeze_learner_checkpoint(
+        {"step": 9, "policy_state_dict": policy.state_dict(), "config": asdict(config)}
+    )
+    path = tmp_path / "frozen_actor.pt"
+    torch.save(artifact, path)
+    restored = config_from_frozen_checkpoint(load_frozen_checkpoint(path))
+
+    assert restored.algorithm == "dsrl"
+    assert restored.dsrl_noise_bound == 1.5
+    assert restored.actions_to_execute == 2
+    assert restored.network.predicted_action_len == 3
+    actor = DSRLActor(restored.network, noise_bound=restored.dsrl_noise_bound)
+    actor.load_state_dict(artifact["actor_state_dict"])
+    assert float(actor.noise_bound) == 1.5
+
+
 def test_freeze_rejects_missing_actor_state() -> None:
     checkpoint = _learner_checkpoint()
     checkpoint["policy_state_dict"] = {"critic.weight": torch.ones(1)}

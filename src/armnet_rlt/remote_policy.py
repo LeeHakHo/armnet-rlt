@@ -141,15 +141,28 @@ class PolicyServer:
             images=images,
             prompt=str(arrays["prompt"]),
         )
+        options: dict[str, Any] = {}
+        if "exploration_std" in arrays:
+            options["exploration_std"] = float(arrays["exploration_std"])
+            options["steer"] = bool(arrays["steer"])
         with self._lock:
-            result = self._policy.infer(observation)
-        return pack(
-            {
-                "action_chunk": result.action_chunk,
-                "rl_token": result.rl_token,
-                "server_ms": (time.perf_counter() - started) * 1000.0,
-            }
-        )
+            result = self._policy.infer(observation, **options)
+        response: dict[str, Any] = {
+            "action_chunk": result.action_chunk,
+            "rl_token": result.rl_token,
+            "server_ms": (time.perf_counter() - started) * 1000.0,
+        }
+        if result.noise is not None:
+            response["noise"] = result.noise
+        if result.steering_step is not None:
+            response["steering_step"] = result.steering_step
+        return pack(response)
+
+    def set_steering(self, request: bytes, context: Any) -> bytes:
+        payload = unpack(request)
+        with self._lock:
+            step = self._policy.set_steering(payload)
+        return pack({"steering_step": -1 if step is None else int(step)})
 
     def reset(self, request: bytes, context: Any) -> bytes:
         with self._lock:
@@ -176,6 +189,7 @@ def serve(
         for name, method in (
             ("Info", server_impl.info),
             ("Infer", server_impl.infer),
+            ("SetSteering", server_impl.set_steering),
             ("Reset", server_impl.reset),
         )
     }
@@ -224,8 +238,9 @@ class RemoteOpenPIRLTPolicy:
         self._retries = retries
         self._calls = {
             name: channel.unary_unary(f"/{SERVICE}/{name}")
-            for name in ("Info", "Infer", "Reset")
+            for name in ("Info", "Infer", "SetSteering", "Reset")
         }
+        self.steering_step: int | None = None
         info = unpack(self._call("Info", b"", timeout_s=30.0))
         meta = json.loads(str(info["meta"]))
         self.rl_token_dim = int(meta["rl_token_dim"])
@@ -250,12 +265,15 @@ class RemoteOpenPIRLTPolicy:
                 log.warning("remote policy %s failed (%s); retrying", name, exc.code())
         raise AssertionError("unreachable")
 
-    def encode_observation(self, observation: PolicyObservation) -> bytes:
+    def encode_observation(
+        self, observation: PolicyObservation, *, extra: dict[str, Any] | None = None
+    ) -> bytes:
         height, width = self._image_size
         arrays: dict[str, Any] = {
             "state": np.asarray(observation.state, dtype=np.float32),
             "prompt": observation.prompt,
             "codec": self._image_codec,
+            **(extra or {}),
         }
         for name, image in observation.images.items():
             arrays[f"image/{name}"] = encode_image(
@@ -265,11 +283,31 @@ class RemoteOpenPIRLTPolicy:
             )
         return pack(arrays)
 
-    def infer(self, observation: PolicyObservation | dict[str, Any]) -> PolicyOutput:
+    def set_steering(self, payload: dict[str, Any]) -> int | None:
+        """Send a DSRL actor (see ``dsrl.steering_payload``) to the server."""
+        response = unpack(self._call("SetSteering", pack(payload), timeout_s=30.0))
+        step = int(response["steering_step"])
+        self.steering_step = step if step >= 0 else None
+        return self.steering_step
+
+    def infer(
+        self,
+        observation: PolicyObservation | dict[str, Any],
+        *,
+        exploration_std: float | None = None,
+        steer: bool = True,
+    ) -> PolicyOutput:
         if not isinstance(observation, PolicyObservation):
             raise TypeError("RemoteOpenPIRLTPolicy.infer expects a PolicyObservation")
         started = time.perf_counter()
-        request = self.encode_observation(observation)
+        request = self.encode_observation(
+            observation,
+            extra=(
+                {"exploration_std": float(exploration_std), "steer": bool(steer)}
+                if exploration_std is not None
+                else None
+            ),
+        )
         response = unpack(self._call("Infer", request))
         self._latencies_ms.append((time.perf_counter() - started) * 1000.0)
         self._server_ms.append(float(response["server_ms"]))
@@ -283,6 +321,14 @@ class RemoteOpenPIRLTPolicy:
         return PolicyOutput(
             action_chunk=np.asarray(response["action_chunk"], dtype=np.float32),
             rl_token=token,
+            noise=(
+                np.asarray(response["noise"], dtype=np.float32)
+                if "noise" in response
+                else None
+            ),
+            steering_step=(
+                int(response["steering_step"]) if "steering_step" in response else None
+            ),
         )
 
     def latency_summary(self) -> dict[str, float | int]:
