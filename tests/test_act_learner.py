@@ -55,3 +55,28 @@ def test_resolve_act_policy_dir_accepts_a_step_directory(tmp_path) -> None:
     assert resolve_act_policy_dir(model) == model
     with pytest.raises(FileNotFoundError):
         resolve_act_policy_dir(tmp_path)
+
+
+def test_restore_run_returns_the_newest_checkpoint_and_saved_successes(tmp_path) -> None:
+    checkpoints = tmp_path / "checkpoints"
+    for step in (500, 1000):
+        model = checkpoints / f"{step:06d}" / "pretrained_model"
+        model.mkdir(parents=True)
+        (model / "model.safetensors").write_bytes(b"")
+    (checkpoints / "last").symlink_to("001000")
+    episodes = tmp_path / "success_episodes"
+    episodes.mkdir()
+    torch.save(_episode(3), episodes / "rollout_0007_0002.pt")
+    torch.save(_episode(2), episodes / "rollout_0450_0001.pt")
+    torch.save(_episode(4), episodes / "rollout_0003_0010.pt")
+
+    checkpoint, step, successes = act_learner._restore_run(tmp_path)
+
+    assert checkpoint == checkpoints / "001000" / "pretrained_model"
+    assert step == 1000
+    assert [len(e["state"]) for e in successes] == [2, 3, 4]
+
+
+def test_restore_run_needs_a_finished_checkpoint(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        act_learner._restore_run(tmp_path)

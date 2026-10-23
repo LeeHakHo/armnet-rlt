@@ -128,6 +128,26 @@ def _merge(first: dict[str, Tensor], second: dict[str, Any], keys: list[str]) ->
     return {key: torch.cat([first[key], second[key].to(first[key].dtype)]) for key in keys}
 
 
+def _restore_run(run_dir: Path) -> tuple[Path, int, list[dict[str, Any]]]:
+    """Return the newest checkpoint of an earlier run, its step and the saved success episodes.
+
+    Success episodes come back in the order they were saved, which is the number
+    after the second underscore of ``success_episodes/rollout_<index>_<ordinal>.pt``.
+    """
+    from armnet_rlt.checkpoint_eval import saved_checkpoints
+
+    checkpoints = saved_checkpoints(run_dir)
+    if not checkpoints:
+        raise FileNotFoundError(f"no finished checkpoint under {run_dir / 'checkpoints'}")
+    step, checkpoint = max(checkpoints.items())
+    files = sorted(
+        (run_dir / "success_episodes").glob("rollout_*_*.pt"),
+        key=lambda path: int(path.stem.rsplit("_", 1)[1]),
+    )
+    successes = [torch.load(path, weights_only=False) for path in files]
+    return checkpoint, step, successes
+
+
 def _save(policy: Any, preprocessor: Any, postprocessor: Any, run_dir: Path, step: int) -> Path:
     target = run_dir / "checkpoints" / f"{step:06d}" / "pretrained_model"
     policy.save_pretrained(target)
@@ -142,7 +162,7 @@ def _save(policy: Any, preprocessor: Any, postprocessor: Any, run_dir: Path, ste
 def run_act_streaming_bc(
     config: Any,
     *,
-    policy_path: str,
+    policy_path: str = "",
     run_dir: Path,
     run_id: str,
     episodes_per_round: str | int,
@@ -161,10 +181,13 @@ def run_act_streaming_bc(
     seed: int = 42,
     device: str = "cuda",
     wandb_project: str | None = None,
+    resume: bool = False,
 ) -> dict[str, object]:
     """Fine-tune ACT on the successes a live ACT actor streams in, round by round.
 
-    ``config.actor_learner`` holds the gRPC server settings.
+    ``config.actor_learner`` holds the gRPC server settings. With ``resume`` the
+    policy, step count and success episodes come from ``run_dir`` (the newest
+    checkpoint, with a fresh optimizer); ``policy_path`` is then ignored.
     """
     round_schedule = parse_round_schedule(episodes_per_round)
     if not round_schedule or steps_per_round <= 0:
@@ -182,6 +205,18 @@ def run_act_streaming_bc(
     episode_dir.mkdir(exist_ok=True)
     rollout_log = run_dir / "rollout_metrics.jsonl"
     training_log = run_dir / "training_metrics.jsonl"
+    successes: list[dict[str, Any]] = []
+    completed_steps = 0
+    if resume:
+        checkpoint, completed_steps, successes = _restore_run(run_dir)
+        policy_path = str(checkpoint)
+        print(
+            f"[act sbc] resuming {run_id} at step {completed_steps} from {checkpoint} "
+            f"with {len(successes)} success episodes",
+            flush=True,
+        )
+    elif not policy_path:
+        raise ValueError("policy_path is required unless resume is set")
 
     policy, preprocessor, postprocessor = load_lerobot_policy(policy_path, device)
     policy.train()
@@ -241,19 +276,17 @@ def run_act_streaming_bc(
             config,
             weights,
             shutdown_event,
-            learner_step=0,
+            learner_step=completed_steps,
             on_parameter_stream=actor_subscribed.set,
         )
     )
     pool = ThreadPoolExecutor(max_workers=8)
 
-    successes: list[dict[str, Any]] = []
     arrived_episodes: deque[dict[str, Any]] = deque()
     pending_labels: deque[EpisodeRecord] = deque()
     pending_updates = 0
     episodes_since_round = 0
-    rounds = 0
-    completed_steps = 0
+    rounds = completed_steps // steps_per_round
     rejected_episodes = 0
     dropped_episodes = 0
     final_loss = 0.0

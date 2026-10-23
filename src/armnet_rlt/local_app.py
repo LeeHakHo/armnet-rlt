@@ -419,6 +419,7 @@ def cmd_act_streaming_bc(args: argparse.Namespace) -> None:
             idle_timeout_s=args.idle_timeout_s,
             idle_min_episodes=args.idle_min_episodes,
             wandb_project=args.wandb_project or None,
+            resume=args.resume,
         )
 
 
@@ -580,7 +581,12 @@ def _parser() -> argparse.ArgumentParser:
     act_streaming.add_argument("--run-id", default="")
     act_streaming.add_argument("--wandb-project", default="")
     act_streaming.add_argument(
-        "--policy-path", required=True, help="Local ACT pretrained_model directory"
+        "--policy-path", default="", help="Local ACT pretrained_model directory"
+    )
+    act_streaming.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue the run of --run-id from its newest checkpoint and saved successes",
     )
     act_streaming.add_argument("--episodes-per-round", default="30,30,10")
     act_streaming.add_argument("--steps-per-round", type=int, default=500)
