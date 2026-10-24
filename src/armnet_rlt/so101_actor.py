@@ -380,6 +380,35 @@ def _auth_interceptor(metadata: list[tuple[str, str]]) -> Any:
     return Interceptor()
 
 
+LEARNER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+GRPC_RETRY_SERVICE_CONFIG = json.dumps(
+    {
+        "methodConfig": [
+            {
+                "name": [{}],
+                "retryPolicy": {
+                    "maxAttempts": 5,
+                    "initialBackoff": "0.1s",
+                    "maxBackoff": "2s",
+                    "backoffMultiplier": 2,
+                    "retryableStatusCodes": ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
+                },
+            }
+        ]
+    }
+)
+
+
+def _grpc_channel_options(max_message_bytes: int) -> list[tuple[str, Any]]:
+    """lerobot.transport.utils.grpc_channel_options with a configurable size cap."""
+    return [
+        ("grpc.max_receive_message_length", max_message_bytes),
+        ("grpc.max_send_message_length", max_message_bytes),
+        ("grpc.enable_retries", 1),
+        ("grpc.service_config", GRPC_RETRY_SERVICE_CONFIG),
+    ]
+
+
 def _grpc_channel(
     host: str,
     port: int,
@@ -388,11 +417,11 @@ def _grpc_channel(
     token: str = "",
     server_name: str = "",
     root_cert_path: str = "",
+    max_message_bytes: int = LEARNER_MAX_MESSAGE_BYTES,
 ) -> Any:
     import grpc
-    from lerobot.transport.utils import grpc_channel_options
 
-    options = list(grpc_channel_options())
+    options = _grpc_channel_options(max_message_bytes)
     if server_name:
         options.append(("grpc.ssl_target_name_override", server_name))
     target = f"{host}:{port}"
@@ -441,7 +470,7 @@ def _make_policy(cfg: Any) -> Any:
             default_prompt=str(_field(cfg, "language_instruction", "") or ""),
             rl_token_dim=2048,
         )
-    from armnet_rlt.remote_policy import RemoteOpenPIRLTPolicy
+    from armnet_rlt.remote_policy import MAX_MESSAGE_BYTES, RemoteOpenPIRLTPolicy
 
     port = int(_field(cfg, "remote_policy_port", 443))
     channel = _grpc_channel(
@@ -449,6 +478,7 @@ def _make_policy(cfg: Any) -> Any:
         port,
         use_tls=bool(_field(cfg, "remote_policy_use_tls", True)),
         token=str(_field(cfg, "remote_policy_auth_token", "") or ""),
+        max_message_bytes=MAX_MESSAGE_BYTES,
     )
     policy = RemoteOpenPIRLTPolicy(
         channel,

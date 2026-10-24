@@ -9,8 +9,14 @@ import numpy as np
 import pytest
 
 from armnet_rlt.openpi_rlt import PolicyObservation, PolicyOutput
-from armnet_rlt.remote_policy import RemoteOpenPIRLTPolicy, pack, serve, unpack
-from armnet_rlt.so101_actor import _auth_interceptor
+from armnet_rlt.remote_policy import (
+    MAX_MESSAGE_BYTES,
+    RemoteOpenPIRLTPolicy,
+    pack,
+    serve,
+    unpack,
+)
+from armnet_rlt.so101_actor import _auth_interceptor, _grpc_channel
 
 
 @dataclass
@@ -162,3 +168,31 @@ def test_remote_policy_forwards_steering_and_noise() -> None:
     assert steered.steering_step == 7
     assert unsteered.steering_step is None
     np.testing.assert_array_equal(unsteered.noise, np.full((30, 6), 1.0))
+
+
+def test_actor_channel_carries_a_steering_payload_over_4mb() -> None:
+    policy = _FakePolicy()
+    port = _free_port()
+    weights = np.ones((2048, 1024), dtype=np.float32)  # 8 MiB
+    with serve(
+        policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
+    ):
+        lerobot_default = _grpc_channel("127.0.0.1", port, use_tls=False, token="secret")
+        with pytest.raises(grpc.RpcError) as error:
+            RemoteOpenPIRLTPolicy(lerobot_default).set_steering(
+                {"meta": json.dumps({"learner_step": 1}), "param/w": weights}
+            )
+        channel = _grpc_channel(
+            "127.0.0.1",
+            port,
+            use_tls=False,
+            token="secret",
+            max_message_bytes=MAX_MESSAGE_BYTES,
+        )
+        step = RemoteOpenPIRLTPolicy(channel).set_steering(
+            {"meta": json.dumps({"learner_step": 2}), "param/w": weights}
+        )
+
+    assert error.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+    assert step == 2
+    assert policy.steering_payloads[0]["param/w"].shape == (2048, 1024)
