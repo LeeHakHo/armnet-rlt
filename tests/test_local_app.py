@@ -114,3 +114,50 @@ def test_streaming_bc_requires_a_route_for_the_cell() -> None:
     )
     with local_app._public_endpoint(args) as endpoint:
         assert endpoint == ("learner.example.org", 50051)
+
+
+def test_edge_tls_follows_the_tunnel_and_the_public_endpoint_flag() -> None:
+    import argparse
+
+    def args(**kw):
+        return argparse.Namespace(**{"tunnel": "ngrok", "public_endpoint": "", **kw})
+
+    assert local_app._edge_terminates_tls(args()) is True
+    assert local_app._edge_terminates_tls(args(tunnel="ngrok-tcp")) is False
+    assert local_app._edge_terminates_tls(args(public_endpoint="h:443")) is False
+    assert (
+        local_app._edge_terminates_tls(
+            args(tunnel="none", public_endpoint="h:8443", public_endpoint_tls=True)
+        )
+        is True
+    )
+    parsed = local_app._parser().parse_args(
+        ["policy-server", "--checkpoint", "x", "--tunnel", "none",
+         "--public-endpoint", "h:8443", "--public-endpoint-tls"]
+    )
+    assert local_app._edge_terminates_tls(parsed) is True
+
+
+def test_learner_serves_a_given_certificate_without_a_name_override(
+    tmp_path, monkeypatch
+) -> None:
+    import argparse
+    import json
+
+    certificate, key = local_app.ensure_tls_certificate(tmp_path / "tls")
+    entry_path = tmp_path / "entry.json"
+    monkeypatch.setattr(local_app, "local_rendezvous_path", lambda key: entry_path)
+    cfg = learner_config(
+        data_root=tmp_path, embodiment="so101", config_name=CONFIG, run_id="run-3"
+    )
+    args = argparse.Namespace(
+        tunnel="none", public_endpoint="node.ts.net:443", public_endpoint_tls=False,
+        tls_cert=str(certificate), tls_key=str(key), port=50051, push_interval_s=5.0,
+        bind_host="0.0.0.0", config_name=CONFIG, run_id="run-3",
+    )
+    with local_app._serve(args, cfg, "token"):
+        entry = json.loads(entry_path.read_text())
+    assert (entry["host"], entry["port"], entry["use_tls"]) == ("node.ts.net", 443, True)
+    assert "tls_root_cert_pem" not in entry and "tls_server_name" not in entry
+    assert cfg.actor_learner.tls_server_cert_path == str(certificate)
+    assert cfg.actor_learner.server_bind_host == "0.0.0.0"

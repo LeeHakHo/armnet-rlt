@@ -82,7 +82,11 @@ def add_remote_policy_arguments(parser: Any) -> None:
     )
     parser.add_argument("--remote-policy-timeout-s", type=float, default=5.0)
     parser.add_argument(
-        "--remote-policy-image-codec", choices=("png", "jpeg", "raw"), default="png"
+        "--remote-policy-image-codec",
+        choices=("png", "jpeg", "raw"),
+        default="jpeg",
+        help="Encoding of the 224x224 camera images sent to the policy server "
+        "(jpeg is about a quarter of png per request)",
     )
 
 

@@ -491,7 +491,7 @@ def run(ctx: Context) -> dict[str, Any]:
         remote_policy_use_tls=_as_bool(args.get("remote_policy_use_tls"), True),
         remote_policy_timeout_s=float(args.get("remote_policy_timeout_s", 5.0)),
         remote_policy_image_codec=str(
-            args.get("remote_policy_image_codec", "png")
+            args.get("remote_policy_image_codec", "jpeg")
         ),
         remote_policy_auth_token=str(
             (getattr(ctx, "secrets", None) or {}).get("RLT_LEARNER_AUTH_TOKEN")

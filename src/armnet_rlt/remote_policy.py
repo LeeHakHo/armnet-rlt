@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 import logging
 import threading
 import time
@@ -177,9 +178,17 @@ def serve(
     bind: str,
     image_size: tuple[int, int],
     auth_token: str = "",
+    tls_cert_path: str = "",
+    tls_key_path: str = "",
 ) -> Iterator[Any]:
-    """Run a gRPC server for ``policy`` on ``bind`` until the context exits."""
+    """Run a gRPC server for ``policy`` on ``bind`` until the context exits.
+
+    With ``tls_cert_path`` and ``tls_key_path`` the server terminates TLS
+    itself, for a raw TCP forwarder in front of it."""
     import grpc
+
+    if bool(tls_cert_path) != bool(tls_key_path):
+        raise ValueError("tls_cert_path and tls_key_path must be set together")
 
     from armnet_rlt.learner import _make_auth_interceptor
 
@@ -206,7 +215,14 @@ def serve(
     server.add_generic_rpc_handlers(
         (grpc.method_handlers_generic_handler(SERVICE, handlers),)
     )
-    if server.add_insecure_port(bind) == 0:
+    if tls_cert_path:
+        credentials = grpc.ssl_server_credentials(
+            ((Path(tls_key_path).read_bytes(), Path(tls_cert_path).read_bytes()),)
+        )
+        bound = server.add_secure_port(bind, credentials)
+    else:
+        bound = server.add_insecure_port(bind)
+    if bound == 0:
         raise RuntimeError(f"could not bind the policy server to {bind}")
     server.start()
     try:

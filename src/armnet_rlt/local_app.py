@@ -168,7 +168,13 @@ def ngrok_tunnel(
 
 
 def _edge_terminates_tls(args: argparse.Namespace) -> bool:
-    return args.tunnel == "ngrok" and not args.public_endpoint
+    """Whether the public side speaks TLS that something else terminates, so
+    this process serves plaintext: an ngrok HTTPS endpoint, or a
+    --public-endpoint marked --public-endpoint-tls (Tailscale Funnel's
+    tls-terminated-tcp forwarder)."""
+    if args.public_endpoint:
+        return bool(getattr(args, "public_endpoint_tls", False))
+    return args.tunnel == "ngrok"
 
 
 @contextlib.contextmanager
@@ -268,16 +274,32 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
         "config_name": args.config_name,
         "run_id": args.run_id,
     }
+    tls_cert = str(getattr(args, "tls_cert", "") or "")
+    tls_key = str(getattr(args, "tls_key", "") or "")
+    if bool(tls_cert) != bool(tls_key):
+        raise SystemExit("--tls-cert and --tls-key must be given together")
     if _edge_terminates_tls(args):
+        if tls_cert:
+            raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
         # Bind the cleartext port to localhost.
         transport.server_bind_host = "127.0.0.1"
+        tls_label = "TLS at the edge"
+    elif tls_cert:
+        # A certificate the cell already trusts (for example `tailscale cert`),
+        # so the actor verifies the public host name itself. A Funnel forwarder
+        # routes by SNI, which rules out the self-signed name override.
+        transport.server_bind_host = args.bind_host
+        transport.tls_server_cert_path = tls_cert
+        transport.tls_server_key_path = tls_key
+        tls_label = f"TLS, {tls_cert}"
     else:
-        certificate, tls_key = ensure_tls_certificate(local_data_root() / "tls")
+        certificate, key_path = ensure_tls_certificate(local_data_root() / "tls")
         transport.server_bind_host = args.bind_host
         transport.tls_server_cert_path = str(certificate)
-        transport.tls_server_key_path = str(tls_key)
+        transport.tls_server_key_path = str(key_path)
         entry["tls_server_name"] = TLS_SERVER_NAME
         entry["tls_root_cert_pem"] = certificate.read_text()
+        tls_label = "TLS, self-signed"
 
     key = rendezvous_key(args.config_name, args.run_id)
     entry_path = local_rendezvous_path(key)
@@ -287,9 +309,7 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
             json.dumps({"host": host, "port": port, **entry}, indent=2)
         )
         print(
-            f"[RLT] rendezvous {key}: {host}:{port} "
-            f"({'TLS at ngrok' if _edge_terminates_tls(args) else 'TLS, self-signed'}) "
-            f"-> {entry_path}",
+            f"[RLT] rendezvous {key}: {host}:{port} ({tls_label}) -> {entry_path}",
             flush=True,
         )
         try:
@@ -323,7 +343,10 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     )
     policy.infer(warm_observation)
     policy.infer(warm_observation, exploration_std=1.0, steer=False)
-    edge_tls = args.tunnel == "ngrok" and not args.public_endpoint
+    edge_tls = _edge_terminates_tls(args)
+    own_tls = bool(args.tls_cert or args.tls_key)
+    if own_tls and edge_tls:
+        raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
     bind_host = "127.0.0.1" if edge_tls else args.bind_host
     key = policy_rendezvous_key(args.config_name)
     entry_path = local_rendezvous_path(key)
@@ -332,6 +355,8 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         bind=f"{bind_host}:{args.port}",
         image_size=(height, width),
         auth_token=token,
+        tls_cert_path=args.tls_cert,
+        tls_key_path=args.tls_key,
     ), _public_endpoint(args) as (host, port):
         entry_path.parent.mkdir(parents=True, exist_ok=True)
         entry_path.write_text(
@@ -339,16 +364,20 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
                 {
                     "host": host,
                     "port": port,
-                    "use_tls": edge_tls,
+                    "use_tls": edge_tls or own_tls,
                     "config_name": args.config_name,
                     "checkpoint": str(args.checkpoint),
                 },
                 indent=2,
             )
         )
+        tls_label = (
+            "TLS at the edge"
+            if edge_tls
+            else f"TLS, {args.tls_cert}" if own_tls else "no TLS"
+        )
         print(
-            f"[RLT] policy server {key}: {host}:{port} "
-            f"({'TLS at ngrok' if edge_tls else 'no TLS'}) -> {entry_path}",
+            f"[RLT] policy server {key}: {host}:{port} ({tls_label}) -> {entry_path}",
             flush=True,
         )
         try:
@@ -513,6 +542,19 @@ def _parser() -> argparse.ArgumentParser:
             default="",
             help="<host>:<port> the cell connects to; skips starting a tunnel",
         )
+        command.add_argument(
+            "--public-endpoint-tls",
+            action="store_true",
+            help="The public endpoint terminates TLS and forwards plaintext "
+            "(Tailscale Funnel --tls-terminated-tcp); serve without TLS",
+        )
+        command.add_argument(
+            "--tls-cert",
+            default="",
+            help="Serve TLS with this certificate instead of the self-signed one "
+            "(PEM chain the cell trusts, e.g. from `tailscale cert`)",
+        )
+        command.add_argument("--tls-key", default="", help="Key for --tls-cert")
 
     assets = add("assets", cmd_assets, "download the normalization stats")
     assets.add_argument("--config-name", default=MULTITASK_CONFIG)
@@ -682,13 +724,27 @@ def _parser() -> argparse.ArgumentParser:
         "--tunnel",
         choices=("ngrok", "none"),
         default="ngrok",
-        help="An ngrok HTTPS endpoint, or --public-endpoint without TLS",
+        help="An ngrok HTTPS endpoint, or --public-endpoint (plaintext unless "
+        "--public-endpoint-tls)",
     )
     policy_server.add_argument(
         "--public-endpoint",
         default="",
         help="<host>:<port> the cell connects to; skips starting a tunnel",
     )
+    policy_server.add_argument(
+        "--public-endpoint-tls",
+        action="store_true",
+        help="The public endpoint terminates TLS and forwards plaintext "
+        "(Tailscale Funnel --tls-terminated-tcp); the cell connects with TLS",
+    )
+    policy_server.add_argument(
+        "--tls-cert",
+        default="",
+        help="Serve TLS with this certificate (PEM chain the cell trusts, e.g. "
+        "from `tailscale cert`) behind a raw TCP forwarder",
+    )
+    policy_server.add_argument("--tls-key", default="", help="Key for --tls-cert")
     return parser
 
 

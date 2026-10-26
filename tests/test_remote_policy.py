@@ -196,3 +196,59 @@ def test_actor_channel_carries_a_steering_payload_over_4mb() -> None:
     assert error.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
     assert step == 2
     assert policy.steering_payloads[0]["param/w"].shape == (2048, 1024)
+
+
+def test_jpeg_requests_are_much_smaller_than_png() -> None:
+    pytest.importorskip("cv2")
+    from armnet_rlt.remote_policy import decode_image, encode_image
+
+    rng = np.random.default_rng(0)
+    gradient = np.linspace(0, 255, 224, dtype=np.float32)
+    image = np.stack(
+        [np.add.outer(gradient, gradient[::-1]) / 2 + rng.normal(0, 4, (224, 224))] * 3,
+        axis=-1,
+    ).clip(0, 255).astype(np.uint8)
+    png = encode_image(image, "png")
+    jpeg = encode_image(image, "jpeg")
+    assert jpeg.size < png.size / 3
+    decoded = decode_image(jpeg, "jpeg")
+    assert decoded.shape == image.shape
+    assert np.abs(decoded.astype(int) - image.astype(int)).mean() < 3.0
+
+
+def test_remote_policy_defaults_to_jpeg_images() -> None:
+    import argparse
+
+    from armnet_rlt.resources import add_remote_policy_arguments
+
+    parser = argparse.ArgumentParser()
+    add_remote_policy_arguments(parser)
+    assert parser.parse_args([]).remote_policy_image_codec == "jpeg"
+
+
+def test_policy_server_can_terminate_tls_itself(tmp_path) -> None:
+    from armnet_rlt.local_app import TLS_SERVER_NAME, ensure_tls_certificate
+
+    certificate, key = ensure_tls_certificate(tmp_path)
+    port = _free_port()
+    with serve(
+        _FakePolicy(),
+        bind=f"127.0.0.1:{port}",
+        image_size=(224, 224),
+        auth_token="secret",
+        tls_cert_path=str(certificate),
+        tls_key_path=str(key),
+    ):
+        channel = _grpc_channel(
+            "127.0.0.1",
+            port,
+            use_tls=True,
+            token="secret",
+            server_name=TLS_SERVER_NAME,
+            root_cert_path=str(certificate),
+        )
+        remote = RemoteOpenPIRLTPolicy(channel, image_codec="raw")
+        result = remote.infer(_observation())
+        assert result.action_chunk.shape == (30, 6)
+        with pytest.raises(grpc.RpcError):
+            RemoteOpenPIRLTPolicy(_channel(port, "secret"), image_codec="raw")
