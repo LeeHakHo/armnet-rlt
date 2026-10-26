@@ -87,9 +87,14 @@
 - 원본과의 차이: 논문 π0 실로봇 설정은 SAC(tanh-Gaussian actor, target entropy 0), b_W 2.5, 32차원 노이즈 하나를 청크에 반복, env step당 gradient 30회, critic 2개. 우리는 TD3(결정적 actor + 고정 std 1.0), 180차원 독립 노이즈, transition당 약 1.5 갱신, critic 4개. 포화는 TD3에 엔트로피 항이 없어서 생긴 것.
 - 10-26 `dsrl.py`를 SAC로 변경 (브랜치 `feat/dsrl-sac`): actor가 pre-tanh 평균·log std를 내고 tanh로 ±bound에 squash, 재매개화 샘플과 log-prob(tanh Jacobian 보정). critic 타깃은 min-Q − α log π, actor loss는 α log π − min-Q, 온도 α는 `--dsrl-target-entropy`(기본 0, 180차원 합)로 자동 조정, `--dsrl-alpha-init` 0.1. `--exploration-scale`은 이제 정책 std의 배율(1.0 = 정책 분포에서 샘플, 0 = 평균). steering schema 2. 로그에 alpha, entropy, log_std, noise_saturation 추가. actor 이미지(`dsrl.py` 포함) 재빌드 후 실행 가능. 노이즈 반복(6차원)과 UTD 상향은 미적용.
 
+- 10-26 TD3 실행 종료: 23:38 재개 후 04:27 step_030000 도달. 롤아웃 1,547회, 성공 1,010회, 마지막 50회 47 성공. 평가 10회: 30k std 1.0 **8**, 22k std 1.0 **2**, 22k deterministic **5**(전날). 30k deterministic은 큐 평가가 정책 서버가 뜨기 전에 시작돼 실패(재개 시 이전 평가의 정책 서버 로그가 남아 대기 루프가 바로 통과; `rm -f`로 수정), 재시도 두 번은 cell-03이 비지 않아 큐에만 올라가 취소. 미평가.
+- 10-26 원본 코드 대조: 공식 π0 구현(nakamotoo/dsrl_pi0, jaxrl2 `pixel_sac`, MIT)을 받아 읽음. 논문 표만으로는 몰랐던 점: critic 타깃에 엔트로피 항이 없음(`backup_entropy=False`), 보상은 결정 스텝마다 −1·성공 시 0(mask 0), 실패 에피소드는 truncation(mask 1, 부트스트랩), 온도는 초기 1.0에 별도 Adam 3e-4로 매 스텝 갱신, actor는 1024×3 ReLU(LayerNorm 없음, 헤드 orthogonal 1e-2, log_std 클립 [−20, 2], lr 1e-4), critic은 2개 1024×3 ReLU+LayerNorm(lr 3e-4), grad clip·Q 정규화·타깃 clamp·지연 actor 업데이트 없음, 궤적마다 길이×30 그래디언트 스텝(새 배치), 첫 궤적 뒤 5000 스텝, 노이즈 1스텝×32차원을 10스텝에 반복(tanh → ±2.5), 리플레이 2·max_steps/30. 그쪽은 궤적 수집과 학습을 번갈아 하는 단일 프로세스(Franka DROID)라 코드 자체는 못 가져오고 에이전트 수식을 옮김.
+- 10-26 `dsrl.py`를 원본 1:1로 재작성 (`feat/dsrl-sac`): 위 항목 전부 반영. 우리 쪽 대응은 actor 노이즈 1스텝×6관절을 30스텝 청크에 반복(`--dsrl-noise-steps 1`), 학습기 step = 그래디언트 스텝(전이당 30, 예산 500,000 = 원본 max_steps, 체크포인트 10,000마다), 보상 재라벨은 학습기 수신 시(`relabel_episode`: 마지막 전이의 shaped reward > 0이면 성공), 할인 0.99^10. 관측은 다른 baseline과 같은 RL 토큰 2048 + proprio(정규화)이고 이미지 특징(원본 7번 항목)은 넣지 않음. 원본과 남은 차이: actor/learner 비동기 수집, π0.5·6관절, 첫 에피소드가 N(0,1) 대신 초기 actor 샘플(tanh(N(0,1))·2.5). steering schema 3; TD3 체크포인트와 호환 안 됨.
+
 ## 다음 후보
 
-- SAC `dsrl.py`가 들어간 actor 이미지 빌드 후 `tools/queue-dsrl.sh` 실행 (TD3 실행의 평가가 끝난 뒤 `feat/dsrl-sac`로 전환).
+- 원본 설정 DSRL 실행: `dsrl.py`가 들어간 actor 이미지 빌드(Mac, `scripts/build_actor_image.py`) → `tools/current-actor-image` 갱신 → `tools/start-dsrl-when-ready.sh`가 자동으로 `tools/queue-dsrl.sh`(500k 그래디언트 스텝, bound 2.5, base `pi05_busybox_minmax_step5k_rltoken`) 시작.
+- TD3 30k deterministic 평가(미완)를 셀이 빌 때 다시 돌릴지 결정.
 - TD3를 16k에서 재개할지 결정. 성공률이 평평하므로 exploration·커리큘럼 조정 없이는 의미 없음.
 - ACT 30k를 exploration 0.1로 재평가 (위 참고).
 - 모든 모델을 같은 20 장면(variation seed)으로 재평가. 현재는 rail 0.7 고정 10회라 10-15 표와 직접 비교 불가.

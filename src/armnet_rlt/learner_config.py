@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from armnet_rlt.config import (
@@ -60,25 +61,48 @@ def learner_config(
     save_freq: int | None = None,
     device: str = "cuda",
     algorithm: str = "rlt",
-    dsrl_noise_bound: float = 2.0,
+    dsrl_noise_bound: float = 2.5,
+    dsrl_noise_steps: int = 1,
     dsrl_target_entropy: float = 0.0,
-    dsrl_alpha_init: float = 0.1,
+    dsrl_alpha_init: float = 1.0,
     actions_to_execute: int = 10,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
+    dsrl_kwargs: dict[str, object] = {}
     if algorithm == "dsrl":
-        # The noise spans the base policy's full 30-step chunk.
+        # The official pi0 DSRL settings (nakamotoo/dsrl_pi0, run_real.sh): the
+        # noise spans the base policy's full 30-step chunk, 1024x3 networks,
+        # two critics, 30 gradient steps per transition each on a fresh batch,
+        # discount 0.99, Adam 1e-4 for the actor and 3e-4 for the critics with
+        # no schedule, learning from the first episode on, no demonstrations,
+        # and a replay buffer of 2 * steps / UTD transitions.
         network, jerk = network_for(
             embodiment, reference_action_len=30, predicted_action_len=30
         )
+        network = replace(network, hidden_dims=(1024, 1024, 1024))
         max_demo_pretrain_steps = 0
         online_batch_fraction = 1.0
+        discount = 0.99 if discount is None else discount
+        num_critics = 2 if num_critics is None else num_critics
+        utd_ratio = 30 if utd_ratio is None else utd_ratio
+        actor_lr = actor_lr if actor_lr > 0 else 1e-4
+        actor_lr_min = actor_lr
+        dsrl_kwargs = {
+            "critic_lr": 3e-4,
+            "critic_lr_min": 3e-4,
+            "policy_update_freq": 1,
+            "max_q": None,
+            "online_step_before_learning": 1,
+            "online_buffer_capacity": max(1, 2 * online_steps // utd_ratio),
+        }
     kwargs = {
         "algorithm": algorithm,
         "dsrl_noise_bound": dsrl_noise_bound,
+        "dsrl_noise_steps": dsrl_noise_steps,
         "dsrl_target_entropy": dsrl_target_entropy,
         "dsrl_alpha_init": dsrl_alpha_init,
+        **dsrl_kwargs,
         "actions_to_execute": actions_to_execute,
         "embodiment": embodiment,
         "network": network,

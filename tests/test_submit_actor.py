@@ -205,9 +205,13 @@ def test_lerobot_job_args_carry_image_size_and_episode_streaming() -> None:
 
 def test_job_args_carry_the_algorithm_to_the_cell() -> None:
     assert build_job_args(_args(), _entry())["algorithm"] == "rlt"
-    result = build_job_args(_args(algorithm="dsrl", dsrl_noise_bound=1.5), _entry())
+    result = build_job_args(
+        _args(algorithm="dsrl", dsrl_noise_bound=1.5, dsrl_noise_steps=2), _entry()
+    )
     assert result["algorithm"] == "dsrl"
     assert result["dsrl_noise_bound"] == 1.5
+    assert result["dsrl_noise_steps"] == 2
     parser = _parser()
     assert parser.get_default("algorithm") == "rlt"
-    assert parser.get_default("dsrl_noise_bound") == 2.0
+    assert parser.get_default("dsrl_noise_bound") == 2.5
+    assert parser.get_default("dsrl_noise_steps") == 1

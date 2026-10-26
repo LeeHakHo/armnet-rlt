@@ -2,12 +2,15 @@
 
 The actor maps the RL token and proprioception to the initial noise of the
 base policy's flow; the base policy turns that noise into the action chunk the
-robot executes. Transitions therefore carry the noise as ``action`` and the
+robot executes. Transitions carry the full chunk noise as ``action`` and the
 chunk the base policy produced from it as ``reference_action``.
 
-The actor is a soft actor-critic policy: a diagonal Gaussian in pre-tanh
-space, squashed by tanh to ``[-1, 1]`` and scaled by the noise bound, with an
-entropy bonus whose temperature follows a target entropy.
+The learner is the soft actor-critic of the official pi0 implementation
+(nakamotoo/dsrl_pi0, ``jaxrl2/agents/pixel_sac``): a tanh-Gaussian actor whose
+``noise_steps`` rows of noise are repeated over the chunk, two critics with
+layer normalization, a target without an entropy term, and a temperature
+trained toward a target entropy. Rewards are -1 per decision step and 0 at
+success; a failed episode is truncated, not terminal.
 """
 
 from __future__ import annotations
@@ -21,82 +24,106 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as functional
 from torch import Tensor
 
 from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTConfig, RLTNetworkConfig
-from armnet_rlt.networks import (
-    RLTCriticEnsemble,
-    _norm,
-    _register_norm_buffers,
-    _set_state_buffers,
-)
+from armnet_rlt.networks import _norm, _register_norm_buffers, _set_state_buffers
 
-# Schema 1 carried a deterministic actor (mean head only).
-STEERING_SCHEMA_VERSION = 2
+# Schema 1 carried a deterministic actor, schema 2 a full-chunk Gaussian actor.
+STEERING_SCHEMA_VERSION = 3
 
-LOG_STD_MIN = -5.0
+LOG_STD_MIN = -20.0
 LOG_STD_MAX = 2.0
-# Pre-tanh standard deviation at initialization: with a zero mean and a bound
-# of 2 the squashed samples have roughly unit variance, like the base policy's
-# own noise.
-LOG_STD_INIT = math.log(0.55)
+# Orthogonal gain of the mean and log-std heads (jaxrl2 ``default_init(1e-2)``).
+HEAD_INIT_SCALE = 1e-2
+# Flax LayerNorm epsilon.
+LAYER_NORM_EPS = 1e-6
+
+
+def _orthogonal_linear(in_features: int, out_features: int, gain: float) -> nn.Linear:
+    layer = nn.Linear(in_features, out_features)
+    nn.init.orthogonal_(layer.weight, gain=gain)
+    nn.init.zeros_(layer.bias)
+    return layer
+
+
+def _mlp(
+    input_dim: int, hidden_dims: tuple[int, ...], *, layer_norm: bool
+) -> tuple[nn.Sequential, int]:
+    """jaxrl2 ``MLP`` with ``activate_final``: Dense, [LayerNorm], ReLU per layer."""
+    layers: list[nn.Module] = []
+    previous = input_dim
+    for hidden in hidden_dims:
+        layers.append(_orthogonal_linear(previous, hidden, 1.0))
+        if layer_norm:
+            layers.append(nn.LayerNorm(hidden, eps=LAYER_NORM_EPS))
+        layers.append(nn.ReLU())
+        previous = hidden
+    return nn.Sequential(*layers), previous
 
 
 def squash_gaussian(
-    mean: Tensor, log_std: Tensor, epsilon: Tensor
+    mean: Tensor, log_std: Tensor, epsilon: Tensor, *, bound: float = 1.0
 ) -> tuple[Tensor, Tensor]:
-    """tanh of a reparameterized Gaussian sample and the sample's log density.
+    """tanh of a reparameterized Gaussian sample and the log density of the
+    sample scaled to ``[-bound, bound]``.
 
     The density is the Gaussian log density of the pre-tanh sample minus the
     tanh Jacobian ``sum(log(1 - tanh(u)^2))``, written as
-    ``2 (log 2 - u - softplus(-2u))`` for numerical stability.
+    ``2 (log 2 - u - softplus(-2u))``, minus ``log(bound)`` per dimension for
+    the rescaling. The returned action is the tanh value in ``[-1, 1]``.
     """
     pre_tanh = mean + log_std.exp() * epsilon
     action = torch.tanh(pre_tanh)
     gaussian = -0.5 * epsilon.pow(2) - log_std - 0.5 * math.log(2.0 * math.pi)
-    jacobian = 2.0 * (math.log(2.0) - pre_tanh - functional.softplus(-2.0 * pre_tanh))
-    return action, (gaussian - jacobian).sum(dim=-1)
+    jacobian = 2.0 * (
+        math.log(2.0) - pre_tanh - nn.functional.softplus(-2.0 * pre_tanh)
+    )
+    log_prob = (gaussian - jacobian).sum(dim=-1) - mean.shape[-1] * math.log(bound)
+    return action, log_prob
 
 
 class DSRLActor(nn.Module):
-    """``(rl_token, proprioception)`` to a squashed Gaussian over noise in
-    ``[-bound, bound]^noise_dim``.
+    """``(rl_token, proprioception)`` to a tanh-Gaussian over ``noise_steps``
+    rows of noise in ``[-bound, bound]``; the rows are repeated to fill the
+    base policy's chunk.
 
     ``forward`` returns the squashed mean normalized to ``[-1, 1]`` like
     ``RLTActor``; ``sample`` draws a reparameterized action with its log
-    probability; ``unnormalize_action`` scales by the bound. The reference
-    chunk argument is accepted for interface parity and ignored.
+    probability; ``chunk_noise`` repeats the actor's rows over the chunk;
+    ``unnormalize_action`` scales by the bound. The reference chunk argument
+    is accepted for interface parity and ignored.
     """
 
-    def __init__(self, config: RLTNetworkConfig, *, noise_bound: float) -> None:
+    def __init__(
+        self,
+        config: RLTNetworkConfig,
+        *,
+        noise_bound: float,
+        noise_steps: int = 1,
+    ) -> None:
         super().__init__()
         if noise_bound <= 0:
             raise ValueError("noise_bound must be positive")
+        if not 1 <= noise_steps <= config.predicted_action_len:
+            raise ValueError(
+                "noise_steps must be within 1..predicted_action_len "
+                f"({noise_steps} vs {config.predicted_action_len})"
+            )
         self.noise_len = config.predicted_action_len
+        self.noise_steps = int(noise_steps)
         self.per_step_action_dim = config.action_dim
+        self.noise_dim = self.noise_steps * config.action_dim
         self.predicted_action_dim = config.predicted_action_dim
         self.reference_action_dim = config.reference_action_dim
         self.proprioception_dim = config.proprioception_dim
         self.register_buffer("noise_bound", torch.tensor(float(noise_bound)))
 
         input_dim = config.rl_token_dim + config.proprioception_dim
-        layers: list[nn.Module] = [nn.LayerNorm(input_dim)]
-        previous = input_dim
-        for hidden in config.hidden_dims:
-            layers.extend((nn.Linear(previous, hidden), nn.SiLU()))
-            previous = hidden
-        self.trunk = nn.Sequential(*layers)
-        self.mean_head = nn.Linear(previous, self.predicted_action_dim)
-        self.log_std_head = nn.Linear(previous, self.predicted_action_dim)
-        if config.init_final is not None:
-            for head in (self.mean_head, self.log_std_head):
-                nn.init.uniform_(head.weight, -config.init_final, config.init_final)
-            nn.init.uniform_(
-                self.mean_head.bias, -config.init_final, config.init_final
-            )
-        nn.init.constant_(self.log_std_head.bias, LOG_STD_INIT)
+        self.trunk, width = _mlp(input_dim, config.hidden_dims, layer_norm=False)
+        self.mean_head = _orthogonal_linear(width, self.noise_dim, HEAD_INIT_SCALE)
+        self.log_std_head = _orthogonal_linear(width, self.noise_dim, HEAD_INIT_SCALE)
         self.register_buffer("_use_quantiles", torch.tensor(False))
         _register_norm_buffers(self, "ns", config.proprioception_dim)
 
@@ -104,9 +131,7 @@ class DSRLActor(nn.Module):
         self, norm_stats: Mapping[str, NormStats], *, use_quantiles: bool = False
     ) -> None:
         self._use_quantiles.fill_(use_quantiles)
-        _set_state_buffers(
-            self, "ns", norm_stats["state"], self.proprioception_dim
-        )
+        _set_state_buffers(self, "ns", norm_stats["state"], self.proprioception_dim)
 
     def normalize_action(
         self, action: Tensor, proprioception: Tensor | None = None
@@ -117,6 +142,31 @@ class DSRLActor(nn.Module):
         self, action: Tensor, proprioception: Tensor | None = None
     ) -> Tensor:
         return action * self.noise_bound
+
+    def chunk_noise(self, noise: Tensor) -> Tensor:
+        """``(..., noise_dim)`` to ``(..., predicted_action_dim)``: the actor's
+        rows followed by its last row repeated over the rest of the chunk."""
+        rows = noise.reshape(*noise.shape[:-1], self.noise_steps, self.per_step_action_dim)
+        tail = rows[..., -1:, :].expand(
+            *rows.shape[:-2], self.noise_len - self.noise_steps, self.per_step_action_dim
+        )
+        return torch.cat((rows, tail), dim=-2).reshape(
+            *noise.shape[:-1], self.predicted_action_dim
+        )
+
+    def actor_noise(self, chunk_noise: Tensor) -> Tensor:
+        """The actor's rows of a ``(..., predicted_action_dim)`` chunk noise."""
+        if chunk_noise.shape[-1] != self.predicted_action_dim:
+            raise ValueError(
+                f"action has last dimension {chunk_noise.shape[-1]}, "
+                f"expected {self.predicted_action_dim}"
+            )
+        rows = chunk_noise.reshape(
+            *chunk_noise.shape[:-1], self.noise_len, self.per_step_action_dim
+        )
+        return rows[..., : self.noise_steps, :].reshape(
+            *chunk_noise.shape[:-1], self.noise_dim
+        )
 
     def distribution(
         self, rl_token: Tensor, proprioception: Tensor
@@ -142,7 +192,8 @@ class DSRLActor(nn.Module):
         std_scale: float = 1.0,
         epsilon: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """Reparameterized normalized noise and its log probability.
+        """Reparameterized normalized noise ``(..., noise_dim)`` and the log
+        probability of the noise in its own units.
 
         ``std_scale`` multiplies the standard deviation; the log probability
         is that of the scaled distribution.
@@ -154,7 +205,7 @@ class DSRLActor(nn.Module):
             log_std = log_std + math.log(std_scale)
         if epsilon is None:
             epsilon = torch.randn_like(mean)
-        return squash_gaussian(mean, log_std, epsilon)
+        return squash_gaussian(mean, log_std, epsilon, bound=float(self.noise_bound))
 
     def forward(
         self,
@@ -172,18 +223,83 @@ class DSRLActor(nn.Module):
         return action, squashed_mean
 
 
+class DSRLCritic(nn.Module):
+    """``Q(rl_token, proprioception, noise)`` with the noise in its own units;
+    jaxrl2 ``StateActionValue`` (LayerNorm MLP)."""
+
+    def __init__(self, config: RLTNetworkConfig, *, noise_dim: int) -> None:
+        super().__init__()
+        self.noise_dim = int(noise_dim)
+        input_dim = config.rl_token_dim + config.proprioception_dim + self.noise_dim
+        self.trunk, width = _mlp(input_dim, config.hidden_dims, layer_norm=True)
+        self.head = _orthogonal_linear(width, 1, 1.0)
+        self.register_buffer("_use_quantiles", torch.tensor(False))
+        _register_norm_buffers(self, "ns", config.proprioception_dim)
+
+    def set_norm_stats(
+        self, norm_stats: Mapping[str, NormStats], *, use_quantiles: bool = False
+    ) -> None:
+        self._use_quantiles.fill_(use_quantiles)
+        _set_state_buffers(self, "ns", norm_stats["state"], self.ns_mean.shape[0])
+
+    def forward(self, rl_token: Tensor, proprioception: Tensor, noise: Tensor) -> Tensor:
+        if noise.shape[-1] != self.noise_dim:
+            raise ValueError(
+                f"noise has last dimension {noise.shape[-1]}, expected {self.noise_dim}"
+            )
+        state = _norm(
+            proprioception,
+            self.ns_mean,
+            self.ns_std,
+            self.ns_q01,
+            self.ns_q99,
+            self._use_quantiles,
+        )
+        hidden = self.trunk(torch.cat((rl_token, state, noise), dim=-1))
+        return self.head(hidden).squeeze(-1)
+
+
+class DSRLCriticEnsemble(nn.Module):
+    def __init__(
+        self, config: RLTNetworkConfig, *, noise_dim: int, num_critics: int = 2
+    ) -> None:
+        super().__init__()
+        self.critics = nn.ModuleList(
+            DSRLCritic(config, noise_dim=noise_dim) for _ in range(num_critics)
+        )
+
+    def set_norm_stats(
+        self, norm_stats: Mapping[str, NormStats], *, use_quantiles: bool = False
+    ) -> None:
+        for critic in self.critics:
+            critic.set_norm_stats(norm_stats, use_quantiles=use_quantiles)
+
+    def forward(self, rl_token: Tensor, proprioception: Tensor, noise: Tensor) -> Tensor:
+        return torch.stack(
+            [critic(rl_token, proprioception, noise) for critic in self.critics]
+        )
+
+
 class DSRLPolicy(nn.Module):
     """Soft actor-critic over the base policy's noise; mirrors ``RLTPolicy``'s
-    learner API."""
+    learner API. One gradient step is ``compute_loss_critic``,
+    ``update_target_networks``, ``compute_loss_actor``, then
+    ``compute_loss_temperature`` on the actor's entropy."""
 
     def __init__(self, config: RLTConfig) -> None:
         super().__init__()
         if config.algorithm != "dsrl":
             raise ValueError("DSRLPolicy requires config.algorithm == 'dsrl'")
         self.config = config
-        self.actor = DSRLActor(config.network, noise_bound=config.dsrl_noise_bound)
-        self.critic_ensemble = RLTCriticEnsemble(
-            config.network, num_critics=config.num_critics
+        self.actor = DSRLActor(
+            config.network,
+            noise_bound=config.dsrl_noise_bound,
+            noise_steps=config.dsrl_noise_steps,
+        )
+        self.critic_ensemble = DSRLCriticEnsemble(
+            config.network,
+            noise_dim=self.actor.noise_dim,
+            num_critics=config.num_critics,
         )
         self.critic_target = copy.deepcopy(self.critic_ensemble)
         self.critic_target.requires_grad_(False)
@@ -194,8 +310,8 @@ class DSRLPolicy(nn.Module):
         self.predicted_action_dim = config.network.predicted_action_dim
         self.reference_action_dim = config.network.reference_action_dim
         self.chunk_discount = config.discount**config.actions_to_execute
-        self.q_loss_normalization = config.q_loss_normalization
-        self.q_loss_alpha = config.q_loss_alpha
+        # Entropy of the last actor update, for the temperature loss.
+        self.last_entropy: Tensor = torch.tensor(0.0)
         # Statistics of the last actor update, for the learner's logs.
         self.last_actor_stats: dict[str, float] = {}
 
@@ -204,7 +320,6 @@ class DSRLPolicy(nn.Module):
         return self.log_alpha.exp()
 
     def temperature_parameters(self) -> list[nn.Parameter]:
-        """Parameters the actor optimizer trains besides the actor's own."""
         return [self.log_alpha]
 
     def set_norm_stats(
@@ -227,9 +342,9 @@ class DSRLPolicy(nn.Module):
         deterministic: bool = False,
         exploration_std: float = 0.0,
     ) -> Tensor:
-        """Noise for the base policy, in its own units: the squashed mean, or
-        with ``exploration_std > 0`` a sample whose standard deviation is
-        scaled by it."""
+        """Chunk noise for the base policy, in its own units: the squashed mean
+        repeated over the chunk, or with ``exploration_std > 0`` a sample whose
+        standard deviation is scaled by it."""
         if deterministic or exploration_std <= 0:
             _, normalized = self.actor(rl_token, proprioception)
         else:
@@ -237,7 +352,13 @@ class DSRLPolicy(nn.Module):
                 rl_token, proprioception, std_scale=exploration_std
             )
         bound = float(self.actor.noise_bound)
-        return self.actor.unnormalize_action(normalized).clamp(-bound, bound)
+        chunk = self.actor.chunk_noise(normalized)
+        return self.actor.unnormalize_action(chunk).clamp(-bound, bound)
+
+    def min_q(self, rl_token: Tensor, proprioception: Tensor, action: Tensor) -> Tensor:
+        """Minimum over critics for a ``(..., predicted_action_dim)`` chunk noise."""
+        noise = self.actor.actor_noise(action)
+        return self.critic_ensemble(rl_token, proprioception, noise).min(dim=0).values
 
     def compute_loss_critic(
         self,
@@ -250,27 +371,18 @@ class DSRLPolicy(nn.Module):
         next_reference_action: Tensor,
         done: Tensor,
     ) -> Tensor:
-        if action.shape[-1] != self.predicted_action_dim:
-            raise ValueError(
-                f"action has last dimension {action.shape[-1]}, "
-                f"expected {self.predicted_action_dim}"
-            )
-        normalized_action = self.actor.normalize_action(action).clamp(-1.0, 1.0)
+        """``(Q - (r + gamma^k (1 - done) min Q_target(s', a')))^2`` with
+        ``a'`` sampled from the current actor; no entropy term in the target."""
+        noise = self.actor.actor_noise(action)
         with torch.no_grad():
-            next_action, next_log_prob = self.actor.sample(
-                next_rl_token, next_proprioception
-            )
-            target_values = self.critic_target(
-                next_rl_token, next_proprioception, next_action
-            )
-            soft_value = target_values.min(dim=0).values - self.alpha * next_log_prob
-            target = reward + (1.0 - done) * self.chunk_discount * soft_value
-            if self.config.max_q is not None:
-                target = target.clamp(-self.config.max_q, self.config.max_q)
-        predictions = self.critic_ensemble(rl_token, proprioception, normalized_action)
-        return functional.mse_loss(
-            predictions, target.unsqueeze(0).expand_as(predictions), reduction="none"
-        ).mean()
+            next_normalized, _ = self.actor.sample(next_rl_token, next_proprioception)
+            next_noise = self.actor.unnormalize_action(next_normalized)
+            next_q = self.critic_target(
+                next_rl_token, next_proprioception, next_noise
+            ).min(dim=0).values
+            target = reward + self.chunk_discount * (1.0 - done) * next_q
+        predictions = self.critic_ensemble(rl_token, proprioception, noise)
+        return (predictions - target.unsqueeze(0)).pow(2).mean()
 
     def compute_loss_actor(
         self,
@@ -278,23 +390,29 @@ class DSRLPolicy(nn.Module):
         proprioception: Tensor,
         reference_action: Tensor | None = None,
     ) -> Tensor:
-        """Actor loss plus the temperature loss; the two share no parameters."""
-        action, log_prob = self.actor.sample(rl_token, proprioception)
-        minimum_q = self.critic_ensemble(rl_token, proprioception, action).min(dim=0).values
-        if self.q_loss_normalization:
-            scale = self.q_loss_alpha / minimum_q.detach().abs().mean().clamp_min(1e-6)
-            minimum_q = scale * minimum_q
+        """``alpha log pi(a|s) - min Q(s, a)`` with ``a`` reparameterized."""
+        normalized, log_prob = self.actor.sample(rl_token, proprioception)
+        noise = self.actor.unnormalize_action(normalized)
+        minimum_q = self.critic_ensemble(rl_token, proprioception, noise).min(dim=0).values
         actor_loss = (self.alpha.detach() * log_prob - minimum_q).mean()
-        alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
+        self.last_entropy = (-log_prob).mean().detach()
         with torch.no_grad():
-            _, log_std = self.actor.distribution(rl_token, proprioception)
+            mean, log_std = self.actor.distribution(rl_token, proprioception)
             self.last_actor_stats = {
                 "alpha": float(self.alpha),
-                "entropy": float(-log_prob.mean()),
+                "entropy": float(self.last_entropy),
                 "log_std": float(log_std.mean()),
-                "noise_saturation": float((action.abs() > 0.95).float().mean()),
+                "mean_pi_norm": float(mean.norm(dim=-1).mean()),
+                "q_pi": float(minimum_q.mean()),
+                "noise_saturation": float((normalized.abs() > 0.95).float().mean()),
             }
-        return actor_loss + alpha_loss
+        return actor_loss
+
+    def compute_loss_temperature(self, entropy: Tensor | None = None) -> Tensor:
+        """``alpha (H - H_target)`` for the entropy of the last actor update."""
+        if entropy is None:
+            entropy = self.last_entropy
+        return self.alpha * (entropy.detach() - self.target_entropy)
 
     @torch.no_grad()
     def update_target_networks(self) -> None:
@@ -313,18 +431,34 @@ class DSRLPolicy(nn.Module):
         }
 
 
+def relabel_episode(transitions: list[dict[str, Tensor]]) -> None:
+    """Rewrite one episode's learner transitions in place to the DSRL reward:
+    -1 per decision step, 0 at the success that ends the episode (``done``),
+    and -1 with ``done`` 0 at the end of a failed episode, which bootstraps.
+
+    The actor labels only the last transition with the episode's shaped reward
+    and marks it ``done``; a success is a positive reward there.
+    """
+    for fields in transitions:
+        success = bool(fields["done"]) and float(fields["reward"]) > 0
+        fields["reward"] = torch.tensor(0.0 if success else -1.0, dtype=torch.float32)
+        fields["done"] = torch.tensor(1.0 if success else 0.0, dtype=torch.float32)
+
+
 def steering_payload(
     actor_state: Mapping[str, Any],
     *,
     network: RLTNetworkConfig,
     noise_bound: float,
     learner_step: int | None,
+    noise_steps: int = 1,
 ) -> dict[str, Any]:
     """Flat ``np.savez``-able description of a DSRL actor for a policy server."""
     meta = {
         "schema_version": STEERING_SCHEMA_VERSION,
         "network": asdict(network),
         "noise_bound": float(noise_bound),
+        "noise_steps": int(noise_steps),
         "learner_step": learner_step,
     }
     payload: dict[str, Any] = {"meta": json.dumps(meta)}
@@ -343,7 +477,11 @@ def actor_from_steering_payload(payload: Mapping[str, Any]) -> tuple[DSRLActor, 
     for name in ("hidden_dims", "delta_action_mask"):
         if name in values:
             values[name] = tuple(values[name])
-    actor = DSRLActor(RLTNetworkConfig(**values), noise_bound=float(meta["noise_bound"]))
+    actor = DSRLActor(
+        RLTNetworkConfig(**values),
+        noise_bound=float(meta["noise_bound"]),
+        noise_steps=int(meta["noise_steps"]),
+    )
     state = {
         key.removeprefix("param/"): torch.as_tensor(np.asarray(value))
         for key, value in payload.items()
@@ -364,9 +502,10 @@ def choose_noise(
     noise_bound: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """One ``(noise_len, action_dim)`` noise: the actor's squashed mean when
-    ``exploration_std`` is 0, otherwise a sample from the actor's Gaussian with
-    its standard deviation scaled by ``exploration_std``, clipped to the bound."""
+    """One ``(noise_len, action_dim)`` chunk noise: the actor's squashed mean
+    when ``exploration_std`` is 0, otherwise a sample from the actor's Gaussian
+    with its standard deviation scaled by ``exploration_std``; the actor's rows
+    are repeated over the chunk and clipped to the bound."""
     token = torch.as_tensor(rl_token, dtype=torch.float32).reshape(1, -1)
     state = torch.as_tensor(proprioception, dtype=torch.float32).reshape(1, -1)
     with torch.inference_mode():
@@ -380,9 +519,8 @@ def choose_noise(
             )
         else:
             _, normalized = actor(token, state)
-    noise = actor.unnormalize_action(normalized).numpy().reshape(
-        actor.noise_len, actor.per_step_action_dim
-    )
+        chunk = actor.unnormalize_action(actor.chunk_noise(normalized))
+    noise = chunk.numpy().reshape(actor.noise_len, actor.per_step_action_dim)
     return np.clip(noise, -noise_bound, noise_bound).astype(np.float32)
 
 
@@ -392,9 +530,19 @@ def random_noise(
     exploration_std: float,
     noise_bound: float,
     rng: np.random.Generator,
+    noise_steps: int | None = None,
 ) -> np.ndarray:
-    """Unsteered noise: zero mean plus Gaussian exploration, clipped to the bound."""
+    """Unsteered noise: zero mean plus Gaussian exploration, clipped to the
+    bound. With ``noise_steps`` only that many rows are drawn and the last one
+    is repeated over the rest of the chunk, like the actor's noise."""
+    rows, columns = shape
     noise = np.zeros(shape, dtype=np.float64)
     if exploration_std > 0:
-        noise = noise + rng.normal(0.0, exploration_std, size=shape)
+        drawn = rows if noise_steps is None else int(noise_steps)
+        if not 1 <= drawn <= rows:
+            raise ValueError("noise_steps must be within 1..rows")
+        head = rng.normal(0.0, exploration_std, size=(drawn, columns))
+        noise = np.concatenate(
+            (head, np.repeat(head[-1:], rows - drawn, axis=0)), axis=0
+        )
     return np.clip(noise, -noise_bound, noise_bound).astype(np.float32)

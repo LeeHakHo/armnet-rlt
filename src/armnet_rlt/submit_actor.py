@@ -102,8 +102,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dsrl-noise-bound",
         type=float,
-        default=2.0,
+        default=2.5,
         help="DSRL noise is clipped to [-bound, bound]; must match the learner",
+    )
+    parser.add_argument(
+        "--dsrl-noise-steps",
+        type=int,
+        default=1,
+        help="Rows of noise the DSRL actor outputs, repeated over the chunk; "
+        "must match the learner",
     )
     parser.add_argument(
         "--exploration-scale",
@@ -351,7 +358,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "use_tls": bool(entry["use_tls"]),
         "delta_actions": True,
         "algorithm": str(getattr(args, "algorithm", "rlt")),
-        "dsrl_noise_bound": float(getattr(args, "dsrl_noise_bound", 2.0)),
+        "dsrl_noise_bound": float(getattr(args, "dsrl_noise_bound", 2.5)),
+        "dsrl_noise_steps": int(getattr(args, "dsrl_noise_steps", 1)),
         "exploration_scale": float(getattr(args, "exploration_scale", 0.5)),
         "bc_warmup_episodes": int(getattr(args, "bc_warmup_episodes", 0)),
         "warmup_exploration_scale": float(

@@ -552,6 +552,7 @@ def _sync_steering(
             actor.state_dict(),
             network=network,
             noise_bound=float(actor.noise_bound),
+            noise_steps=int(actor.noise_steps),
             learner_step=learner_step,
         )
     )
@@ -1007,7 +1008,9 @@ def run_actor(
             # The noise actor is evaluated inside the policy server; this copy
             # only receives learner updates and forwards them there.
             actor: Any = DSRLActor(
-                network, noise_bound=float(_field(cfg, "dsrl_noise_bound", 2.0))
+                network,
+                noise_bound=float(_field(cfg, "dsrl_noise_bound", 2.5)),
+                noise_steps=int(_field(cfg, "dsrl_noise_steps", 1)),
             )
             actor.set_norm_stats(
                 policy.norm_stats,

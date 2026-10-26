@@ -99,12 +99,17 @@ def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
     rewarded and unrewarded transitions are present.
     """
     state = batch["state"]
-    normalized = policy.actor.normalize_action(
-        batch["action"], state["proprioception"]
-    ).clamp(-1.0, 1.0)
-    q = policy.critic_ensemble(
-        state["rl_token"], state["proprioception"], normalized
-    ).min(dim=0).values.reshape(-1)
+    if hasattr(policy, "min_q"):
+        q = policy.min_q(
+            state["rl_token"], state["proprioception"], batch["action"]
+        ).reshape(-1)
+    else:
+        normalized = policy.actor.normalize_action(
+            batch["action"], state["proprioception"]
+        ).clamp(-1.0, 1.0)
+        q = policy.critic_ensemble(
+            state["rl_token"], state["proprioception"], normalized
+        ).min(dim=0).values.reshape(-1)
     reward = batch["reward"].reshape(-1)
     stats = {
         "learner/q_mean": float(q.mean()),
@@ -169,6 +174,47 @@ def _train_step(
     return float(critic_loss.detach()), actor_value
 
 
+def _train_step_dsrl(
+    policy: Any,
+    batch: dict[str, Any],
+    *,
+    actor_optimizer: torch.optim.Optimizer,
+    critic_optimizer: torch.optim.Optimizer,
+    temperature_optimizer: torch.optim.Optimizer,
+) -> tuple[float, float]:
+    """One SAC gradient step on one batch, in the order of the official DSRL
+    update: critics, target critics, actor, temperature. No gradient clipping."""
+    state = batch["state"]
+    next_state = batch["next_state"]
+    critic_loss = policy.compute_loss_critic(
+        state["rl_token"],
+        state["proprioception"],
+        batch["action"],
+        batch["reward"],
+        next_state["rl_token"],
+        next_state["proprioception"],
+        next_state["reference_action"],
+        batch["done"],
+    )
+    critic_optimizer.zero_grad(set_to_none=True)
+    critic_loss.backward()
+    critic_optimizer.step()
+    policy.update_target_networks()
+
+    actor_loss = policy.compute_loss_actor(
+        state["rl_token"], state["proprioception"], state["reference_action"]
+    )
+    actor_optimizer.zero_grad(set_to_none=True)
+    actor_loss.backward()
+    actor_optimizer.step()
+
+    temperature_loss = policy.compute_loss_temperature()
+    temperature_optimizer.zero_grad(set_to_none=True)
+    temperature_loss.backward()
+    temperature_optimizer.step()
+    return float(critic_loss.detach()), float(actor_loss.detach())
+
+
 def _checkpoint_path(config: RLTConfig, step: int) -> Path:
     return config.checkpoint_dir / f"step_{step:06d}" / "checkpoint.pt"
 
@@ -182,22 +228,23 @@ def _save_checkpoint(
     *,
     step: int,
     config: RLTConfig,
+    temperature_optimizer: torch.optim.Optimizer | None = None,
 ) -> Path:
     path = _checkpoint_path(config, step)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".pt.tmp")
-    torch.save(
-        {
-            "step": step,
-            "policy_state_dict": policy.state_dict(),
-            "actor_optimizer": actor_optimizer.state_dict(),
-            "critic_optimizer": critic_optimizer.state_dict(),
-            "actor_scheduler": actor_scheduler.state_dict(),
-            "critic_scheduler": critic_scheduler.state_dict(),
-            "config": asdict(config),
-        },
-        temporary,
-    )
+    payload = {
+        "step": step,
+        "policy_state_dict": policy.state_dict(),
+        "actor_optimizer": actor_optimizer.state_dict(),
+        "critic_optimizer": critic_optimizer.state_dict(),
+        "actor_scheduler": actor_scheduler.state_dict(),
+        "critic_scheduler": critic_scheduler.state_dict(),
+        "config": asdict(config),
+    }
+    if temperature_optimizer is not None:
+        payload["temperature_optimizer"] = temperature_optimizer.state_dict()
+    torch.save(payload, temporary)
     temporary.replace(path)
     return path
 
@@ -278,6 +325,7 @@ def _restore_checkpoint(
     actor_scheduler: torch.optim.lr_scheduler.LRScheduler,
     critic_scheduler: torch.optim.lr_scheduler.LRScheduler,
     device: torch.device,
+    temperature_optimizer: torch.optim.Optimizer | None = None,
 ) -> int:
     path = _latest_checkpoint(config)
     if path is None:
@@ -288,6 +336,8 @@ def _restore_checkpoint(
     critic_optimizer.load_state_dict(payload["critic_optimizer"])
     actor_scheduler.load_state_dict(payload["actor_scheduler"])
     critic_scheduler.load_state_dict(payload["critic_scheduler"])
+    if temperature_optimizer is not None and "temperature_optimizer" in payload:
+        temperature_optimizer.load_state_dict(payload["temperature_optimizer"])
     return int(payload["step"])
 
 
@@ -456,14 +506,22 @@ def _drain_online_transitions(
     replay_buffer: deque[dict[str, Tensor]],
     _device: torch.device,
     shutdown_event: Event,
+    relabel: Callable[[list[dict[str, Tensor]]], None] | None = None,
 ) -> int:
+    """Append the queued transitions; each message holds one episode, which
+    ``relabel`` may rewrite before it is stored."""
     from lerobot.transport.utils import bytes_to_transitions
 
     count = 0
     while not queue.empty() and not shutdown_event.is_set():
-        for transition in bytes_to_transitions(queue.get()):
-            replay_buffer.append(_transition_fields(transition))
-            count += 1
+        episode = [
+            _transition_fields(transition)
+            for transition in bytes_to_transitions(queue.get())
+        ]
+        if relabel is not None:
+            relabel(episode)
+        replay_buffer.extend(episode)
+        count += len(episode)
     return count
 
 
@@ -503,12 +561,14 @@ def _restore_rolling_metrics(
 
 
 def _schedule_online_updates(
-    pending_updates: int, new_transitions: int
+    pending_updates: int, new_transitions: int, *, steps_per_transition: int = 1
 ) -> int:
-    """Schedule one learner step per transition; each step applies UTD critics."""
-    if pending_updates < 0 or new_transitions < 0:
+    """Schedule learner steps per transition: one for RLT, whose step applies
+    UTD critic updates itself; ``utd_ratio`` for DSRL, whose step is one
+    gradient step."""
+    if pending_updates < 0 or new_transitions < 0 or steps_per_transition <= 0:
         raise ValueError("online update counts must be nonnegative")
-    return pending_updates + new_transitions
+    return pending_updates + new_transitions * steps_per_transition
 
 
 def _drain_interactions(
@@ -1311,13 +1371,17 @@ def run_learner(
     )
     policy.to(device).train()
 
-    # The DSRL policy's entropy temperature trains with the actor.
-    actor_parameters = list(policy.actor.parameters()) + list(
-        getattr(policy, "temperature_parameters", list)()
+    actor_optimizer = torch.optim.Adam(
+        policy.actor.parameters(), lr=config.actor_lr
     )
-    actor_optimizer = torch.optim.Adam(actor_parameters, lr=config.actor_lr)
     critic_optimizer = torch.optim.Adam(
         policy.critic_ensemble.parameters(), lr=config.critic_lr
+    )
+    # The DSRL entropy temperature has its own Adam, as in the official code.
+    temperature_optimizer = (
+        torch.optim.Adam(policy.temperature_parameters(), lr=config.dsrl_temperature_lr)
+        if dsrl
+        else None
     )
     actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         actor_optimizer,
@@ -1338,6 +1402,7 @@ def run_learner(
             actor_scheduler,
             critic_scheduler,
             device,
+            temperature_optimizer=temperature_optimizer,
         )
         if resume
         else 0
@@ -1469,6 +1534,7 @@ def run_learner(
                 critic_scheduler,
                 step=completed_steps,
                 config=config,
+                temperature_optimizer=temperature_optimizer,
             )
 
     online_buffer: deque[dict[str, Tensor]] | None = None
@@ -1483,24 +1549,35 @@ def run_learner(
         pending_updates = 0
         session_episodes = 0
         last_arrival = time.monotonic()
+        if dsrl:
+            from armnet_rlt.dsrl import relabel_episode
         try:
             while (
                 not shutdown_event.is_set()
                 and completed_steps < config.online_steps
             ):
+                was_empty = not online_buffer
                 added = _drain_online_transitions(
                     transition_queue,
                     online_buffer,
                     device,
                     shutdown_event,
+                    relabel=relabel_episode if dsrl else None,
                 )
-                # One learner step already performs ``utd_ratio`` critic
-                # updates in _train_step. Scheduling utd_ratio learner steps
-                # here as well would square the configured update-to-data
-                # ratio (10 -> 100) and overfit each rollout aggressively.
-                pending_updates = _schedule_online_updates(
-                    pending_updates, added
-                )
+                if dsrl and added and was_empty and completed_steps == 0:
+                    # The official DSRL trains a fixed number of steps on the
+                    # first episode, then utd_ratio per transition.
+                    pending_updates = config.dsrl_initial_steps
+                else:
+                    # One RLT learner step already performs ``utd_ratio``
+                    # critic updates in _train_step; scheduling utd_ratio
+                    # learner steps here as well would square the ratio. A
+                    # DSRL learner step is one gradient step.
+                    pending_updates = _schedule_online_updates(
+                        pending_updates,
+                        added,
+                        steps_per_transition=config.utd_ratio if dsrl else 1,
+                    )
                 finished = _drain_interactions(
                     interaction_queue,
                     rolling,
@@ -1551,7 +1628,7 @@ def run_learner(
                     list(online_buffer),
                     online_batch_size,
                     device,
-                    balance_key="curriculum_scale",
+                    balance_key=None if dsrl else "curriculum_scale",
                 )
                 demo_batch_size = (
                     config.batch_size - online_batch_size
@@ -1563,14 +1640,24 @@ def run_learner(
                     batch = _merge_batches(online_batch, demo_batch)
                 else:
                     batch = online_batch
-                critic_loss, actor_loss = _train_step(
-                    policy,
-                    batch,
-                    step=completed_steps,
-                    config=config,
-                    actor_optimizer=actor_optimizer,
-                    critic_optimizer=critic_optimizer,
-                )
+                if dsrl:
+                    assert temperature_optimizer is not None
+                    critic_loss, actor_loss = _train_step_dsrl(
+                        policy,
+                        batch,
+                        actor_optimizer=actor_optimizer,
+                        critic_optimizer=critic_optimizer,
+                        temperature_optimizer=temperature_optimizer,
+                    )
+                else:
+                    critic_loss, actor_loss = _train_step(
+                        policy,
+                        batch,
+                        step=completed_steps,
+                        config=config,
+                        actor_optimizer=actor_optimizer,
+                        critic_optimizer=critic_optimizer,
+                    )
                 final_critic_loss = critic_loss
                 if actor_loss is not None:
                     final_actor_loss = actor_loss
@@ -1634,6 +1721,7 @@ def run_learner(
                         critic_scheduler,
                         step=completed_steps,
                         config=config,
+                        temperature_optimizer=temperature_optimizer,
                     )
                     _save_replay_buffer(
                         config,
@@ -1659,6 +1747,7 @@ def run_learner(
         critic_scheduler,
         step=completed_steps,
         config=config,
+        temperature_optimizer=temperature_optimizer,
     )
     if online_buffer is not None:
         _save_replay_buffer(

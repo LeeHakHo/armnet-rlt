@@ -105,7 +105,8 @@ def config_from_frozen_checkpoint(artifact: Mapping[str, Any]) -> RLTConfig:
         embodiment=embodiment,
         network=network,
         algorithm=algorithm,
-        dsrl_noise_bound=float(raw.get("dsrl_noise_bound", 2.0)),
+        dsrl_noise_bound=float(raw.get("dsrl_noise_bound", 2.5)),
+        dsrl_noise_steps=int(raw.get("dsrl_noise_steps", 1)),
         actions_to_execute=(
             int(raw.get("actions_to_execute", 10))
             if algorithm == "dsrl"

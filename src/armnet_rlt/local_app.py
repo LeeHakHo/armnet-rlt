@@ -489,6 +489,7 @@ def cmd_online(args: argparse.Namespace) -> None:
         save_freq=args.save_freq,
         algorithm=args.algorithm,
         dsrl_noise_bound=args.dsrl_noise_bound,
+        dsrl_noise_steps=args.dsrl_noise_steps,
         dsrl_target_entropy=args.dsrl_target_entropy,
         dsrl_alpha_init=args.dsrl_alpha_init,
     )
@@ -705,21 +706,29 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument(
         "--dsrl-noise-bound",
         type=float,
-        default=2.0,
-        help="DSRL noise actions are clipped to [-bound, bound]",
+        default=2.5,
+        help="DSRL noise actions are clipped to [-bound, bound] "
+        "(2.5 in the official pi0 runs)",
+    )
+    online.add_argument(
+        "--dsrl-noise-steps",
+        type=int,
+        default=1,
+        help="Rows of noise the DSRL actor outputs; the last row is repeated "
+        "over the rest of the 30-step chunk (1 in the official pi0 runs)",
     )
     online.add_argument(
         "--dsrl-target-entropy",
         type=float,
         default=0.0,
-        help="DSRL SAC target entropy of the noise policy, summed over the "
-        "180 noise dimensions (0 as in the paper's real-robot runs; -90 is -d/2)",
+        help="DSRL SAC target entropy of the noise policy, summed over its "
+        "noise dimensions (0 in the official pi0 runs)",
     )
     online.add_argument(
         "--dsrl-alpha-init",
         type=float,
-        default=0.1,
-        help="DSRL SAC initial entropy temperature",
+        default=1.0,
+        help="DSRL SAC initial entropy temperature (1.0 in the official pi0 runs)",
     )
     add_transport(online, "Seconds between weight pushes")
 

@@ -422,7 +422,8 @@ def run(ctx: Context) -> dict[str, Any]:
                 args.get("delta_actions"), True
             ),
             algorithm=algorithm,
-            dsrl_noise_bound=float(args.get("dsrl_noise_bound", 2.0)),
+            dsrl_noise_bound=float(args.get("dsrl_noise_bound", 2.5)),
+            dsrl_noise_steps=int(args.get("dsrl_noise_steps", 1)),
             max_demo_pretrain_steps=0 if algorithm == "dsrl" else 500,
             online_batch_fraction=1.0 if algorithm == "dsrl" else 0.5,
         )
