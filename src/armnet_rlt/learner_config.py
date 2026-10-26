@@ -61,6 +61,8 @@ def learner_config(
     device: str = "cuda",
     algorithm: str = "rlt",
     dsrl_noise_bound: float = 2.0,
+    dsrl_target_entropy: float = 0.0,
+    dsrl_alpha_init: float = 0.1,
     actions_to_execute: int = 10,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
@@ -75,6 +77,8 @@ def learner_config(
     kwargs = {
         "algorithm": algorithm,
         "dsrl_noise_bound": dsrl_noise_bound,
+        "dsrl_target_entropy": dsrl_target_entropy,
+        "dsrl_alpha_init": dsrl_alpha_init,
         "actions_to_execute": actions_to_execute,
         "embodiment": embodiment,
         "network": network,

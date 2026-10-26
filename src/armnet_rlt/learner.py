@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from threading import Event
 from typing import Any
 
@@ -573,6 +573,7 @@ def _append_training_metrics(
     episode_count: int,
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizer: torch.optim.Optimizer,
+    extra: Mapping[str, float] | None = None,
 ) -> None:
     append_jsonl(
         path,
@@ -588,6 +589,7 @@ def _append_training_metrics(
             "episodes_total": episode_count,
             "actor_lr": actor_optimizer.param_groups[0]["lr"],
             "critic_lr": critic_optimizer.param_groups[0]["lr"],
+            **dict(extra or {}),
         },
     )
 
@@ -1309,9 +1311,11 @@ def run_learner(
     )
     policy.to(device).train()
 
-    actor_optimizer = torch.optim.Adam(
-        policy.actor.parameters(), lr=config.actor_lr
+    # The DSRL policy's entropy temperature trains with the actor.
+    actor_parameters = list(policy.actor.parameters()) + list(
+        getattr(policy, "temperature_parameters", list)()
     )
+    actor_optimizer = torch.optim.Adam(actor_parameters, lr=config.actor_lr)
     critic_optimizer = torch.optim.Adam(
         policy.critic_ensemble.parameters(), lr=config.critic_lr
     )
@@ -1574,6 +1578,7 @@ def run_learner(
                 pending_updates -= 1
                 if config.log_freq and completed_steps % config.log_freq == 0:
                     qs = _q_stats(policy, batch)
+                    actor_stats = dict(getattr(policy, "last_actor_stats", {}))
                     print(
                         f"[RLT] online step={completed_steps} "
                         f"critic={final_critic_loss:.6f} "
@@ -1581,7 +1586,10 @@ def run_learner(
                         f"q={qs['learner/q_mean']:.4f}"
                         f"±{qs['learner/q_std']:.4f} "
                         f"gap={qs.get('learner/q_gap', float('nan')):.4f} "
-                        f"online_buffer={len(online_buffer)}",
+                        + "".join(
+                            f"{name}={value:.4f} " for name, value in actor_stats.items()
+                        )
+                        + f"online_buffer={len(online_buffer)}",
                         flush=True,
                     )
                     _append_training_metrics(
@@ -1595,11 +1603,16 @@ def run_learner(
                         episode_count=episode_count,
                         actor_optimizer=actor_optimizer,
                         critic_optimizer=critic_optimizer,
+                        extra=actor_stats,
                     )
                     if wandb_run is not None:
                         wandb_run.log(
                             {
                                 **_q_stats(policy, batch),
+                                **{
+                                    f"learner/{name}": value
+                                    for name, value in actor_stats.items()
+                                },
                                 "learner/critic_loss": final_critic_loss,
                                 "learner/actor_loss": final_actor_loss,
                                 "learner/online_buffer": len(online_buffer),

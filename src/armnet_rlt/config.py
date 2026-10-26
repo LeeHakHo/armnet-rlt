@@ -204,6 +204,10 @@ class RLTConfig:
     algorithm: str = "rlt"
     # DSRL noise actions live in [-dsrl_noise_bound, dsrl_noise_bound].
     dsrl_noise_bound: float = 2.0
+    # DSRL soft actor-critic: the entropy the temperature steers the squashed
+    # Gaussian toward (summed over noise dimensions) and the initial temperature.
+    dsrl_target_entropy: float = 0.0
+    dsrl_alpha_init: float = 0.1
     device: str = "cuda"
     storage_device: str = "cpu"
     log_freq: int = 10
@@ -239,6 +243,10 @@ class RLTConfig:
                 )
             if not math.isfinite(self.dsrl_noise_bound) or self.dsrl_noise_bound <= 0:
                 raise ValueError("dsrl_noise_bound must be finite and positive")
+            if not math.isfinite(self.dsrl_target_entropy):
+                raise ValueError("dsrl_target_entropy must be finite")
+            if not math.isfinite(self.dsrl_alpha_init) or self.dsrl_alpha_init <= 0:
+                raise ValueError("dsrl_alpha_init must be finite and positive")
             if self.max_demo_pretrain_steps:
                 raise ValueError("dsrl has no demonstration pretraining")
             if self.online_batch_fraction != 1.0:

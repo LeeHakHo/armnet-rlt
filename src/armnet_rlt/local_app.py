@@ -489,6 +489,8 @@ def cmd_online(args: argparse.Namespace) -> None:
         save_freq=args.save_freq,
         algorithm=args.algorithm,
         dsrl_noise_bound=args.dsrl_noise_bound,
+        dsrl_target_entropy=args.dsrl_target_entropy,
+        dsrl_alpha_init=args.dsrl_alpha_init,
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -705,6 +707,19 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="DSRL noise actions are clipped to [-bound, bound]",
+    )
+    online.add_argument(
+        "--dsrl-target-entropy",
+        type=float,
+        default=0.0,
+        help="DSRL SAC target entropy of the noise policy, summed over the "
+        "180 noise dimensions (0 as in the paper's real-robot runs; -90 is -d/2)",
+    )
+    online.add_argument(
+        "--dsrl-alpha-init",
+        type=float,
+        default=0.1,
+        help="DSRL SAC initial entropy temperature",
     )
     add_transport(online, "Seconds between weight pushes")
 

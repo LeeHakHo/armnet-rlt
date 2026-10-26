@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -7,11 +9,13 @@ import torch
 from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTConfig, so101_network_config
 from armnet_rlt.dsrl import (
+    LOG_STD_INIT,
     DSRLActor,
     DSRLPolicy,
     actor_from_steering_payload,
     choose_noise,
     random_noise,
+    squash_gaussian,
     steering_payload,
 )
 
@@ -61,6 +65,10 @@ def test_dsrl_config_requires_full_chunk_noise_and_no_demos() -> None:
         _config(online_batch_fraction=0.5)
     with pytest.raises(ValueError, match="noise_bound"):
         _config(dsrl_noise_bound=0.0)
+    with pytest.raises(ValueError, match="target_entropy"):
+        _config(dsrl_target_entropy=float("nan"))
+    with pytest.raises(ValueError, match="alpha_init"):
+        _config(dsrl_alpha_init=0.0)
     with pytest.raises(ValueError, match="algorithm"):
         _config(algorithm="sac")
 
@@ -168,3 +176,113 @@ def test_chosen_noise_follows_the_actor_and_stays_within_the_bound() -> None:
         random_noise((3, 6), exploration_std=0.0, noise_bound=2.0, rng=rng),
         np.zeros((3, 6), np.float32),
     )
+
+
+def test_squashed_log_prob_matches_the_change_of_variables() -> None:
+    torch.manual_seed(0)
+    mean, log_std, epsilon = torch.randn(5, 7), torch.randn(5, 7) * 0.5, torch.randn(5, 7)
+    action, log_prob = squash_gaussian(mean, log_std, epsilon)
+    pre_tanh = mean + log_std.exp() * epsilon
+    normal = torch.distributions.Normal(mean, log_std.exp())
+    expected = (normal.log_prob(pre_tanh) - torch.log(1 - action.pow(2))).sum(-1)
+    assert torch.allclose(action, torch.tanh(pre_tanh))
+    assert torch.allclose(log_prob, expected, atol=1e-3, rtol=1e-4)
+    # Saturating the squash concentrates the density: a mean of 6 pre-tanh
+    # gives a far higher log probability than a mean of 0 at the same std.
+    _, centered = squash_gaussian(torch.zeros(1, 7), torch.zeros(1, 7), torch.zeros(1, 7))
+    _, saturated = squash_gaussian(torch.full((1, 7), 6.0), torch.zeros(1, 7), torch.zeros(1, 7))
+    assert float(saturated) > float(centered) + 7 * 5
+
+
+def test_actor_starts_near_unit_noise_and_samples_with_the_scaled_std() -> None:
+    torch.manual_seed(0)
+    actor = DSRLActor(_network(), noise_bound=2.0)
+    assert torch.allclose(actor.log_std_head.bias, torch.full((18,), LOG_STD_INIT))
+    token, proprio = torch.randn(1, 2048), torch.randn(1, 6)
+    _, log_std = actor.distribution(token, proprio)
+    assert torch.allclose(log_std, torch.full_like(log_std, LOG_STD_INIT), atol=0.2)
+    token = token.expand(4096, -1).contiguous()
+    proprio = proprio.expand(4096, -1).contiguous()
+    with torch.no_grad():
+        normalized, log_prob = actor.sample(token, proprio)
+    noise = actor.unnormalize_action(normalized)
+    assert normalized.shape == (4096, 18) and log_prob.shape == (4096,)
+    assert float(noise.abs().max()) <= 2.0
+    assert 0.8 < float(noise.std()) < 1.2
+    with torch.no_grad():
+        sampled, squashed_mean = actor(token[:2], proprio[:2], sample=True)
+    assert not torch.allclose(sampled, squashed_mean)
+    assert torch.allclose(squashed_mean, actor(token[:2], proprio[:2])[0])
+    with torch.no_grad():
+        wide, _ = actor.sample(token, proprio, std_scale=3.0)
+        narrow, _ = actor.sample(token, proprio, std_scale=0.1)
+    assert float(wide.std()) > float(normalized.std()) > float(narrow.std())
+    with pytest.raises(ValueError, match="std_scale"):
+        actor.sample(token[:1], proprio[:1], std_scale=0.0)
+    epsilon = torch.zeros(1, 18)
+    at_mean, _ = actor.sample(token[:1], proprio[:1], epsilon=epsilon)
+    assert torch.allclose(at_mean, actor(token[:1], proprio[:1])[1])
+
+
+def test_policy_trains_the_temperature_toward_the_target_entropy() -> None:
+    torch.manual_seed(0)
+    token, proprio = torch.randn(8, 2048), torch.randn(8, 6)
+    for target, expected_sign in ((1e6, 1.0), (-1e6, -1.0)):
+        policy = DSRLPolicy(_config(dsrl_target_entropy=target, dsrl_alpha_init=0.5))
+        policy.set_norm_stats(_norm_stats())
+        assert policy.temperature_parameters() == [policy.log_alpha]
+        assert float(policy.alpha.detach()) == pytest.approx(0.5)
+        loss = policy.compute_loss_actor(token, proprio)
+        loss.backward()
+        # Entropy below the target raises alpha (negative gradient on log_alpha).
+        assert math.copysign(1.0, -float(policy.log_alpha.grad)) == expected_sign
+        assert all(
+            parameter.grad is not None for parameter in policy.actor.parameters()
+        )
+        stats = policy.last_actor_stats
+        assert set(stats) == {"alpha", "entropy", "log_std", "noise_saturation"}
+        assert 0.0 <= stats["noise_saturation"] <= 1.0
+    # The soft target subtracts alpha * log pi of the next action.
+    policy = DSRLPolicy(_config(dsrl_alpha_init=1e-8))
+    policy.set_norm_stats(_norm_stats())
+    noise = torch.rand(8, 18) * 4 - 2
+    reward, done = torch.zeros(8), torch.zeros(8)
+    torch.manual_seed(1)
+    cold = policy.compute_loss_critic(token, proprio, noise, reward, token, proprio, noise, done)
+    policy.log_alpha.data.fill_(math.log(10.0))
+    torch.manual_seed(1)
+    hot = policy.compute_loss_critic(token, proprio, noise, reward, token, proprio, noise, done)
+    assert not torch.isclose(cold, hot)
+    assert torch.isfinite(hot)
+
+
+def test_sampled_noise_from_the_payload_actor_matches_the_learner_actor() -> None:
+    torch.manual_seed(0)
+    actor = DSRLActor(_network(), noise_bound=2.0)
+    actor.eval()
+    restored, _ = actor_from_steering_payload(
+        steering_payload(actor.state_dict(), network=_network(), noise_bound=2.0, learner_step=1)
+    )
+    token, proprio = np.random.randn(2048).astype(np.float32), np.zeros(6, np.float32)
+    first = choose_noise(
+        actor, token, proprio, exploration_std=1.0, noise_bound=2.0, rng=np.random.default_rng(3)
+    )
+    second = choose_noise(
+        restored, token, proprio, exploration_std=1.0, noise_bound=2.0, rng=np.random.default_rng(3)
+    )
+    assert np.allclose(first, second, atol=1e-6)
+    assert np.abs(first).max() <= 2.0
+    draws = np.stack(
+        [
+            choose_noise(actor, token, proprio, exploration_std=1.0, noise_bound=2.0, rng=rng)
+            for rng in (np.random.default_rng(seed) for seed in range(200))
+        ]
+    )
+    exact = choose_noise(actor, token, proprio, exploration_std=0.0, noise_bound=2.0, rng=np.random.default_rng(0))
+    # Samples scatter around the squashed mean with roughly the initial unit spread.
+    assert 0.6 < float(draws.std()) < 1.4
+    assert np.abs(draws.mean(axis=0) - exact).max() < 0.5
+    old_schema = steering_payload(actor.state_dict(), network=_network(), noise_bound=2.0, learner_step=1)
+    old_schema["meta"] = old_schema["meta"].replace('"schema_version": 2', '"schema_version": 1')
+    with pytest.raises(ValueError, match="schema"):
+        actor_from_steering_payload(old_schema)

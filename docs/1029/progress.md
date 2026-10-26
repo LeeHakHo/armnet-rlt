@@ -82,10 +82,14 @@
 - Wagenmaker 외 2025 (arXiv 2506.15799). π0.5 가중치는 고정하고, actor가 RL 토큰 + 관절 상태 → flow의 초기 노이즈 (30×6, ±2 클립)를 내면 π0.5가 그 노이즈로 denoise한 청크를 로봇이 실행. 행동이 항상 π0.5 분포 안에 머무는 것이 RLT TD3(별도 행동 정책)와의 차이.
 - 구현: `--algorithm dsrl` (learner `rlt-local online`, actor `rlt-submit-actor`). `src/armnet_rlt/dsrl.py`에 actor/critic/loss, 정책 서버에 `SetSteering` RPC와 prefix/denoise 분리 JIT. actor는 정책 서버 안에서 평가되어 청크당 왕복 1회 유지. transition의 `action`은 노이즈(180차원), `reference_action`은 그 노이즈로 만든 청크. 데모 캐시·사전학습 없음, critic은 RLT와 같은 TD3 앙상블.
 - 실행: `tools/queue-dsrl.sh` (learner+정책 서버 → actor 1200 롤아웃, exploration std 1.0 → 최신 체크포인트 freeze → 10 롤아웃 평가). actor 이미지는 `dsrl.py`가 들어간 새 이미지가 필요.
+- 10-25 `hyeonhoo-local-dsrl-20261025-091336` (base `pi05_busybox_minmax_step5k_rltoken`, Funnel 경로): 09:13~18:28, Slurm 선점으로 중단. 롤아웃 832회, 성공 346회. 50회 구간 성공은 처음 350회까지 9 이하, 400회 이후 23 → 29 → 39, 700회 이후 42 → 48 → 41. step_022000 deterministic 평가 **5/10**. 23:38 step_022000에서 30k까지 재개(`DSRL_RESUME_RUN`), 끝나면 큐가 30k deterministic 평가, 이어서 `tools/queue-dsrl-eval-followup.sh`가 30k·22k를 exploration std 1.0으로 10회씩 평가.
+- 10-26 진단 (step_022000 actor, 리플레이 15,000 관측): 평균 노이즈의 L2 노름 26.3 (N(0, I)는 13.4), 180차원 중 92%가 |mean| > 1.9, 차원별 중앙값 2.000. step_001000부터 모든 체크포인트가 92~99% 포화, 학습 중 바뀐 것은 부호 패턴(최종과 일치율 58% → 82%). critic은 꼭짓점을 가장 높게 평가(min-Q 평균 0.63 vs 실행 행동 0.54 vs base 노이즈 0.46, 99% 상태에서 Q(평균) > Q(실행)). 즉 deterministic 행동은 flow가 본 적 없는 초입방체 꼭짓점이고, 학습 중 성공률은 "부호 패턴 + 클립된 노이즈(차원별 |a| 평균 1.6)"의 것.
+- 원본과의 차이: 논문 π0 실로봇 설정은 SAC(tanh-Gaussian actor, target entropy 0), b_W 2.5, 32차원 노이즈 하나를 청크에 반복, env step당 gradient 30회, critic 2개. 우리는 TD3(결정적 actor + 고정 std 1.0), 180차원 독립 노이즈, transition당 약 1.5 갱신, critic 4개. 포화는 TD3에 엔트로피 항이 없어서 생긴 것.
+- 10-26 `dsrl.py`를 SAC로 변경 (브랜치 `feat/dsrl-sac`): actor가 pre-tanh 평균·log std를 내고 tanh로 ±bound에 squash, 재매개화 샘플과 log-prob(tanh Jacobian 보정). critic 타깃은 min-Q − α log π, actor loss는 α log π − min-Q, 온도 α는 `--dsrl-target-entropy`(기본 0, 180차원 합)로 자동 조정, `--dsrl-alpha-init` 0.1. `--exploration-scale`은 이제 정책 std의 배율(1.0 = 정책 분포에서 샘플, 0 = 평균). steering schema 2. 로그에 alpha, entropy, log_std, noise_saturation 추가. actor 이미지(`dsrl.py` 포함) 재빌드 후 실행 가능. 노이즈 반복(6차원)과 UTD 상향은 미적용.
 
 ## 다음 후보
 
-- 새 actor 이미지 빌드 후 `tools/queue-dsrl.sh` 실행.
+- SAC `dsrl.py`가 들어간 actor 이미지 빌드 후 `tools/queue-dsrl.sh` 실행 (TD3 실행의 평가가 끝난 뒤 `feat/dsrl-sac`로 전환).
 - TD3를 16k에서 재개할지 결정. 성공률이 평평하므로 exploration·커리큘럼 조정 없이는 의미 없음.
 - ACT 30k를 exploration 0.1로 재평가 (위 참고).
 - 모든 모델을 같은 20 장면(variation seed)으로 재평가. 현재는 rail 0.7 고정 10회라 10-15 표와 직접 비교 불가.
