@@ -348,6 +348,7 @@ def run(ctx: Context) -> dict[str, Any]:
         )
 
     from armnet_rlt.config import (
+        DSRL_HIDDEN_DIMS,
         SO101_JERK_JOINT_WEIGHTS,
         RLTConfig,
         so101_network_config,
@@ -404,11 +405,13 @@ def run(ctx: Context) -> dict[str, Any]:
             )
         )
         algorithm = str(args.get("algorithm", "rlt"))
-        # DSRL's actor outputs noise for the whole base chunk and executes a prefix.
-        predicted_len = reference_len if algorithm == "dsrl" else execute_len
+        # DSRL's actor outputs noise for the whole base chunk and executes a
+        # prefix; its network is the learner's 1024x3 MLP (learner_config).
+        dsrl = algorithm == "dsrl"
         network = so101_network_config(
             reference_action_len=reference_len,
-            predicted_action_len=predicted_len,
+            predicted_action_len=reference_len if dsrl else execute_len,
+            **({"hidden_dims": DSRL_HIDDEN_DIMS} if dsrl else {}),
         )
         base_cfg = _construct(
             RLTConfig,

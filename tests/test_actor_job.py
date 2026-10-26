@@ -58,6 +58,7 @@ def test_current_cell_fields_are_mapped_into_actor_config(
 
     config_module = types.ModuleType("armnet_rlt.config")
     config_module.SO101_JERK_JOINT_WEIGHTS = [1.0] * 6
+    config_module.DSRL_HIDDEN_DIMS = (1024, 1024, 1024)
     config_module.RLTConfig = Config
     config_module.so101_network_config = lambda **kwargs: Network(**kwargs)
 
@@ -105,6 +106,75 @@ def test_current_cell_fields_are_mapped_into_actor_config(
     assert cfg.so101.max_relative_target == 20.0
     assert cfg.actor_learner.learner_host == "learner.example"
     assert cfg.actor_learner.auth_token == "secret"
+
+
+def test_online_dsrl_actor_builds_the_learner_network(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from armnet_rlt.config import DSRL_HIDDEN_DIMS
+    from armnet_rlt.learner_config import learner_config
+
+    (tmp_path / "params").mkdir()
+    built = {}
+
+    class Network:
+        def __init__(self, **kwargs):
+            built.update(kwargs)
+            self.action_dim = 6
+            self.proprioception_dim = 6
+            self.rl_token_dim = 2048
+            self.reference_action_len = kwargs["reference_action_len"]
+            self.predicted_action_len = kwargs["predicted_action_len"]
+
+    class Config:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.actor_learner = SimpleNamespace()
+
+    config_module = types.ModuleType("armnet_rlt.config")
+    config_module.SO101_JERK_JOINT_WEIGHTS = [1.0] * 6
+    config_module.DSRL_HIDDEN_DIMS = DSRL_HIDDEN_DIMS
+    config_module.RLTConfig = Config
+    config_module.so101_network_config = lambda **kwargs: Network(**kwargs)
+    actor_module = types.ModuleType("armnet_rlt.so101_actor")
+    actor_module.run_actor = lambda ctx, cfg, **kwargs: {"status": "ok"}
+    monkeypatch.setitem(sys.modules, "armnet_rlt.config", config_module)
+    monkeypatch.setitem(sys.modules, "armnet_rlt.so101_actor", actor_module)
+    monkeypatch.setattr(actor_job, "require_so101_embodiment", lambda *_: False)
+
+    ctx = SimpleNamespace(
+        args={
+            "checkpoint_dir": str(tmp_path),
+            "algorithm": "dsrl",
+            "learner_host": "learner.example",
+        },
+        cell=SimpleNamespace(
+            robot_port="tcp://edge:9876",
+            robot_id="cell-so101",
+            calibration_file_path=None,
+            calibration_dir=tmp_path / "calibration",
+            safety_limit=20.0,
+            language_instruction="cell task",
+        ),
+        camera_configs={"front": object()},
+        task="fallback task",
+        secrets={"RLT_LEARNER_AUTH_TOKEN": "secret"},
+        volume=SimpleNamespace(root=None),
+        cache_home=None,
+        report_progress=lambda _message: None,
+    )
+    assert actor_job.run(ctx) == {"status": "ok"}
+
+    learner = learner_config(
+        data_root=tmp_path,
+        embodiment="so101",
+        config_name="pi05_rlt_so101",
+        run_id="run",
+        algorithm="dsrl",
+    ).network
+    assert built["hidden_dims"] == learner.hidden_dims
+    assert built["reference_action_len"] == learner.reference_action_len
+    assert built["predicted_action_len"] == learner.predicted_action_len
 
 
 def test_frozen_eval_needs_no_learner_and_pairs_scenes(

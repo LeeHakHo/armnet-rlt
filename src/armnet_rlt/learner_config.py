@@ -8,6 +8,7 @@ from pathlib import Path
 
 from armnet_rlt.config import (
     BISO101_JERK_JOINT_WEIGHTS,
+    DSRL_HIDDEN_DIMS,
     SO101_JERK_JOINT_WEIGHTS,
     RLTConfig,
     RLTNetworkConfig,
@@ -80,7 +81,7 @@ def learner_config(
         network, jerk = network_for(
             embodiment, reference_action_len=30, predicted_action_len=30
         )
-        network = replace(network, hidden_dims=(1024, 1024, 1024))
+        network = replace(network, hidden_dims=DSRL_HIDDEN_DIMS)
         max_demo_pretrain_steps = 0
         online_batch_fraction = 1.0
         discount = 0.99 if discount is None else discount

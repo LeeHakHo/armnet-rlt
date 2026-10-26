@@ -40,6 +40,10 @@ def episodes_for_round(schedule: tuple[int, ...], round_index: int) -> int:
     return schedule[min(round_index - 1, len(schedule) - 1)]
 
 
+# The official pi0 DSRL noise actor and critics (nakamotoo/dsrl_pi0): 1024x3 MLPs.
+DSRL_HIDDEN_DIMS: tuple[int, ...] = (1024, 1024, 1024)
+
+
 @dataclass
 class RLTNetworkConfig:
     hidden_dims: tuple[int, ...] = (512, 512, 512, 512)
