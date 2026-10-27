@@ -17,6 +17,13 @@ from typing import Any
 import numpy as np
 import torch
 
+from armnet_rlt.grpc_util import (
+    GRPC_RETRY_SERVICE_CONFIG,
+    LEARNER_MAX_MESSAGE_BYTES,
+    auth_interceptor as _auth_interceptor,
+    grpc_channel as _grpc_channel,
+    grpc_channel_options as _grpc_channel_options,
+)
 from armnet_rlt.metrics import EpisodeRecord
 from armnet_rlt.openpi_rlt import (
     MOTOR_NAMES,
@@ -358,98 +365,6 @@ class FrozenActorTransport:
         return None
 
 
-def _auth_interceptor(metadata: list[tuple[str, str]]) -> Any:
-    import grpc
-
-    class Details(grpc.ClientCallDetails):
-        def __init__(self, original: Any) -> None:
-            self.method = original.method
-            self.timeout = original.timeout
-            self.metadata = [*(original.metadata or []), *metadata]
-            self.credentials = original.credentials
-            self.wait_for_ready = getattr(original, "wait_for_ready", None)
-            self.compression = getattr(original, "compression", None)
-
-    class Interceptor(
-        grpc.UnaryUnaryClientInterceptor,
-        grpc.UnaryStreamClientInterceptor,
-        grpc.StreamUnaryClientInterceptor,
-        grpc.StreamStreamClientInterceptor,
-    ):
-        def intercept_unary_unary(self, continuation, details, request):
-            return continuation(Details(details), request)
-
-        def intercept_unary_stream(self, continuation, details, request):
-            return continuation(Details(details), request)
-
-        def intercept_stream_unary(self, continuation, details, iterator):
-            return continuation(Details(details), iterator)
-
-        def intercept_stream_stream(self, continuation, details, iterator):
-            return continuation(Details(details), iterator)
-
-    return Interceptor()
-
-
-LEARNER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
-GRPC_RETRY_SERVICE_CONFIG = json.dumps(
-    {
-        "methodConfig": [
-            {
-                "name": [{}],
-                "retryPolicy": {
-                    "maxAttempts": 5,
-                    "initialBackoff": "0.1s",
-                    "maxBackoff": "2s",
-                    "backoffMultiplier": 2,
-                    "retryableStatusCodes": ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
-                },
-            }
-        ]
-    }
-)
-
-
-def _grpc_channel_options(max_message_bytes: int) -> list[tuple[str, Any]]:
-    """lerobot.transport.utils.grpc_channel_options with a configurable size cap."""
-    return [
-        ("grpc.max_receive_message_length", max_message_bytes),
-        ("grpc.max_send_message_length", max_message_bytes),
-        ("grpc.enable_retries", 1),
-        ("grpc.service_config", GRPC_RETRY_SERVICE_CONFIG),
-    ]
-
-
-def _grpc_channel(
-    host: str,
-    port: int,
-    *,
-    use_tls: bool,
-    token: str = "",
-    server_name: str = "",
-    root_cert_path: str = "",
-    max_message_bytes: int = LEARNER_MAX_MESSAGE_BYTES,
-) -> Any:
-    import grpc
-
-    options = _grpc_channel_options(max_message_bytes)
-    if server_name:
-        options.append(("grpc.ssl_target_name_override", server_name))
-    target = f"{host}:{port}"
-    if use_tls:
-        root = Path(root_cert_path).read_bytes() if root_cert_path else None
-        channel = grpc.secure_channel(
-            target, grpc.ssl_channel_credentials(root_certificates=root), options
-        )
-    else:
-        channel = grpc.insecure_channel(target, options)
-    if token:
-        channel = grpc.intercept_channel(
-            channel, _auth_interceptor([("authorization", f"Bearer {token}")])
-        )
-    return channel
-
-
 def _connect_learner(cfg: Any) -> tuple[Any, Any]:
     from lerobot.transport import services_pb2, services_pb2_grpc
 
@@ -555,9 +470,21 @@ def _load_parameters(actor: Any, payload: Any) -> int | None:
 def _sync_steering(
     policy: Any, actor: Any, *, network: Any, learner_step: int | None
 ) -> None:
-    """Hand the DSRL actor's current weights to the policy that applies them."""
+    """Hand the DSRL actor's current weights to the policy that applies them.
+
+    A policy server fed by the learner already has them; nothing is sent.
+    """
     from armnet_rlt.dsrl import steering_payload
 
+    if getattr(policy, "steering_from_learner", False):
+        if not getattr(policy, "_steering_feed_logged", False):
+            print(
+                "[rlt] policy server takes its steering from the learner; "
+                "not uploading the actor",
+                flush=True,
+            )
+            policy._steering_feed_logged = True
+        return
     policy.set_steering(
         steering_payload(
             actor.state_dict(),

@@ -351,6 +351,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     bind_host = "127.0.0.1" if edge_tls else args.bind_host
     key = policy_rendezvous_key(args.config_name)
     entry_path = local_rendezvous_path(key)
+    feed = None
     with serve(
         policy,
         bind=f"{bind_host}:{args.port}",
@@ -358,7 +359,31 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         auth_token=token,
         tls_cert_path=args.tls_cert,
         tls_key_path=args.tls_key,
-    ), _public_endpoint(args) as (host, port):
+        steering_from_learner=bool(args.steering_from_learner),
+    ) as server, _public_endpoint(args) as (host, port):
+        if args.steering_from_learner:
+            from armnet_rlt.remote_policy import MAX_MESSAGE_BYTES
+            from armnet_rlt.steering_feed import LearnerSteeringFeed
+
+            learner_host, _, learner_port = args.steering_from_learner.rpartition(":")
+            feed_config = _config(args, algorithm="dsrl")
+            feed = LearnerSteeringFeed(
+                server.apply_steering,
+                host=learner_host or "127.0.0.1",
+                port=int(learner_port),
+                use_tls=bool(args.steering_learner_tls_name),
+                token=token,
+                server_name=args.steering_learner_tls_name,
+                network=feed_config.network,
+                noise_steps=feed_config.dsrl_noise_steps,
+                max_message_bytes=MAX_MESSAGE_BYTES,
+            )
+            feed.start()
+            print(
+                f"[RLT] policy server steering from the learner at "
+                f"{args.steering_from_learner}",
+                flush=True,
+            )
         entry_path.parent.mkdir(parents=True, exist_ok=True)
         entry_path.write_text(
             json.dumps(
@@ -779,6 +804,21 @@ def _parser() -> argparse.ArgumentParser:
         "from `tailscale cert`) behind a raw TCP forwarder",
     )
     policy_server.add_argument("--tls-key", default="", help="Key for --tls-cert")
+    policy_server.add_argument(
+        "--steering-from-learner",
+        default="",
+        help="<host>:<port> of the DSRL learner; the server subscribes to its "
+        "parameter stream and installs the actor itself, so cell actors skip "
+        "the SetSteering upload",
+    )
+    policy_server.add_argument(
+        "--steering-learner-tls-name",
+        default="",
+        help="TLS name the learner's certificate carries (connect with TLS "
+        "and this name override); plaintext when empty",
+    )
+    policy_server.add_argument("--run-id", default="policy-server")
+    policy_server.add_argument("--embodiment", default="so101")
     return parser
 
 

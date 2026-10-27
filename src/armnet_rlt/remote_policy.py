@@ -112,10 +112,22 @@ def unpack_norm_stats(arrays: dict[str, np.ndarray]) -> dict[str, RemoteNormStat
 class PolicyServer:
     """Serve one loaded policy; calls hold a lock."""
 
-    def __init__(self, policy: Any, *, image_size: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        policy: Any,
+        *,
+        image_size: tuple[int, int],
+        steering_from_learner: bool = False,
+    ) -> None:
         self._policy = policy
         self._image_size = image_size
         self._lock = threading.Lock()
+        self.steering_from_learner = steering_from_learner
+
+    def apply_steering(self, payload: dict[str, Any]) -> int | None:
+        """Install a steering payload from this process (the learner feed)."""
+        with self._lock:
+            return self._policy.set_steering(payload)
 
     def info(self, request: bytes, context: Any) -> bytes:
         meta = {
@@ -123,6 +135,7 @@ class PolicyServer:
             "use_quantile_norm": bool(self._policy.use_quantile_norm),
             "uses_delta_actions": bool(self._policy.uses_delta_actions),
             "image_size": list(self._image_size),
+            "steering_from_learner": bool(self.steering_from_learner),
         }
         return pack(
             {"meta": json.dumps(meta), **pack_norm_stats(self._policy.norm_stats)}
@@ -180,11 +193,14 @@ def serve(
     auth_token: str = "",
     tls_cert_path: str = "",
     tls_key_path: str = "",
+    steering_from_learner: bool = False,
 ) -> Iterator[Any]:
     """Run a gRPC server for ``policy`` on ``bind`` until the context exits.
 
     With ``tls_cert_path`` and ``tls_key_path`` the server terminates TLS
-    itself, for a raw TCP forwarder in front of it."""
+    itself, for a raw TCP forwarder in front of it. ``steering_from_learner``
+    tells actors the server installs the DSRL actor itself; the yielded
+    server has ``apply_steering`` for that feed."""
     import grpc
 
     if bool(tls_cert_path) != bool(tls_key_path):
@@ -192,7 +208,9 @@ def serve(
 
     from armnet_rlt.learner import _make_auth_interceptor
 
-    server_impl = PolicyServer(policy, image_size=image_size)
+    server_impl = PolicyServer(
+        policy, image_size=image_size, steering_from_learner=steering_from_learner
+    )
     handlers = {
         name: grpc.unary_unary_rpc_method_handler(method)
         for name, method in (
@@ -225,6 +243,7 @@ def serve(
     if bound == 0:
         raise RuntimeError(f"could not bind the policy server to {bind}")
     server.start()
+    server.apply_steering = server_impl.apply_steering
     try:
         yield server
     finally:
@@ -259,6 +278,7 @@ class RemoteOpenPIRLTPolicy:
         self.steering_step: int | None = None
         info = unpack(self._call("Info", b"", timeout_s=30.0))
         meta = json.loads(str(info["meta"]))
+        self.steering_from_learner = bool(meta.get("steering_from_learner", False))
         self.rl_token_dim = int(meta["rl_token_dim"])
         self.use_quantile_norm = bool(meta["use_quantile_norm"])
         self.uses_delta_actions = bool(meta["uses_delta_actions"])
@@ -300,8 +320,10 @@ class RemoteOpenPIRLTPolicy:
         return pack(arrays)
 
     def set_steering(self, payload: dict[str, Any]) -> int | None:
-        """Send a DSRL actor (see ``dsrl.steering_payload``) to the server."""
-        response = unpack(self._call("SetSteering", pack(payload), timeout_s=30.0))
+        """Send a DSRL actor (see ``dsrl.steering_payload``) to the server.
+
+        The payload is tens of MB; through a relay it can take minutes."""
+        response = unpack(self._call("SetSteering", pack(payload), timeout_s=180.0))
         step = int(response["steering_step"])
         self.steering_step = step if step >= 0 else None
         return self.steering_step

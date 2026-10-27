@@ -252,3 +252,53 @@ def test_policy_server_can_terminate_tls_itself(tmp_path) -> None:
         assert result.action_chunk.shape == (30, 6)
         with pytest.raises(grpc.RpcError):
             RemoteOpenPIRLTPolicy(_channel(port, "secret"), image_codec="raw")
+
+
+def test_server_fed_by_the_learner_tells_actors_to_skip_the_upload() -> None:
+    policy = _FakePolicy()
+    port = _free_port()
+    with serve(
+        policy,
+        bind=f"127.0.0.1:{port}",
+        image_size=(224, 224),
+        auth_token="secret",
+        steering_from_learner=True,
+    ) as server:
+        remote = RemoteOpenPIRLTPolicy(_channel(port, "secret"), image_codec="raw")
+        assert remote.steering_from_learner
+        step = server.apply_steering(
+            {"meta": json.dumps({"learner_step": 11}), "param/w": np.ones((2, 3))}
+        )
+        steered = remote.infer(_observation(), exploration_std=0.5)
+    assert step == 11 and steered.steering_step == 11
+
+    with serve(
+        policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
+    ):
+        assert not RemoteOpenPIRLTPolicy(_channel(port, "secret")).steering_from_learner
+
+
+def test_actor_skips_the_steering_upload_for_a_fed_server(capsys) -> None:
+    import torch
+
+    from armnet_rlt.so101_actor import _sync_steering
+
+    class Fed:
+        steering_from_learner = True
+        calls = 0
+
+        def set_steering(self, payload):
+            self.calls += 1
+
+    class Actor:
+        noise_bound = torch.tensor(1.5)
+        noise_steps = 1
+
+        def state_dict(self):
+            return {"w": torch.ones(2)}
+
+    policy = Fed()
+    _sync_steering(policy, Actor(), network=None, learner_step=3)
+    _sync_steering(policy, Actor(), network=None, learner_step=4)
+    assert policy.calls == 0
+    assert capsys.readouterr().out.count("steering from the learner") == 1

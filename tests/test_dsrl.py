@@ -487,3 +487,38 @@ def test_dsrl_gradient_step_updates_every_module_and_schedules_utd_steps() -> No
     assert _schedule_online_updates(5, 2) == 7
     with pytest.raises(ValueError):
         _schedule_online_updates(0, 1, steps_per_transition=0)
+
+
+def test_learner_steering_feed_builds_payloads_and_merges_partial_updates() -> None:
+    from armnet_rlt.steering_feed import LearnerSteeringFeed
+
+    network = so101_network_config(
+        hidden_dims=(8,), reference_action_len=2, predicted_action_len=2
+    )
+    actor = DSRLActor(network, noise_bound=1.5, noise_steps=1)
+    applied: list[dict] = []
+    feed = LearnerSteeringFeed(
+        applied.append,
+        host="127.0.0.1",
+        port=1,
+        use_tls=False,
+        token="",
+        network=network,
+        noise_steps=1,
+        max_message_bytes=1 << 20,
+    )
+    full = {name: value.clone() for name, value in actor.state_dict().items()}
+    assert feed.apply_state({"policy": full, "learner_step": torch.tensor(30)}) == 30
+    rebuilt, step = actor_from_steering_payload(applied[-1])
+    assert step == 30 and float(rebuilt.noise_bound) == 1.5
+    key = next(name for name in full if name.endswith("weight"))
+    partial = {key: torch.full_like(full[key], 0.25)}
+    feed.apply_state(
+        {"policy": partial, "learner_step": torch.tensor(31), "partial": torch.tensor(True)}
+    )
+    rebuilt, step = actor_from_steering_payload(applied[-1])
+    assert step == 31
+    assert torch.equal(rebuilt.state_dict()[key], torch.full_like(full[key], 0.25))
+    other = next(name for name in full if name != key and name != "noise_bound")
+    assert torch.equal(rebuilt.state_dict()[other], full[other])
+    assert feed.updates == 2
