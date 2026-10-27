@@ -161,3 +161,38 @@ def test_learner_serves_a_given_certificate_without_a_name_override(
     assert "tls_root_cert_pem" not in entry and "tls_server_name" not in entry
     assert cfg.actor_learner.tls_server_cert_path == str(certificate)
     assert cfg.actor_learner.server_bind_host == "0.0.0.0"
+
+
+def test_bc_cache_and_bc_take_the_checkpoint_and_save_frequency(monkeypatch, tmp_path) -> None:
+    parser = local_app._parser()
+    args = parser.parse_args(["bc-cache", "--manifest", "m.json"])
+    assert args.checkpoint == ""
+    args = parser.parse_args(
+        ["bc-cache", "--manifest", "m.json", "--checkpoint", "experiment-data/openpi/base"]
+    )
+    assert args.checkpoint == "experiment-data/openpi/base"
+
+    args = parser.parse_args(
+        ["bc", "--run-id", "bc-smoke", "--save-freq", "5000", "--steps", "30000"]
+    )
+    assert args.save_freq == 5000
+    assert parser.parse_args(["bc"]).save_freq is None
+
+    received: dict[str, object] = {}
+
+    def fake_run(config, *, steps, wandb_project):
+        received["save_freq"] = config.save_freq
+        received["steps"] = steps
+        received["cache"] = Path(config.demo_cache_path).name
+        return {}
+
+    monkeypatch.setattr(local_app, "_select_gpu", lambda gpu: None)
+    monkeypatch.setattr(local_app, "ensure_norm_stats", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(
+        local_app, "local_data_root", lambda: tmp_path, raising=False
+    )
+    import armnet_rlt.learner as learner_module
+
+    monkeypatch.setattr(learner_module, "run_bc_training", fake_run)
+    local_app.cmd_bc(args)
+    assert received == {"save_freq": 5000, "steps": 30000, "cache": "rlt_bc_cache.pt"}

@@ -239,6 +239,7 @@ def cmd_bc_cache(args: argparse.Namespace) -> None:
         inference_batch_size=args.inference_batch_size,
         prompt=args.prompt,
         cache_name=args.cache_name,
+        checkpoint_repo=args.checkpoint or MULTITASK_CHECKPOINT,
     )
 
 
@@ -247,7 +248,7 @@ def cmd_bc(args: argparse.Namespace) -> None:
     from armnet_rlt.learner import run_bc_training
 
     ensure_norm_stats(args.config_name, args.checkpoint_repo)
-    cfg = _config(args)
+    cfg = _config(args, save_freq=args.save_freq)
     cfg.demo_cache_path = str(Path(cfg.demo_cache_path).with_name(args.cache_name))
     run_bc_training(cfg, steps=args.steps, wandb_project=args.wandb_project or None)
 
@@ -588,11 +589,20 @@ def _parser() -> argparse.ArgumentParser:
     bc_cache.add_argument("--inference-batch-size", type=int, default=4)
     bc_cache.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
     bc_cache.add_argument("--cache-name", default="rlt_bc_cache.pt")
+    bc_cache.add_argument(
+        "--checkpoint",
+        default="",
+        help="HuggingFace repo or local OpenPI checkpoint that encodes the "
+        "episodes (default AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax)",
+    )
 
     bc = add("bc", cmd_bc, "train an actor by cloning a cache's recorded actions")
     add_run(bc)
     bc.add_argument("--steps", type=int, default=5_000)
     bc.add_argument("--cache-name", default="rlt_bc_cache.pt")
+    bc.add_argument(
+        "--save-freq", type=int, default=None, help="Steps between checkpoints (config default 500)"
+    )
 
     streaming = add(
         "streaming-bc",

@@ -287,12 +287,22 @@ def build_rollout_cache(
     inference_batch_size: int = 4,
     prompt: str = GREEN_BUTTON_PROMPT,
     cache_name: str = "rlt_bc_cache.pt",
+    checkpoint_repo: str = MULTITASK_CHECKPOINT,
 ) -> dict:
-    """Build one cache from selected episodes of recorded rollout datasets."""
+    """Build one cache from selected episodes of recorded rollout datasets.
+
+    ``checkpoint_repo`` is a HuggingFace repo or a local OpenPI checkpoint
+    directory; the RL tokens and reference chunks come from that policy.
+    """
     from huggingface_hub import snapshot_download
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    checkpoint = snapshot_download(MULTITASK_CHECKPOINT)
+    checkpoint = (
+        checkpoint_repo
+        if Path(checkpoint_repo).is_dir()
+        else snapshot_download(checkpoint_repo)
+    )
+    print(f"[RLT bc] checkpoint={checkpoint}", flush=True)
     policy = OpenPIRLTPolicy.from_checkpoint(
         checkpoint, MULTITASK_CONFIG, default_prompt=prompt
     )
@@ -335,6 +345,7 @@ def build_rollout_cache(
     result = {
         **summary.to_dict(),
         "cache_path": str(target),
+        "checkpoint": checkpoint_repo,
         "sources": per_source,
         "episodes_total": sum(item["episodes"] for item in per_source),
     }
