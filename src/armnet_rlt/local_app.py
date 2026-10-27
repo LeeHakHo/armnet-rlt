@@ -448,6 +448,46 @@ def cmd_streaming_bc(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_act_bc(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    from armnet_rlt.act_actor import load_lerobot_policy
+    from armnet_rlt.act_learner import run_act_offline_bc
+
+    device = "cuda" if args.gpu != "cpu" else "cpu"
+    policy, preprocessor, postprocessor = load_lerobot_policy(args.policy_path, device)
+    source_type = str(policy.config.type)
+    if args.head == "gmm" and source_type != "act_gmm":
+        from armnet_rlt.act_gmm import from_act_checkpoint
+
+        policy = from_act_checkpoint(
+            args.policy_path,
+            device=device,
+            num_modes=args.num_modes,
+            init_std=args.init_std,
+        )
+        print(
+            f"[act bc] {source_type} checkpoint {args.policy_path} -> act_gmm with "
+            f"{args.num_modes} modes",
+            flush=True,
+        )
+    run_dir = Path(args.run_dir)
+    run_act_offline_bc(
+        policy,
+        preprocessor,
+        postprocessor,
+        dataset=args.dataset,
+        run_dir=run_dir,
+        steps=args.steps,
+        batch_size=args.batch_size,
+        save_freq=args.save_freq,
+        lr=args.lr,
+        num_workers=args.num_workers,
+        wandb_project=args.wandb_project or None,
+        wandb_run_id=run_dir.name,
+        wandb_config={"policy_path": args.policy_path, "head": args.head, "num_modes": args.num_modes},
+    )
+
+
 def cmd_act_streaming_bc(args: argparse.Namespace) -> None:
     _select_gpu(args.gpu)
     token = _learner_token()
@@ -654,6 +694,28 @@ def _parser() -> argparse.ArgumentParser:
         "Seconds between weight pushes while a round is training; a finished "
         "round always pushes",
     )
+
+    act_bc = add(
+        "act-bc",
+        cmd_act_bc,
+        "train a LeRobot ACT checkpoint offline on one dataset, optionally with "
+        "a mixture-of-Gaussians head (act_gmm)",
+    )
+    act_bc.add_argument("--policy-path", required=True, help="ACT or act_gmm pretrained_model directory")
+    act_bc.add_argument(
+        "--dataset",
+        default="AutoRLBench/so101_busybox_push_green_button_cell03_clean250_426x240",
+    )
+    act_bc.add_argument("--run-dir", required=True, help="Output directory (checkpoints/<step>/pretrained_model)")
+    act_bc.add_argument("--head", choices=("keep", "gmm"), default="gmm")
+    act_bc.add_argument("--num-modes", type=int, default=5)
+    act_bc.add_argument("--init-std", type=float, default=0.2)
+    act_bc.add_argument("--steps", type=int, default=10_000)
+    act_bc.add_argument("--batch-size", type=int, default=32)
+    act_bc.add_argument("--save-freq", type=int, default=2_500)
+    act_bc.add_argument("--lr", type=float, default=0.0, help="0 keeps the checkpoint's optimizer_lr")
+    act_bc.add_argument("--num-workers", type=int, default=8)
+    act_bc.add_argument("--wandb-project", default="")
 
     act_streaming = add(
         "act-streaming-bc",

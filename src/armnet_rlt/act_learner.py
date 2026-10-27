@@ -159,6 +159,127 @@ def _save(policy: Any, preprocessor: Any, postprocessor: Any, run_dir: Path, ste
     return target
 
 
+def run_act_offline_bc(
+    policy: Any,
+    preprocessor: Any,
+    postprocessor: Any,
+    *,
+    dataset: str,
+    run_dir: Path,
+    steps: int,
+    batch_size: int = 32,
+    save_freq: int = 2500,
+    lr: float = 0.0,
+    num_workers: int = 8,
+    log_freq: int = 50,
+    grad_clip_norm: float = 10.0,
+    seed: int = 42,
+    wandb_project: str | None = None,
+    wandb_run_id: str = "",
+    wandb_config: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    """Train ``policy`` on the chunks of one LeRobot dataset, saving a
+    checkpoint every ``save_freq`` steps under ``run_dir/checkpoints`` in the
+    layout ``rlt-local checkpoint-eval`` serves."""
+    if steps <= 0 or save_freq <= 0:
+        raise ValueError("steps and save_freq must be positive")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    training_log = run_dir / "training_metrics.jsonl"
+    policy.train()
+    chunk_size = int(policy.config.chunk_size)
+    learning_rate = lr or float(policy.config.optimizer_lr)
+    param_groups = policy.get_optim_params()
+    if lr:
+        for group in param_groups:
+            group["lr"] = lr
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        lr=learning_rate,
+        weight_decay=float(policy.config.optimizer_weight_decay),
+    )
+    batches = _base_loader(
+        dataset, chunk_size=chunk_size, batch_size=batch_size, num_workers=num_workers
+    )
+    wandb_run = None
+    if wandb_project:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=wandb_project,
+            id=wandb_run_id or None,
+            resume="allow",
+            config={
+                "dataset": dataset,
+                "steps": steps,
+                "batch_size": batch_size,
+                "lr": learning_rate,
+                "chunk_size": chunk_size,
+                "policy_type": getattr(policy.config, "type", ""),
+                **(wandb_config or {}),
+            },
+            tags=["offline-bc", str(getattr(policy.config, "type", "lerobot"))],
+        )
+        print(f"[act bc] WandB run: {wandb_run.url}", flush=True)
+    print(
+        f"[act bc] {steps} steps on {dataset}, batch={batch_size}, lr={learning_rate:g}, "
+        f"chunk={chunk_size}, type={getattr(policy.config, 'type', '')}",
+        flush=True,
+    )
+    loss_dict: dict[str, float] = {}
+    final_loss = 0.0
+    for step in range(1, steps + 1):
+        batch = next(batches)
+        loss, loss_dict = policy.forward(preprocessor(batch))
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
+        optimizer.step()
+        final_loss = float(loss.detach())
+        if step % log_freq == 0:
+            extras = " ".join(f"{key}={value:.4f}" for key, value in loss_dict.items())
+            print(f"[act bc] step={step}/{steps} loss={final_loss:.4f} {extras}", flush=True)
+            append_jsonl(
+                training_log,
+                {
+                    "phase": "act_offline_bc",
+                    "learner_step": step,
+                    "loss": final_loss,
+                    "grad_norm": float(grad_norm),
+                    **{key: float(value) for key, value in loss_dict.items()},
+                },
+            )
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "bc/loss": final_loss,
+                        "bc/grad_norm": float(grad_norm),
+                        **{f"bc/{key}": float(value) for key, value in loss_dict.items()},
+                    },
+                    step=step,
+                )
+        if step % save_freq == 0 or step == steps:
+            policy.eval()
+            checkpoint = _save(policy, preprocessor, postprocessor, run_dir, step)
+            policy.train()
+            print(f"[act bc] saved {checkpoint}", flush=True)
+    policy.eval()
+    summary = {
+        "phase": "act_offline_bc",
+        "steps": steps,
+        "loss": final_loss,
+        **{key: float(value) for key, value in loss_dict.items()},
+        "checkpoint": str(run_dir / "checkpoints" / f"{steps:06d}" / "pretrained_model"),
+    }
+    if wandb_run is not None:
+        wandb_run.summary.update(summary)
+        wandb_run.finish()
+    print(f"[act bc] complete: {summary}", flush=True)
+    return summary
+
+
 def run_act_streaming_bc(
     config: Any,
     *,

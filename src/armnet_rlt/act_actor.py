@@ -62,9 +62,14 @@ def load_lerobot_policy(path: str | Path, device: str) -> tuple[Any, Any, Any]:
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
+    from armnet_rlt import act_gmm  # registers the act_gmm type
+
     policy_dir = resolve_act_policy_dir(path)
     policy_type = PreTrainedConfig.from_pretrained(str(policy_dir)).type
-    policy = get_policy_class(policy_type).from_pretrained(str(policy_dir))
+    policy_class = (
+        act_gmm.ACTGMMPolicy if policy_type == act_gmm.POLICY_TYPE else get_policy_class(policy_type)
+    )
+    policy = policy_class.from_pretrained(str(policy_dir))
     policy.config.device = device
     policy.to(device)
     preprocessor, postprocessor = make_pre_post_processors(
