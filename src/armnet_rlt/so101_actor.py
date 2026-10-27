@@ -256,6 +256,12 @@ class LearnerTransport:
         for thread in self._threads:
             thread.start()
 
+    @property
+    def failed(self) -> bool:
+        """A stream to the learner ended with an error; nothing sent since
+        then reaches it, so the actor should stop rather than roll out blind."""
+        return self._shutdown.is_set()
+
     def wait_for_initial_parameters(self, timeout_s: float = 120.0) -> bytes:
         try:
             return self._parameters.get(timeout=timeout_s)
@@ -1355,6 +1361,11 @@ def run_actor(
                         frame_writer,
                         telemetry=telemetry,
                         ticks=command_ticks,
+                    )
+                if getattr(transport, "failed", False):
+                    raise ConnectionError(
+                        "the learner connection is gone; this episode and "
+                        "later ones would not reach it, so the actor stops"
                     )
                 policy.reset()
                 transitions = []

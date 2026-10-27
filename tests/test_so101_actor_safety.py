@@ -239,3 +239,34 @@ def test_a_current_gate_trip_sends_the_episode_then_ends_the_job(run) -> None:
     assert len(transport.episodes) == 1
     assert transport.episodes[0].outcome == "safety_trip"
     assert cell.resets == [False] and cell.ended == [{"success": False}]
+
+
+def test_a_lost_learner_link_ends_the_job_instead_of_blind_rollouts(run) -> None:
+    class _FailingTransport(_Transport):
+        failed = False
+
+        def send_episode(self, transitions, interaction) -> None:
+            super().send_episode(transitions, interaction)
+            self.failed = True  # the stream died while this episode was queued
+
+    import armnet_rlt.so101_actor as module
+
+    original = module.run_actor
+
+    with pytest.raises(ConnectionError, match="learner connection is gone"):
+        robot = _Robot([])
+        cell = _Cell(robot)
+        ctx = SimpleNamespace(cell=cell, args={"record_dataset": False}, report_progress=lambda m: None)
+        cfg = SimpleNamespace(
+            network=SimpleNamespace(
+                action_dim=ACTION_DIM, proprioception_dim=6, rl_token_dim=2048,
+                predicted_action_len=PREDICTED_LEN, reference_action_len=PREDICTED_LEN,
+            ),
+            device="cpu", exploration_scale=0.0, actor_learner=None,
+        )
+        original(
+            ctx, cfg,
+            operator=CellOperatorControl(cell, total_rollouts=3),
+            robot=robot, policy=_Policy(), transport=_FailingTransport(),
+        )
+    assert cell.ended == [{"success": True}]
