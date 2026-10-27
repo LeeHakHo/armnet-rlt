@@ -19,6 +19,7 @@ from armnet_rlt.dsrl import (
     choose_noise,
     random_noise,
     relabel_episode,
+    safety_trip_reward,
     squash_gaussian,
     steering_payload,
 )
@@ -303,6 +304,26 @@ def test_relabel_episode_uses_the_official_reward_and_truncation() -> None:
     penalized = episode(-0.3)
     relabel_episode(penalized)
     assert float(penalized[-1]["done"]) == 0.0
+
+
+def test_relabel_episode_makes_a_safety_trip_terminal_at_the_fail_forever_return() -> None:
+    gamma = 0.99**10
+    tripped = [
+        {"reward": torch.tensor(0.0), "done": torch.tensor(0.0), "safety_trip": torch.tensor(0.0)},
+        {"reward": torch.tensor(0.0), "done": torch.tensor(0.0), "safety_trip": torch.tensor(0.0)},
+        {"reward": torch.tensor(-1.0), "done": torch.tensor(1.0), "safety_trip": torch.tensor(1.0)},
+    ]
+    relabel_episode(tripped, chunk_discount=gamma)
+    assert [float(t["reward"]) for t in tripped[:-1]] == [-1.0, -1.0]
+    assert float(tripped[-1]["reward"]) == pytest.approx(-1.0 / (1.0 - gamma))
+    assert [float(t["done"]) for t in tripped] == [0.0, 0.0, 1.0]
+    # A trip is worse than any failure that bootstraps, and a positive reward
+    # on a tripped last step is not a success.
+    assert safety_trip_reward(gamma) < -1.0 / (1.0 - gamma) + 1e-6
+    assert safety_trip_reward(1.0) == -1.0
+    odd = [{"reward": torch.tensor(0.9), "done": torch.tensor(1.0), "safety_trip": torch.tensor(1.0)}]
+    relabel_episode(odd, chunk_discount=gamma)
+    assert float(odd[0]["reward"]) < -1.0 and float(odd[0]["done"]) == 1.0
 
 
 def test_steering_payload_round_trips_through_numpy_arrays() -> None:

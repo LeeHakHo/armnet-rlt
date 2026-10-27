@@ -262,3 +262,27 @@ def test_online_batches_balance_curriculum_levels(tmp_path: Path) -> None:
         batch["curriculum_scale"].eq(0.5).float().mean().item()
     )
     assert 0.4 < high_fraction < 0.6
+
+
+def test_transition_fields_read_the_safety_trip_flag_with_a_default() -> None:
+    from armnet_rlt.learner import _transition_fields
+
+    def transition(state_extra: dict[str, torch.Tensor]) -> dict[str, object]:
+        state = {
+            "rl_token": torch.zeros(1, 4),
+            "proprioception": torch.zeros(1, 6),
+            "reference_action": torch.zeros(1, 12),
+            **state_extra,
+        }
+        return {
+            "state": state,
+            "action": torch.zeros(1, 6),
+            "reward": -1.0,
+            "next_state": dict(state),
+            "done": True,
+        }
+
+    plain = _transition_fields(transition({}))
+    assert float(plain["safety_trip"]) == 0.0
+    tripped = _transition_fields(transition({"safety_trip": torch.tensor([1.0])}))
+    assert float(tripped["safety_trip"]) == 1.0 and tripped["safety_trip"].ndim == 0

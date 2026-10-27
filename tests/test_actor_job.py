@@ -445,3 +445,22 @@ def test_pi_camera_dict_becomes_an_opencv_config_without_mounts(monkeypatch) -> 
     sentinel = object()
     assert lerobot_camera_config(sentinel) is sentinel
 
+
+
+def test_safety_trip_is_a_rejected_command_from_a_tripped_gate() -> None:
+    from armnet_rlt.so101_actor import _is_safety_trip
+
+    class RemoteCallError(Exception):
+        pass
+
+    class DeviceNotConnectedError(Exception):
+        pass
+
+    tripped = RemoteCallError(
+        "current gate tripped on elbow_flex: current=507 counts (3.2955 A nominal), "
+        "trip limit=275.0 counts (1.7875 A nominal, uniform edge limit) for at least 500 ms"
+    )
+    assert _is_safety_trip(tripped)
+    assert not _is_safety_trip(RemoteCallError("Failed to open OpenCVCamera(/dev/video_wrist)"))
+    assert not _is_safety_trip(DeviceNotConnectedError("SOFollower is not connected"))
+    assert not _is_safety_trip(RuntimeError("current gate tripped"))

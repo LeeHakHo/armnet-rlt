@@ -159,12 +159,16 @@ def _serialize_episode(
     transitions: list[_ChunkTransition],
     *,
     reward: float,
+    safety_trip: bool = False,
 ) -> bytes | None:
+    """One message per episode; ``safety_trip`` marks an episode the cell's
+    safety gate stopped, which the learner treats as a terminal failure."""
     if not transitions:
         return None
     from lerobot.transport.utils import transitions_to_bytes
     from lerobot.utils.transition import Transition
 
+    tripped = torch.tensor([1.0 if safety_trip else 0.0], dtype=torch.float32)
     labelled = []
     for index, item in enumerate(transitions):
         terminal = index == len(transitions) - 1
@@ -175,6 +179,7 @@ def _serialize_episode(
                     "proprioception": item.proprioception.unsqueeze(0),
                     "reference_action": item.reference_action.unsqueeze(0),
                     "curriculum_scale": item.curriculum_scale.unsqueeze(0),
+                    "safety_trip": tripped,
                 },
                 action=item.action.unsqueeze(0),
                 reward=reward if terminal else 0.0,
@@ -189,6 +194,12 @@ def _serialize_episode(
             )
         )
     return transitions_to_bytes(labelled)
+
+
+def _is_safety_trip(exc: BaseException) -> bool:
+    """The cell's robot server stopped the arm (a current gate tripped) and
+    rejected the command; the connection is severed afterwards."""
+    return type(exc).__name__ == "RemoteCallError" and "tripped" in str(exc).lower()
 
 
 def _serialize_interaction(record: EpisodeRecord) -> bytes:
@@ -1129,6 +1140,33 @@ def run_actor(
     deviation_max = 0.0
     rerun_rollout_index = 0
     rerun_variant = "online_rlt"
+    safety_trip: BaseException | None = None
+
+    def abort_episode_on_trip(exc: BaseException) -> None:
+        # The episode ends here as a failure. The chunk in flight has its
+        # action already when it is DSRL noise; an RLT chunk is only partly
+        # executed and is dropped.
+        if dsrl and previous is not None and bool(torch.isfinite(previous[3]).all()):
+            prev_token, prev_prop, prev_reference, executed = previous
+            transitions.append(
+                _ChunkTransition(
+                    rl_token=prev_token.cpu(),
+                    proprioception=prev_prop.cpu(),
+                    reference_action=prev_reference.flatten().cpu(),
+                    curriculum_scale=torch.tensor(
+                        episode_curriculum_scale, dtype=torch.float32
+                    ),
+                    action=executed.flatten().cpu(),
+                    next_rl_token=prev_token.cpu(),
+                    next_proprioception=prev_prop.cpu(),
+                    next_reference_action=prev_reference.flatten().cpu(),
+                )
+            )
+        print(
+            f"[rlt] safety trip ends the episode as a failure after "
+            f"{len(transitions)} transition(s): {exc}",
+            flush=True,
+        )
 
     try:
         transport.start()
@@ -1154,6 +1192,12 @@ def run_actor(
         )
         while not operator.should_stop():
             tick = time.perf_counter()
+            if (
+                safety_trip is not None
+                and state_machine.state is EpisodeState.END_EPISODE
+            ):
+                # The tripped episode has been sent; the robot is gone.
+                raise safety_trip
             if (
                 round_schedule
                 and state_machine.state is EpisodeState.END_EPISODE
@@ -1190,9 +1234,12 @@ def run_actor(
                     flush=True,
                 )
             previous_state = state_machine.state
-            for event, _grade in operator.poll_events(state_machine.state):
-                state_machine.handle_event(event)
-                break
+            if safety_trip is not None:
+                state_machine.handle_event(EpisodeEvent.FAIL)
+            else:
+                for event, _grade in operator.poll_events(state_machine.state):
+                    state_machine.handle_event(event)
+                    break
             if (
                 previous_state is EpisodeState.END_EPISODE
                 and state_machine.state is EpisodeState.IN_EPISODE
@@ -1270,7 +1317,11 @@ def run_actor(
                         penalty_max=wrong_button_penalty_max,
                     )
                 )
-                payload = _serialize_episode(transitions, reward=reward)
+                if safety_trip is not None:
+                    reward = -1.0
+                payload = _serialize_episode(
+                    transitions, reward=reward, safety_trip=safety_trip is not None
+                )
                 outcome = state_machine.episode_ctx.outcome
                 mean_by_joint = (
                     deviation_sum / deviation_count
@@ -1291,7 +1342,11 @@ def run_actor(
                     duration_s=state_machine.episode_duration,
                     timeout=outcome is EpisodeOutcome.TIMEOUT,
                     outcome=(
-                        outcome.name.lower() if outcome is not None else "unknown"
+                        "safety_trip"
+                        if safety_trip is not None
+                        else outcome.name.lower()
+                        if outcome is not None
+                        else "unknown"
                     ),
                     scored_by=getattr(operator, "scored_by", None),
                     num_chunks=state_machine.episode_ctx.total_chunk_count,
@@ -1375,7 +1430,14 @@ def run_actor(
                 time.sleep(min(0.05, period_s))
                 continue
 
-            raw_obs = robot.get_observation()
+            try:
+                raw_obs = robot.get_observation()
+            except Exception as exc:
+                if not _is_safety_trip(exc):
+                    raise
+                safety_trip = exc
+                abort_episode_on_trip(exc)
+                continue
             proprioception = torch.as_tensor(
                 [raw_obs[f"{name}.pos"] for name in MOTOR_NAMES],
                 dtype=torch.float32,
@@ -1480,7 +1542,14 @@ def run_actor(
 
             requested_action = robot_action(chunk[chunk_index].cpu().numpy())
             action_started = time.perf_counter()
-            sent_action = robot.send_action(requested_action)
+            try:
+                sent_action = robot.send_action(requested_action)
+            except Exception as exc:
+                if not _is_safety_trip(exc):
+                    raise
+                safety_trip = exc
+                abort_episode_on_trip(exc)
+                continue
             action_write_s = time.perf_counter() - action_started
             actual_action = (
                 sent_action if isinstance(sent_action, dict) else requested_action

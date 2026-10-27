@@ -498,6 +498,9 @@ def _transition_fields(transition: dict[str, Any]) -> dict[str, Tensor]:
                 torch.tensor(0.0),
             )
         ),
+        "safety_trip": unbatch(
+            transition["state"].get("safety_trip", torch.tensor(0.0))
+        ),
     }
 
 
@@ -604,7 +607,7 @@ def _drain_interactions(
         append_jsonl(rollout_log, persisted, sync=True)
         print(
             f"[RLT] rollout={global_index} "
-            f"{'SUCCESS' if record.success else 'FAIL'} "
+            f"{'SUCCESS' if record.success else record.outcome.upper()} "
             f"duration={record.duration_s:.1f}s "
             f"policy={record.policy_step_start}..{record.policy_step_end} "
             f"success_10={derived.get('rolling/success_rate_10', 0.0):.3f} "
@@ -1562,7 +1565,15 @@ def run_learner(
                     online_buffer,
                     device,
                     shutdown_event,
-                    relabel=relabel_episode if dsrl else None,
+                    relabel=(
+                        (
+                            lambda episode: relabel_episode(
+                                episode, chunk_discount=policy.chunk_discount
+                            )
+                        )
+                        if dsrl
+                        else None
+                    ),
                 )
                 if dsrl and added and was_empty and completed_steps == 0:
                     # The official DSRL trains a fixed number of steps on the

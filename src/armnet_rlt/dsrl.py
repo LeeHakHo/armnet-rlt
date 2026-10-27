@@ -10,7 +10,8 @@ The learner is the soft actor-critic of the official pi0 implementation
 ``noise_steps`` rows of noise are repeated over the chunk, two critics with
 layer normalization, a target without an entropy term, and a temperature
 trained toward a target entropy. Rewards are -1 per decision step and 0 at
-success; a failed episode is truncated, not terminal.
+success; a failed episode is truncated, not terminal. An episode the cell's
+safety gate stopped is terminal with the return of never succeeding.
 """
 
 from __future__ import annotations
@@ -431,18 +432,41 @@ class DSRLPolicy(nn.Module):
         }
 
 
-def relabel_episode(transitions: list[dict[str, Tensor]]) -> None:
+def safety_trip_reward(chunk_discount: float) -> float:
+    """Terminal reward of an episode the safety gate stopped: the discounted
+    return of failing forever, so a trip is worth less than any failure that
+    may still succeed."""
+    if not 0.0 <= chunk_discount < 1.0:
+        return -1.0
+    return -1.0 / (1.0 - chunk_discount)
+
+
+def relabel_episode(
+    transitions: list[dict[str, Tensor]], *, chunk_discount: float = 0.0
+) -> None:
     """Rewrite one episode's learner transitions in place to the DSRL reward:
     -1 per decision step, 0 at the success that ends the episode (``done``),
     and -1 with ``done`` 0 at the end of a failed episode, which bootstraps.
 
     The actor labels only the last transition with the episode's shaped reward
-    and marks it ``done``; a success is a positive reward there.
+    and marks it ``done``; a success is a positive reward there. A last
+    transition flagged ``safety_trip`` ends the episode terminally with
+    ``safety_trip_reward(chunk_discount)``.
     """
+    if not transitions:
+        return
+    tripped = bool(float(transitions[-1].get("safety_trip", 0.0)))
     for fields in transitions:
-        success = bool(fields["done"]) and float(fields["reward"]) > 0
+        success = (
+            bool(fields["done"]) and float(fields["reward"]) > 0 and not tripped
+        )
         fields["reward"] = torch.tensor(0.0 if success else -1.0, dtype=torch.float32)
         fields["done"] = torch.tensor(1.0 if success else 0.0, dtype=torch.float32)
+    if tripped:
+        transitions[-1]["reward"] = torch.tensor(
+            safety_trip_reward(chunk_discount), dtype=torch.float32
+        )
+        transitions[-1]["done"] = torch.tensor(1.0, dtype=torch.float32)
 
 
 def steering_payload(
