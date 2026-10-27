@@ -209,6 +209,16 @@ def _is_safety_trip(exc: BaseException) -> bool:
     return type(exc).__name__ == "RemoteCallError" and "tripped" in str(exc).lower()
 
 
+def _is_unsafe_command(exc: BaseException) -> bool:
+    """The edge rejected the commanded motion as unsafe (speed, oscillation).
+    It refuses motion until ``Cell.reset(unlock=True)``; see armnet-runtime."""
+    try:
+        from armnet_runtime.context import is_command_safety_violation
+    except ImportError:
+        return False
+    return bool(is_command_safety_violation(exc))
+
+
 def _serialize_interaction(record: EpisodeRecord) -> bytes:
     from lerobot.transport.utils import python_object_to_bytes
 
@@ -1068,6 +1078,9 @@ def run_actor(
     rerun_rollout_index = 0
     rerun_variant = "online_rlt"
     safety_trip: BaseException | None = None
+    # True when the edge only rejected the command stream (an unsafe
+    # commanded motion): the next reset unlocks it and the job goes on.
+    safety_trip_unlockable = False
 
     def abort_episode_on_trip(exc: BaseException) -> None:
         # The episode ends here as a failure. The chunk in flight has its
@@ -1123,8 +1136,13 @@ def run_actor(
                 safety_trip is not None
                 and state_machine.state is EpisodeState.END_EPISODE
             ):
-                # The tripped episode has been sent; the robot is gone.
-                raise safety_trip
+                # The tripped episode has been sent. After an unsafe command
+                # the next reset unlocks the arm; any other trip leaves the
+                # robot latched, so the job ends.
+                if not safety_trip_unlockable:
+                    raise safety_trip
+                safety_trip = None
+                safety_trip_unlockable = False
             if (
                 round_schedule
                 and state_machine.state is EpisodeState.END_EPISODE
@@ -1360,10 +1378,13 @@ def run_actor(
             try:
                 raw_obs = robot.get_observation()
             except Exception as exc:
-                if not _is_safety_trip(exc):
+                if not _is_safety_trip(exc) and not _is_unsafe_command(exc):
                     raise
                 safety_trip = exc
+                safety_trip_unlockable = _is_unsafe_command(exc)
                 abort_episode_on_trip(exc)
+                if safety_trip_unlockable:
+                    operator.note_unsafe_command()
                 continue
             proprioception = torch.as_tensor(
                 [raw_obs[f"{name}.pos"] for name in MOTOR_NAMES],
@@ -1472,10 +1493,20 @@ def run_actor(
             try:
                 sent_action = robot.send_action(requested_action)
             except Exception as exc:
-                if not _is_safety_trip(exc):
+                if not _is_safety_trip(exc) and not _is_unsafe_command(exc):
                     raise
                 safety_trip = exc
+                safety_trip_unlockable = _is_unsafe_command(exc)
                 abort_episode_on_trip(exc)
+                if safety_trip_unlockable:
+                    # The goal never reached the motors: the edge returned the
+                    # arm to rest and refuses motion until a reset unlocks it.
+                    ctx.report_progress(
+                        f"rollout {getattr(operator, 'rollout_index', completed + 1)} "
+                        "failed on an unsafe command; the next reset will unlock "
+                        f"the arm ({type(exc).__name__}: {exc})"
+                    )
+                    operator.note_unsafe_command()
                 continue
             action_write_s = time.perf_counter() - action_started
             actual_action = (
