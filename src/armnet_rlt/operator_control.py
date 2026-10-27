@@ -246,6 +246,9 @@ class CellOperatorControl:
         self._reset_problems: tuple[str, ...] = ()
         self._variation: dict[str, Any] | None = None
         self._scored_by: str | None = None
+        # Set when the edge rejected an unsafe command. It refuses all motion
+        # until a reset unlocks it, so the next reset passes unlock=True.
+        self._unlock_next_reset = False
 
     @property
     def completed_rollouts(self) -> int:
@@ -284,7 +287,11 @@ class CellOperatorControl:
             ):
                 return []
             next_index = self._index + 1
-            self._cell.reset()
+            if self._unlock_next_reset:
+                self._cell.reset(unlock=True)
+                self._unlock_next_reset = False
+            else:
+                self._cell.reset()
             self._variation = None
             if self._ctx is not None:
                 episode = self._variation_episode_offset + (
@@ -331,6 +338,16 @@ class CellOperatorControl:
         return [
             (EpisodeEvent.SUCCESS if success else EpisodeEvent.FAIL, None)
         ]
+
+    def note_unsafe_command(self) -> None:
+        """Record that the edge ended the active rollout on an unsafe command.
+
+        The rollout is scored as a failure by the safety check, and the next
+        reset releases the edge's motion lock so the job can keep going.
+        """
+
+        self._scored_by = "safety"
+        self._unlock_next_reset = True
 
     def on_episode_end(self, outcome: EpisodeOutcome | None = None) -> None:
         if not self._rollout_active:

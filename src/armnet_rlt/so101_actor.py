@@ -740,6 +740,8 @@ def run_actor(
     deviation_sum = torch.zeros(action_dim, dtype=torch.float64)
     deviation_count = 0
     deviation_max = 0.0
+    # Set when the edge rejected this rollout's command stream as unsafe.
+    command_rejected = False
 
     try:
         transport.start()
@@ -755,9 +757,13 @@ def run_actor(
         while not operator.should_stop():
             tick = time.perf_counter()
             previous_state = state_machine.state
-            for event, _grade in operator.poll_events(state_machine.state):
-                state_machine.handle_event(event)
-                break
+            if command_rejected:
+                state_machine.handle_event(EpisodeEvent.FAIL)
+                command_rejected = False
+            else:
+                for event, _grade in operator.poll_events(state_machine.state):
+                    state_machine.handle_event(event)
+                    break
             if (
                 previous_state is EpisodeState.END_EPISODE
                 and state_machine.state is EpisodeState.IN_EPISODE
@@ -974,7 +980,24 @@ def run_actor(
 
             requested_action = robot_action(chunk[chunk_index].cpu().numpy())
             action_started = time.perf_counter()
-            sent_action = robot.send_action(requested_action)
+            try:
+                sent_action = robot.send_action(requested_action)
+            except Exception as exc:
+                from armnet_runtime.context import is_command_safety_violation
+
+                if not is_command_safety_violation(exc):
+                    raise
+                # The goal never reached the motors: the edge returned the arm
+                # to rest and refuses motion (and observations) until a reset
+                # unlocks it. Score the rollout as a failure and carry on.
+                ctx.report_progress(
+                    f"rollout {getattr(operator, 'rollout_index', completed + 1)} "
+                    "failed — unsafe command; the next reset will unlock the arm "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                operator.note_unsafe_command()
+                command_rejected = True
+                continue
             action_write_s = time.perf_counter() - action_started
             actual_action = (
                 sent_action if isinstance(sent_action, dict) else requested_action
