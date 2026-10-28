@@ -103,9 +103,8 @@ dependencies = [
     { name = "tqdm" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8f/f9/d086bdd835731e231e74fad8fd3a96e4df146781481c0f211b3a6d86dbfb/armnet_client-0.3.7.tar.gz", hash = "sha256:404c8dfd144eee5ffee7e0500ecdc5182c9497daa7966725256f87cff59a1d10", size = 273444, upload-time = "2026-10-28T10:21:30.78Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/d9/a000702adec63b9cda19bbb158e12955ee986b6f3f3306a6e7bc1a748075/armnet_client-0.3.7-py3-none-any.whl", hash = "sha256:33c52e39504fa95d8afa77d5fc947a861d80d98332284c77285e62490d347b67", size = 232949, upload-time = "2026-10-28T10:21:29.394Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/93/d50b87e8cb73ce29d95cc0ca3d5b90b36d6bb198529b6e549995688c2733/armnet_client-0.3.7-1-py3-none-any.whl", hash = "sha256:d810c25a4c3589194e895161624209741aa4a3ee5745fc887de20b55ffca7043", size = 215138, upload-time = "2026-10-28T18:12:24.114Z" },
 ]
 
 [[package]]
