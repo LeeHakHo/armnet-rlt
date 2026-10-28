@@ -741,12 +741,25 @@ def _refine_chunk(
     exploration_scale: float = 1.0,
 ) -> torch.Tensor:
     with torch.inference_mode():
-        _, mean = actor(
-            token.unsqueeze(0),
-            proprioception.unsqueeze(0),
-            reference.flatten().unsqueeze(0),
-            sample=False,
-        )
+        if getattr(actor, "head", "mean") == "gmm":
+            # A mixture head: explore by drawing a mode by its weight and
+            # adding that mode's own noise; deterministic runs take the
+            # likeliest mode's mean.
+            mean, std, _ = actor.pick_mode(
+                token.unsqueeze(0),
+                proprioception.unsqueeze(0),
+                reference.flatten().unsqueeze(0),
+                sample_mode=exploration_scale > 0,
+            )
+            std = std.reshape(1, -1)
+        else:
+            _, mean = actor(
+                token.unsqueeze(0),
+                proprioception.unsqueeze(0),
+                reference.flatten().unsqueeze(0),
+                sample=False,
+            )
+            std = actor.action_std.reshape(1, -1)
         # Independent noise on every point in a 20 Hz action chunk creates
         # command acceleration that is absent from demonstrations and can trip
         # the edge oscillation gate. Preserve the same marginal exploration
@@ -759,10 +772,7 @@ def _refine_chunk(
             dtype=mean.dtype,
         )
         normalized = (
-            mean
-            + noise.flatten(1)
-            * actor.action_std.reshape(1, -1)
-            * exploration_scale
+            mean + noise.flatten(1) * std * exploration_scale
         ).clamp(-1.0, 1.0)
         action = actor.unnormalize_action(
             normalized, proprioception.unsqueeze(0)

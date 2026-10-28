@@ -67,9 +67,16 @@ def learner_config(
     dsrl_target_entropy: float = 0.0,
     dsrl_alpha_init: float = 1.0,
     actions_to_execute: int = 10,
+    head: str = "mean",
+    num_modes: int = 5,
+    gmm_init_std: float = 0.1,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
+    if head != "mean":
+        network = replace(
+            network, head=head, num_modes=num_modes, gmm_init_std=gmm_init_std
+        )
     dsrl_kwargs: dict[str, object] = {}
     if algorithm == "dsrl":
         # The official pi0 DSRL settings (nakamotoo/dsrl_pi0, run_real.sh): the

@@ -408,10 +408,16 @@ def run(ctx: Context) -> dict[str, Any]:
         # DSRL's actor outputs noise for the whole base chunk and executes a
         # prefix; its network is the learner's 1024x3 MLP (learner_config).
         dsrl = algorithm == "dsrl"
+        head = str(args.get("head", "mean") or "mean")
         network = so101_network_config(
             reference_action_len=reference_len,
             predicted_action_len=reference_len if dsrl else execute_len,
             **({"hidden_dims": DSRL_HIDDEN_DIMS} if dsrl else {}),
+            **(
+                {"head": head, "num_modes": int(args.get("num_modes", 5))}
+                if head != "mean" and not dsrl
+                else {}
+            ),
         )
         base_cfg = _construct(
             RLTConfig,

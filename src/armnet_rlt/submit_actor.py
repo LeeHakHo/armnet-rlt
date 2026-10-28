@@ -119,6 +119,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Multiplier for RLT exploration noise; use 0 for deterministic validation",
     )
     parser.add_argument(
+        "--head",
+        choices=("mean", "gmm"),
+        default="mean",
+        help="The learner's actor head; gmm needs --num-modes to match too",
+    )
+    parser.add_argument("--num-modes", type=int, default=5)
+    parser.add_argument(
         "--armnet.require-cell",
         dest="require_cell",
         default="",
@@ -361,6 +368,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "dsrl_noise_bound": float(getattr(args, "dsrl_noise_bound", 2.5)),
         "dsrl_noise_steps": int(getattr(args, "dsrl_noise_steps", 1)),
         "exploration_scale": float(getattr(args, "exploration_scale", 0.5)),
+        "head": str(getattr(args, "head", "mean")),
+        "num_modes": int(getattr(args, "num_modes", 5)),
         "bc_warmup_episodes": int(getattr(args, "bc_warmup_episodes", 0)),
         "warmup_exploration_scale": float(
             getattr(args, "warmup_exploration_scale", None)

@@ -657,15 +657,38 @@ def _append_training_metrics(
     )
 
 
+def _load_init_policy(
+    policy: RLTPolicy, init_checkpoint: Path, *, device: torch.device, label: str
+) -> dict[str, Any]:
+    """Load an init checkpoint's policy; a mean-head checkpoint seeds a gmm head."""
+    payload = torch.load(init_checkpoint, map_location=device, weights_only=False)
+    converted = policy.load_policy_state(payload["policy_state_dict"])
+    print(
+        f"[RLT {label}] actor initialised from {init_checkpoint} "
+        f"(step {int(payload.get('step', 0))})"
+        + (
+            f"; mean head -> {policy.actor.num_modes}-mode gmm head"
+            if converted
+            else ""
+        ),
+        flush=True,
+    )
+    payload["converted"] = converted
+    return payload
+
+
 def run_bc_training(
     config: RLTConfig,
     *,
     steps: int,
     wandb_project: str | None = None,
+    init_checkpoint: Path | None = None,
 ) -> dict[str, object]:
     """Clone the actions in ``config.demo_cache_path`` through ``compute_loss_bc``.
 
     Trains the actor only; the critic stays at its initial weights.
+    ``init_checkpoint`` starts the actor from another run's checkpoint (its
+    optimizer state is not kept).
     """
     if not config.assets_dir:
         raise ValueError("assets_dir is required")
@@ -698,6 +721,10 @@ def run_bc_training(
     policy = RLTPolicy(config)
     policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
     policy.to(device).train()
+    if init_checkpoint is not None:
+        _load_init_policy(policy, init_checkpoint, device=device, label="bc")
+        # state_dict carries the normalisation buffers; re-apply the stats.
+        policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
 
     actor_optimizer = torch.optim.Adam(
         policy.actor.parameters(), lr=config.actor_lr
@@ -748,7 +775,20 @@ def run_bc_training(
         actor_scheduler.step()
         final_loss = float(loss.detach())
         if config.log_freq and step % config.log_freq == 0:
-            print(f"[RLT bc] step {step}/{steps} bc_loss={final_loss:.6f}", flush=True)
+            mixture = (
+                policy.mixture_stats(
+                    state["rl_token"],
+                    state["proprioception"],
+                    state["reference_action"],
+                )
+                if policy.actor.head == "gmm"
+                else {}
+            )
+            print(
+                f"[RLT bc] step {step}/{steps} bc_loss={final_loss:.6f}"
+                + "".join(f" {key}={value:.4f}" for key, value in mixture.items()),
+                flush=True,
+            )
             _append_training_metrics(
                 training_log,
                 phase="bc",
@@ -767,6 +807,7 @@ def run_bc_training(
                         "bc/loss": final_loss,
                         "bc/step": step,
                         "bc/actor_lr": actor_optimizer.param_groups[0]["lr"],
+                        **{f"bc/{key}": value for key, value in mixture.items()},
                     },
                     step=step,
                 )
@@ -938,20 +979,21 @@ def run_streaming_bc(
     )
     restored_transitions: list[dict[str, Tensor]] = []
     if init_checkpoint is not None:
-        payload = torch.load(
-            init_checkpoint, map_location=device, weights_only=False
+        payload = _load_init_policy(
+            policy, init_checkpoint, device=device, label="sbc"
         )
-        policy.load_state_dict(payload["policy_state_dict"])
         # state_dict carries the normalisation buffers; re-apply the stats.
         policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
-        for state_key, target in (
-            ("actor_optimizer", actor_optimizer),
-            ("critic_optimizer", critic_optimizer),
-            ("actor_scheduler", actor_scheduler),
-            ("critic_scheduler", critic_scheduler),
-        ):
-            if state_key in payload:
-                target.load_state_dict(payload[state_key])
+        # A converted head has new parameters; its optimizer starts fresh.
+        if not payload["converted"]:
+            for state_key, target in (
+                ("actor_optimizer", actor_optimizer),
+                ("critic_optimizer", critic_optimizer),
+                ("actor_scheduler", actor_scheduler),
+                ("critic_scheduler", critic_scheduler),
+            ):
+                if state_key in payload:
+                    target.load_state_dict(payload[state_key])
         init_step = int(payload.get("step", 0))
         buffer_path = init_checkpoint.parent.parent / "success_buffer.pt"
         if buffer_path.exists():
@@ -1200,12 +1242,24 @@ def run_streaming_bc(
             pending_updates -= 1
 
             if config.log_freq and completed_steps % config.log_freq == 0:
+                mixture = (
+                    policy.mixture_stats(
+                        state["rl_token"],
+                        state["proprioception"],
+                        state["reference_action"],
+                    )
+                    if policy.actor.head == "gmm"
+                    else {}
+                )
                 print(
                     f"[RLT sbc] step={completed_steps} "
                     f"bc_loss={final_loss:.6f} "
                     f"buffer={len(success_buffer)} "
                     f"successes={success_episodes}/{episode_count} "
-                    f"pending={pending_updates}",
+                    f"pending={pending_updates}"
+                    + "".join(
+                        f" {key}={value:.4f}" for key, value in mixture.items()
+                    ),
                     flush=True,
                 )
                 _append_training_metrics(
@@ -1231,6 +1285,7 @@ def run_streaming_bc(
                             "bc/success_buffer": len(success_buffer),
                             "bc/success_episodes": success_episodes,
                             "bc/episodes": episode_count,
+                            **{f"bc/{key}": value for key, value in mixture.items()},
                         },
                         step=completed_steps,
                     )

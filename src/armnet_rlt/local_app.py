@@ -59,12 +59,37 @@ def _select_gpu(gpu: str) -> None:
 def _config(args: argparse.Namespace, **overrides: Any):
     from armnet_rlt.learner_config import learner_config
 
+    head = str(getattr(args, "head", "mean") or "mean")
+    if head != "mean":
+        overrides.setdefault("head", head)
+        overrides.setdefault("num_modes", int(getattr(args, "num_modes", 5)))
+        overrides.setdefault(
+            "gmm_init_std", float(getattr(args, "gmm_init_std", 0.1))
+        )
     return learner_config(
         data_root=local_data_root(),
         embodiment=args.embodiment,
         config_name=args.config_name,
         run_id=args.run_id,
         **overrides,
+    )
+
+
+def add_head(command: argparse.ArgumentParser) -> None:
+    """The actor's output head: the mean chunk or a mixture of chunks."""
+    command.add_argument(
+        "--head",
+        choices=("mean", "gmm"),
+        default="mean",
+        help="gmm: a mixture of --num-modes chunk trajectories with learned std; "
+        "the actor executes the likeliest one",
+    )
+    command.add_argument("--num-modes", type=int, default=5)
+    command.add_argument(
+        "--gmm-init-std",
+        type=float,
+        default=0.1,
+        help="Initial std of every mode in normalized action space",
     )
 
 
@@ -246,11 +271,18 @@ def cmd_bc_cache(args: argparse.Namespace) -> None:
 def cmd_bc(args: argparse.Namespace) -> None:
     _select_gpu(args.gpu)
     from armnet_rlt.learner import run_bc_training
+    from armnet_rlt.learner_config import resolve_init_checkpoint
 
     ensure_norm_stats(args.config_name, args.checkpoint_repo)
     cfg = _config(args, save_freq=args.save_freq)
     cfg.demo_cache_path = str(Path(cfg.demo_cache_path).with_name(args.cache_name))
-    run_bc_training(cfg, steps=args.steps, wandb_project=args.wandb_project or None)
+    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
+    run_bc_training(
+        cfg,
+        steps=args.steps,
+        wandb_project=args.wandb_project or None,
+        init_checkpoint=init_checkpoint,
+    )
 
 
 def _learner_token() -> str:
@@ -429,6 +461,10 @@ def cmd_streaming_bc(args: argparse.Namespace) -> None:
     )
     if args.online_steps:
         cfg.online_steps = args.online_steps
+    if args.cache_name:
+        cfg.demo_cache_path = str(
+            Path(cfg.demo_cache_path).with_name(args.cache_name)
+        )
     init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
     with _serve(args, cfg, token):
         run_streaming_bc(
@@ -663,11 +699,19 @@ def _parser() -> argparse.ArgumentParser:
 
     bc = add("bc", cmd_bc, "train an actor by cloning a cache's recorded actions")
     add_run(bc)
+    add_head(bc)
     bc.add_argument("--steps", type=int, default=5_000)
     bc.add_argument("--cache-name", default="rlt_bc_cache.pt")
     bc.add_argument(
         "--save-freq", type=int, default=None, help="Steps between checkpoints (config default 500)"
     )
+    bc.add_argument(
+        "--init-run-id",
+        default="",
+        help="Start from this run's actor (a mean-head checkpoint seeds every "
+        "mode of a gmm head)",
+    )
+    bc.add_argument("--init-step", type=int, default=0)
 
     streaming = add(
         "streaming-bc",
@@ -675,6 +719,13 @@ def _parser() -> argparse.ArgumentParser:
         "serve a learner that clones the successes a live actor sends",
     )
     add_run(streaming)
+    add_head(streaming)
+    streaming.add_argument(
+        "--cache-name",
+        default="",
+        help="Transition cache drawn with --base-batch-fraction (default: the "
+        "task's demo cache)",
+    )
     streaming.add_argument("--min-success-transitions", type=int, default=32)
     streaming.add_argument("--steps-per-transition", type=int, default=1)
     streaming.add_argument("--online-steps", type=int, default=0)

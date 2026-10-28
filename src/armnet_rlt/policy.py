@@ -9,6 +9,7 @@ from torch import Tensor
 
 from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTConfig
+from armnet_rlt.gmm import chunk_log_prob
 from armnet_rlt.networks import RLTActor, RLTCriticEnsemble
 
 
@@ -71,12 +72,18 @@ class RLTPolicy(nn.Module):
         reference_action: Tensor,
         action: Tensor,
     ) -> Tensor:
-        """Squared error between the sampled action and the recorded ``action``.
+        """Squared error between the sampled action and the recorded ``action``,
+        or with a mixture head the negative log-likelihood of ``action`` under
+        the mixture (``compute_loss_bc_gmm``).
 
         Uses no critic. ``bc_deviation_max`` adds a hinge penalty on the distance
         from ``reference_action``; the gripper weighting and jerk penalty are
         shared with ``compute_loss_actor``.
         """
+        if self.actor.head == "gmm":
+            return self.compute_loss_bc_gmm(
+                rl_token, proprioception, reference_action, action
+            )
         self._validate_reference(reference_action, "reference_action")
         sampled, _ = self.actor(
             rl_token, proprioception, self._apply_ref_dropout(reference_action)
@@ -99,6 +106,67 @@ class RLTPolicy(nn.Module):
             )
         return loss.mean()
 
+    def compute_loss_bc_gmm(
+        self,
+        rl_token: Tensor,
+        proprioception: Tensor,
+        reference_action: Tensor,
+        action: Tensor,
+    ) -> Tensor:
+        """Negative log-likelihood of the recorded ``action`` under the actor's
+        mixture, summed over the chunk and weighted like the squared error
+        (``bc_gripper_weight`` scales the gripper's log-density). The jerk
+        penalty and the deviation hinge apply to every mode's mean."""
+        self._validate_reference(reference_action, "reference_action")
+        means, log_std, logits = self.actor.distribution(
+            rl_token, proprioception, self._apply_ref_dropout(reference_action)
+        )
+        target = self.actor.normalize_action(
+            action[:, : self.predicted_action_dim], proprioception
+        ).clamp(-1.0, 1.0)
+        log_likelihood, _ = chunk_log_prob(
+            means.unsqueeze(1),
+            log_std.unsqueeze(1),
+            logits.unsqueeze(1),
+            target.unsqueeze(1),
+        )
+        loss = -log_likelihood
+        batch, modes, dim = means.shape
+        flat_means = means.reshape(batch * modes, dim)
+        flat_proprioception = proprioception.repeat_interleave(modes, dim=0)
+        if self.bc_deviation_max > 0:
+            normalized_reference = self.actor.normalize_action(
+                reference_action[:, : self.predicted_action_dim], proprioception
+            ).clamp(-1.0, 1.0)
+            spread = (means - normalized_reference.unsqueeze(1)).norm(dim=-1)
+            overshoot = (spread - self.bc_deviation_max).clamp_min(0.0)
+            loss = loss + self.bc_deviation_weight * overshoot.square().mean(dim=-1)
+        if self.jerk_lambda > 0:
+            jerk = self.jerk_penalty(flat_means, flat_proprioception)
+            loss = loss + self.jerk_lambda * jerk.view(batch, modes).mean(dim=-1)
+        return loss.mean()
+
+    @torch.no_grad()
+    def mixture_stats(
+        self, rl_token: Tensor, proprioception: Tensor, reference_action: Tensor
+    ) -> dict[str, float]:
+        """Mode entropy and mean std of the actor's mixture on a batch."""
+        was_training = self.training
+        self.eval()
+        try:
+            _, log_std, logits = self.actor.distribution(
+                rl_token, proprioception, reference_action
+            )
+            weights = torch.softmax(logits, dim=-1)
+            entropy = -(weights * weights.clamp_min(1e-12).log()).sum(dim=-1)
+            return {
+                "mode_entropy": float(entropy.mean()),
+                "std_mean": float(log_std.exp().mean()),
+                "top_weight": float(weights.max(dim=-1).values.mean()),
+            }
+        finally:
+            self.train(was_training)
+
     @torch.no_grad()
     def select_action(
         self,
@@ -108,9 +176,23 @@ class RLTPolicy(nn.Module):
         *,
         deterministic: bool = False,
     ) -> Tensor:
+        """The deterministic chunk (the mean, or the likeliest mode's mean) or,
+        without ``deterministic``, that chunk plus its exploration noise (with a
+        mixture head: a mode drawn by its weight plus that mode's noise)."""
         was_training = self.training
         self.eval()
         try:
+            if self.actor.head == "gmm":
+                mean, std, _ = self.actor.pick_mode(
+                    rl_token,
+                    proprioception,
+                    reference_action,
+                    sample_mode=not deterministic,
+                )
+                action = mean
+                if not deterministic:
+                    action = (mean + torch.randn_like(mean) * std).clamp(-1.0, 1.0)
+                return self.actor.unnormalize_action(action, proprioception)
             _, mean = self.actor(
                 rl_token, proprioception, reference_action, sample=False
             )
@@ -122,6 +204,40 @@ class RLTPolicy(nn.Module):
             return self.actor.unnormalize_action(action, proprioception)
         finally:
             self.train(was_training)
+
+    def load_policy_state(self, state_dict: dict[str, Tensor]) -> bool:
+        """Load a learner ``policy_state_dict``. A mean-head checkpoint loaded
+        into a mixture-head policy keeps its trunk and critics and starts every
+        mode at the trained mean head; returns True when that conversion ran."""
+        mean_weight = state_dict.get("actor.mean_head.weight")
+        if self.actor.head == "gmm" and mean_weight is not None:
+            mean_head = nn.Linear(mean_weight.shape[1], mean_weight.shape[0])
+            with torch.no_grad():
+                mean_head.weight.copy_(mean_weight)
+                mean_head.bias.copy_(state_dict["actor.mean_head.bias"])
+            remaining = {
+                name: value
+                for name, value in state_dict.items()
+                if not name.startswith("actor.mean_head.")
+            }
+            result = self.load_state_dict(remaining, strict=False)
+            unexpected = list(result.unexpected_keys)
+            missing = [
+                name
+                for name in result.missing_keys
+                if not name.startswith("actor.gmm_head.")
+            ]
+            if unexpected or missing:
+                raise ValueError(
+                    f"checkpoint does not match the policy: unexpected {unexpected[:5]}, "
+                    f"missing {missing[:5]}"
+                )
+            self.actor.init_gmm_from_mean_head(
+                mean_head.to(self.actor.gmm_head.linear.weight.device)
+            )
+            return True
+        self.load_state_dict(state_dict)
+        return False
 
     def _apply_ref_dropout(self, reference_action: Tensor) -> Tensor:
         if self.ref_dropout <= 0:

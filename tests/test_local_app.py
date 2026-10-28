@@ -180,7 +180,7 @@ def test_bc_cache_and_bc_take_the_checkpoint_and_save_frequency(monkeypatch, tmp
 
     received: dict[str, object] = {}
 
-    def fake_run(config, *, steps, wandb_project):
+    def fake_run(config, *, steps, wandb_project, init_checkpoint=None):
         received["save_freq"] = config.save_freq
         received["steps"] = steps
         received["cache"] = Path(config.demo_cache_path).name

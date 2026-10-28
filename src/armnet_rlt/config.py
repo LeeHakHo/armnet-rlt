@@ -56,6 +56,14 @@ class RLTNetworkConfig:
     fixed_action_std: float = 0.05
     ref_action_dropout: float = 0.25
     delta_action_mask: tuple[bool, ...] = (True, True, True, True, True, False)
+    # "mean": one chunk with fixed exploration noise. "gmm": num_modes chunk
+    # trajectories, each a diagonal Gaussian with learned std, and a weight
+    # per mode (armnet_rlt.gmm); the policy executes the likeliest mode.
+    head: str = "mean"
+    num_modes: int = 5
+    gmm_init_std: float = 0.1
+    gmm_min_log_std: float = -5.0
+    gmm_max_log_std: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.hidden_dims or any(size <= 0 for size in self.hidden_dims):
@@ -86,6 +94,14 @@ class RLTNetworkConfig:
             raise ValueError("fixed_action_std must be finite and nonnegative")
         if not 0.0 <= self.ref_action_dropout <= 1.0:
             raise ValueError("ref_action_dropout must be in [0, 1]")
+        if self.head not in {"mean", "gmm"}:
+            raise ValueError("head must be 'mean' or 'gmm'")
+        if self.num_modes < 1:
+            raise ValueError("num_modes must be positive")
+        if not math.isfinite(self.gmm_init_std) or self.gmm_init_std <= 0:
+            raise ValueError("gmm_init_std must be finite and positive")
+        if self.gmm_min_log_std >= self.gmm_max_log_std:
+            raise ValueError("gmm_min_log_std must be below gmm_max_log_std")
 
     @property
     def predicted_action_dim(self) -> int:

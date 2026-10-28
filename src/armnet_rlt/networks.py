@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,6 +9,7 @@ from torch import Tensor
 
 from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTNetworkConfig
+from armnet_rlt.gmm import GMMHead, chunk_weights
 
 
 def _norm(
@@ -127,14 +130,38 @@ class RLTActor(nn.Module):
             layers.extend((nn.Linear(previous, hidden), nn.SiLU()))
             previous = hidden
         self.trunk = nn.Sequential(*layers)
-        self.mean_head = nn.Linear(previous, self.predicted_action_dim)
-        if config.init_final is not None:
-            nn.init.uniform_(
-                self.mean_head.weight, -config.init_final, config.init_final
+        self.head = config.head
+        self.num_modes = config.num_modes if config.head == "gmm" else 1
+        self._gmm_init_std = float(config.gmm_init_std)
+        if config.head == "gmm":
+            self.gmm_head = GMMHead(
+                previous,
+                self.predicted_action_dim,
+                config.num_modes,
+                min_log_std=config.gmm_min_log_std,
+                max_log_std=config.gmm_max_log_std,
             )
-            nn.init.uniform_(
-                self.mean_head.bias, -config.init_final, config.init_final
-            )
+            if config.init_final is not None:
+                nn.init.uniform_(
+                    self.gmm_head.linear.weight, -config.init_final, config.init_final
+                )
+                nn.init.uniform_(
+                    self.gmm_head.linear.bias, -config.init_final, config.init_final
+                )
+                with torch.no_grad():
+                    k, a = config.num_modes, self.predicted_action_dim
+                    self.gmm_head.linear.bias[k * a : 2 * k * a] = math.log(
+                        config.gmm_init_std
+                    )
+        else:
+            self.mean_head = nn.Linear(previous, self.predicted_action_dim)
+            if config.init_final is not None:
+                nn.init.uniform_(
+                    self.mean_head.weight, -config.init_final, config.init_final
+                )
+                nn.init.uniform_(
+                    self.mean_head.bias, -config.init_final, config.init_final
+                )
 
         self.register_buffer("_use_quantiles", torch.tensor(False))
         _register_norm_buffers(self, "ns", config.proprioception_dim)
@@ -225,14 +252,9 @@ class RLTActor(nn.Module):
             self._use_quantiles,
         )
 
-    def forward(
-        self,
-        rl_token: Tensor,
-        proprioception: Tensor,
-        reference_action: Tensor,
-        *,
-        sample: bool = True,
-    ) -> tuple[Tensor, Tensor]:
+    def _features(
+        self, rl_token: Tensor, proprioception: Tensor, reference_action: Tensor
+    ) -> Tensor:
         if reference_action.shape[-1] != self.reference_action_dim:
             raise ValueError(
                 "reference_action has last dimension "
@@ -247,7 +269,76 @@ class RLTActor(nn.Module):
             self._use_quantiles,
         )
         reference = self._normalize_reference(reference_action, proprioception)
-        hidden = self.trunk(torch.cat((rl_token, state, reference), dim=-1))
+        return self.trunk(torch.cat((rl_token, state, reference), dim=-1))
+
+    def distribution(
+        self, rl_token: Tensor, proprioception: Tensor, reference_action: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """The mixture over normalized chunks: means ``(B, K, D)`` in [-1, 1],
+        log stds ``(B, K, D)`` and mode logits ``(B, K)``. A mean head is one
+        mode with the fixed exploration std."""
+        hidden = self._features(rl_token, proprioception, reference_action)
+        if self.head == "gmm":
+            means, log_std, logits = self.gmm_head.unpack(self.gmm_head(hidden))
+            return torch.tanh(means), log_std, logits
+        mean = torch.tanh(self.mean_head(hidden)).unsqueeze(1)
+        log_std = self.action_std.clamp_min(1e-6).log().expand_as(mean)
+        logits = mean.new_zeros(mean.shape[0], 1)
+        return mean, log_std, logits
+
+    def pick_mode(
+        self,
+        rl_token: Tensor,
+        proprioception: Tensor,
+        reference_action: Tensor,
+        *,
+        sample_mode: bool = False,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """One mode per batch element: its normalized mean ``(B, D)``, its std
+        ``(B, D)`` and its index ``(B,)``. The likeliest mode, or one drawn by
+        the mixture weights with ``sample_mode``."""
+        means, log_std, logits = self.distribution(
+            rl_token, proprioception, reference_action
+        )
+        weights = chunk_weights(logits.unsqueeze(1))
+        if sample_mode:
+            chosen = torch.multinomial(weights, 1).squeeze(-1)
+        else:
+            chosen = weights.argmax(dim=-1)
+        rows = torch.arange(means.shape[0], device=means.device)
+        return means[rows, chosen], log_std[rows, chosen].exp(), chosen
+
+    def forward(
+        self,
+        rl_token: Tensor,
+        proprioception: Tensor,
+        reference_action: Tensor,
+        *,
+        sample: bool = True,
+    ) -> tuple[Tensor, Tensor]:
+        """The action chunk and the deterministic chunk, both normalized.
+
+        The deterministic chunk is the mean head's output or the likeliest
+        mode's mean. In training with ``sample``, the action adds the fixed
+        exploration noise to the mean, or draws a mode by its weight and adds
+        that mode's noise.
+        """
+        if self.head == "gmm":
+            means, log_std, logits = self.distribution(
+                rl_token, proprioception, reference_action
+            )
+            weights = chunk_weights(logits.unsqueeze(1))
+            rows = torch.arange(means.shape[0], device=means.device)
+            mean = means[rows, weights.argmax(dim=-1)]
+            if sample and self.training:
+                chosen = torch.multinomial(weights, 1).squeeze(-1)
+                picked = means[rows, chosen]
+                std = log_std[rows, chosen].exp()
+                action = (picked + torch.randn_like(picked) * std).clamp(-1.0, 1.0)
+            else:
+                action = mean
+            return action, mean
+        hidden = self._features(rl_token, proprioception, reference_action)
         mean = torch.tanh(self.mean_head(hidden))
         if sample and self.training:
             action = (mean + torch.randn_like(mean) * self.action_std).clamp(
@@ -256,6 +347,19 @@ class RLTActor(nn.Module):
         else:
             action = mean
         return action, mean
+
+    @torch.no_grad()
+    def init_gmm_from_mean_head(self, mean_head: nn.Linear) -> None:
+        """Start every mode of the mixture head at a trained mean head."""
+        if self.head != "gmm":
+            raise ValueError("the actor has no mixture head")
+        self.gmm_head.init_from_linear(
+            mean_head, init_std=float(self.gmm_head_init_std)
+        )
+
+    @property
+    def gmm_head_init_std(self) -> float:
+        return float(self._gmm_init_std)
 
 
 class RLTCritic(nn.Module):
