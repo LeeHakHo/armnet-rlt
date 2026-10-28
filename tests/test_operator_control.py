@@ -191,8 +191,8 @@ class FakeCell:
     def rollout_end(self, **kwargs):
         self.calls.append(("end", kwargs))
 
-    def reset(self):
-        self.calls.append(("reset",))
+    def reset(self, *, unlock=False):
+        self.calls.append(("reset", "unlock") if unlock else ("reset",))
 
     def should_stop(self):
         return False
@@ -225,6 +225,24 @@ def test_cell_operator_runs_bounded_lifecycle() -> None:
     assert cell.calls[-1] == ("end", {"success": True})
     assert control.should_stop()
     assert control.completed_rollouts == 1
+
+
+def test_an_unsafe_command_unlocks_the_arm_at_the_next_reset_only() -> None:
+    cell = FakeCell()
+    control = CellOperatorControl(cell, total_rollouts=3)
+    control.start()
+    control.poll_events(EpisodeState.END_EPISODE)
+
+    control.note_unsafe_command()
+    assert control.scored_by == "safety"
+    control.on_episode_end(EpisodeOutcome.FAIL)
+    control.poll_events(EpisodeState.END_EPISODE)
+    control.on_episode_end(EpisodeOutcome.FAIL)
+    control.poll_events(EpisodeState.END_EPISODE)
+
+    resets = [call for call in cell.calls if call[0] == "reset"]
+    assert resets == [("reset",), ("reset", "unlock"), ("reset",)]
+    assert control.scored_by is None
 
 
 def test_cell_failure_maps_to_binary_fail() -> None:

@@ -72,8 +72,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \
-        armnet-client==0.3.4 armnet-runtime==0.3.2 \
-        armnet-busybox==0.3.4 armnet-core==0.3.2
+        armnet-client==0.3.7 armnet-runtime==0.3.4 \
+        armnet-busybox==0.3.4 armnet-core==0.3.3
 
 # Clone the pravsels fork with its submodules. The pinned revision can be bumped
 # when a new single-arm RLT checkpoint/config is ready.
