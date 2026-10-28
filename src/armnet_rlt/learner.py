@@ -563,6 +563,24 @@ def _restore_rolling_metrics(
     return rolling, len(records)
 
 
+def _episode_key(record: EpisodeRecord) -> tuple[str, int] | None:
+    """The (actor session, rollout index) pair naming an episode; None for
+    records from actors that do not fill in a session id."""
+    if not record.session_id:
+        return None
+    return record.session_id, int(record.session_rollout_index)
+
+
+def _logged_episode_keys(path: Path) -> set[tuple[str, int]]:
+    """The episode keys already in the rollout log."""
+    keys: set[tuple[str, int]] = set()
+    for value in read_jsonl(path):
+        key = _episode_key(EpisodeRecord.from_dict(value))
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
 def _schedule_online_updates(
     pending_updates: int, new_transitions: int, *, steps_per_transition: int = 1
 ) -> int:
@@ -583,7 +601,15 @@ def _drain_interactions(
     learner_step: int,
     wandb_run: Any = None,
     sink: list[EpisodeRecord] | None = None,
+    seen: set[tuple[str, int]] | None = None,
 ) -> int:
+    """Log the episode records waiting in ``queue``; returns how many were new.
+
+    ``seen`` holds the keys of the episodes logged so far and is extended
+    here. A record whose key is in it is dropped: the actor's stream delivers
+    an episode again after a reconnect, and counting it twice would schedule
+    rounds and inflate the rollout count.
+    """
     from lerobot.transport.utils import bytes_to_python_object
 
     count = 0
@@ -592,6 +618,15 @@ def _drain_interactions(
         if not isinstance(message, dict):
             raise ValueError("RLT interaction payload must be a dictionary")
         record = EpisodeRecord.from_dict(message)
+        key = _episode_key(record)
+        if seen is not None and key is not None:
+            if key in seen:
+                print(
+                    f"[RLT] duplicate episode {key[0][:8]}#{key[1]} ignored",
+                    flush=True,
+                )
+                continue
+            seen.add(key)
         rolling.add(record)
         if sink is not None:
             sink.append(record)
@@ -1025,6 +1060,7 @@ def run_streaming_bc(
     rolling, episode_count = _restore_rolling_metrics(
         rollout_log, window=config.rolling_window
     )
+    seen_episodes = _logged_episode_keys(rollout_log)
     shutdown_event = Event()
     # Set when an actor opens its parameter stream.
     actor_subscribed = Event()
@@ -1108,6 +1144,7 @@ def run_streaming_bc(
                 learner_step=completed_steps,
                 wandb_run=wandb_run,
                 sink=labels,
+                seen=seen_episodes,
             )
             episode_count += len(labels)
             episodes_since_round += len(labels)
@@ -1476,6 +1513,7 @@ def run_learner(
     rolling, episode_count = _restore_rolling_metrics(
         rollout_log, window=config.rolling_window
     )
+    seen_episodes = _logged_episode_keys(rollout_log)
     final_actor_loss = 0.0
     final_critic_loss = 0.0
     wandb_run = None
@@ -1651,6 +1689,7 @@ def run_learner(
                     episode_count=episode_count,
                     learner_step=completed_steps,
                     wandb_run=wandb_run,
+                    seen=seen_episodes,
                 )
                 episode_count += finished
                 session_episodes += finished

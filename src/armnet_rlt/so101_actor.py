@@ -395,6 +395,8 @@ def _connect_learner(cfg: Any) -> tuple[Any, Any]:
         token=str(_field(cfg, "auth_token", "") or ""),
         server_name=str(_field(cfg, "tls_server_name", "") or ""),
         root_cert_path=str(_field(cfg, "tls_root_cert_path", "") or ""),
+        retries=False,
+        keepalive=True,
     )
     stub = services_pb2_grpc.LearnerServiceStub(channel)
     stub.Ready(services_pb2.Empty(), timeout=30)

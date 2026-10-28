@@ -20,6 +20,7 @@ from armnet_rlt.config import episodes_for_round, parse_round_schedule
 from armnet_rlt.jsonl_log import append_jsonl
 from armnet_rlt.learner import (
     _drain_interactions,
+    _logged_episode_keys,
     _push_weights,
     _restore_rolling_metrics,
     _start_online_transport,
@@ -389,6 +390,7 @@ def run_act_streaming_bc(
         print(f"[act sbc] WandB run: {wandb_run.url}", flush=True)
 
     rolling, episode_count = _restore_rolling_metrics(rollout_log, window=10)
+    seen_episodes = _logged_episode_keys(rollout_log)
     shutdown_event = Event()
     actor_subscribed = Event()
     weights = _ACTWeights(policy)
@@ -431,6 +433,7 @@ def run_act_streaming_bc(
                 learner_step=completed_steps,
                 wandb_run=wandb_run,
                 sink=labels,
+                seen=seen_episodes,
             )
             episode_count += len(labels)
             episodes_since_round += len(labels)

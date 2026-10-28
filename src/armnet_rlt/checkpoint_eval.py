@@ -14,6 +14,7 @@ from torch import Tensor
 from armnet_rlt.jsonl_log import append_jsonl
 from armnet_rlt.learner import (
     _drain_interactions,
+    _logged_episode_keys,
     _push_weights,
     _restore_rolling_metrics,
     _start_online_transport,
@@ -150,6 +151,7 @@ def run_checkpoint_eval(
     while not advance():
         time.sleep(poll_s)
     rolling, episode_count = _restore_rolling_metrics(rollout_log, window=10)
+    seen_episodes = _logged_episode_keys(rollout_log)
     shutdown_event = Event()
     actor_subscribed = Event()
     server, transition_queue, interaction_queue, parameters_queue = (
@@ -180,6 +182,7 @@ def run_checkpoint_eval(
                 learner_step=current_step,
                 wandb_run=wandb_run,
                 sink=labels,
+                seen=seen_episodes,
             )
             episode_count += len(labels)
             for record in labels:

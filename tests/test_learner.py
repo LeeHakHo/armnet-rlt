@@ -16,6 +16,7 @@ from armnet_rlt.jsonl_log import read_jsonl
 from armnet_rlt.learner import (
     _batch_from_transitions,
     _drain_interactions,
+    _logged_episode_keys,
     _push_weights,
     _restore_replay_buffer,
     _save_replay_buffer,
@@ -286,3 +287,73 @@ def test_transition_fields_read_the_safety_trip_flag_with_a_default() -> None:
     assert float(plain["safety_trip"]) == 0.0
     tripped = _transition_fields(transition({"safety_trip": torch.tensor([1.0])}))
     assert float(tripped["safety_trip"]) == 1.0 and tripped["safety_trip"].ndim == 0
+
+
+def test_drain_interactions_ignores_an_episode_delivered_twice(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    lerobot = types.ModuleType("lerobot")
+    transport = types.ModuleType("lerobot.transport")
+    utils = types.ModuleType("lerobot.transport.utils")
+    utils.bytes_to_python_object = pickle.loads
+    monkeypatch.setitem(sys.modules, "lerobot", lerobot)
+    monkeypatch.setitem(sys.modules, "lerobot.transport", transport)
+    monkeypatch.setitem(sys.modules, "lerobot.transport.utils", utils)
+
+    def record(index: int) -> bytes:
+        return pickle.dumps(
+            {
+                "session_id": "actor-1",
+                "session_rollout_index": index,
+                "success": index % 2 == 0,
+                "duration_s": 4.5,
+                "action_deviation_by_joint": [0.1] * 6,
+            }
+        )
+
+    path = tmp_path / "rollout_metrics.jsonl"
+    rolling = RollingMetrics(window=10)
+    seen: set[tuple[str, int]] = set()
+    queue = Queue()
+    for index in (1, 2):
+        queue.put(record(index))
+    assert (
+        _drain_interactions(
+            queue, rolling, rollout_log=path, episode_count=0, learner_step=1, seen=seen
+        )
+        == 2
+    )
+    # A reconnecting stream replays both episodes and brings one new one.
+    for index in (1, 2, 3):
+        queue.put(record(index))
+    count = _drain_interactions(
+        queue, rolling, rollout_log=path, episode_count=2, learner_step=2, seen=seen
+    )
+    assert count == 1
+    assert [r["session_rollout_index"] for r in read_jsonl(path)] == [1, 2, 3]
+    assert read_jsonl(path)[-1]["global_rollout_index"] == 3
+    assert seen == {("actor-1", 1), ("actor-1", 2), ("actor-1", 3)}
+    assert capsys.readouterr().out.count("duplicate episode") == 2
+    # The keys of a log on disk seed the set when a learner resumes.
+    assert _logged_episode_keys(path) == seen
+    # Records without a session id are never treated as duplicates.
+    queue.put(pickle.dumps({"success": True, "duration_s": 1.0, "action_deviation_by_joint": [0.0] * 6}))
+    queue.put(pickle.dumps({"success": True, "duration_s": 1.0, "action_deviation_by_joint": [0.0] * 6}))
+    assert (
+        _drain_interactions(
+            queue, rolling, rollout_log=path, episode_count=3, learner_step=3, seen=seen
+        )
+        == 2
+    )
+
+
+def test_learner_channel_options_disable_retries_and_keep_alive() -> None:
+    from armnet_rlt.grpc_util import grpc_channel_options
+
+    default = dict(grpc_channel_options(1024))
+    assert default["grpc.enable_retries"] == 1 and "grpc.service_config" in default
+    learner = dict(grpc_channel_options(1024, retries=False, keepalive=True))
+    assert learner["grpc.enable_retries"] == 0
+    assert "grpc.service_config" not in learner
+    assert learner["grpc.keepalive_time_ms"] == 30_000
+    assert learner["grpc.keepalive_permit_without_calls"] == 1
