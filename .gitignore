@@ -1,0 +1,16 @@
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.log
+dist/
+build/
+checkpoints/
+experiment-data/
+learner_snapshots/
+.DS_Store
+envs/
+frozen_checkpoints/
+wandb/
+*.egg-info/

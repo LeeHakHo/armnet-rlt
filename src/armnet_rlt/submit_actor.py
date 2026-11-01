@@ -1,0 +1,587 @@
+"""Build and submit the single-arm RLT actor to Armnet."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+
+from armnet_client.variation import DEFAULT_VARIATION_SEED, variation_job_args
+
+from armnet_rlt.rerun_view import (
+    add_rerun_argument,
+    rerun_job_enabled,
+    start_live_view,
+)
+from armnet_rlt.resources import (
+    RENDEZVOUS_DICT,
+    add_remote_policy_arguments,
+    camera_aim_args,
+    device_override_args,
+    local_rendezvous_path,
+    preflight_device_overrides,
+    read_local_rendezvous,
+    remote_policy_job_args,
+    report_job_outcome,
+    scheduled_cell,
+)
+
+
+SO101_EMBODIMENT = "lerobot/so-101"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", required=True, help="Armnet task slug")
+    parser.add_argument(
+        "--policy-type",
+        choices=("rlt", "lerobot"),
+        default="rlt",
+        help="rlt: OpenPI with the RL-token actor; lerobot: a LeRobot policy "
+        "(Diffusion, SmolVLA, ...) served by `rlt-local checkpoint-eval` "
+        "(--config-name eval)",
+    )
+    parser.add_argument("--config-name", required=True, help="OpenPI RLT config")
+    checkpoint = parser.add_mutually_exclusive_group(required=True)
+    checkpoint.add_argument(
+        "--checkpoint-dir",
+        help="Armnet volume path, e.g. volume://openpi/checkpoints/<name>",
+    )
+    checkpoint.add_argument("--hf-checkpoint-repo")
+    parser.add_argument("--hf-checkpoint-revision", default="")
+    parser.add_argument(
+        "--upload-checkpoint",
+        default="",
+        help="Local directory to upload to the --checkpoint-dir volume path "
+        "before submitting",
+    )
+    parser.add_argument(
+        "--n-action-steps",
+        type=int,
+        default=0,
+        help="Actions a chunking LeRobot policy executes per inference; "
+        "0 keeps the policy's n_action_steps",
+    )
+    parser.add_argument(
+        "--temporal-ensemble-coeff",
+        type=float,
+        default=None,
+        help="Temporal ensembling coefficient for a chunking LeRobot policy",
+    )
+    parser.add_argument(
+        "--policy-image-size",
+        default="",
+        help="<height>x<width> camera images are resized to for a LeRobot policy; "
+        "empty uses the shapes in the policy config",
+    )
+    parser.add_argument(
+        "--no-stream-episodes",
+        dest="stream_episodes",
+        action="store_false",
+        help="Do not send successful LeRobot policy episodes to the learner",
+    )
+    parser.add_argument("--language-instruction", required=True)
+    parser.add_argument(
+        "--learner-key",
+        required=True,
+        help="<config-name>:<run-id> printed by the Modal or local learner",
+    )
+    parser.add_argument("--num-rollouts", type=int, default=40)
+    parser.add_argument("--reference-action-len", type=int, default=30)
+    parser.add_argument(
+        "--algorithm",
+        choices=("rlt", "dsrl"),
+        default="rlt",
+        help="Must match the learner: rlt refines the base chunk, dsrl steers "
+        "the base policy's noise through the policy server",
+    )
+    parser.add_argument(
+        "--dsrl-noise-bound",
+        type=float,
+        default=2.5,
+        help="DSRL noise is clipped to [-bound, bound]; must match the learner",
+    )
+    parser.add_argument(
+        "--dsrl-noise-steps",
+        type=int,
+        default=1,
+        help="Rows of noise the DSRL actor outputs, repeated over the chunk; "
+        "must match the learner",
+    )
+    parser.add_argument(
+        "--exploration-scale",
+        type=float,
+        default=0.5,
+        help="Multiplier for RLT exploration noise; use 0 for deterministic validation",
+    )
+    parser.add_argument(
+        "--armnet.require-cell",
+        dest="require_cell",
+        default="",
+        help=(
+            "Abort at startup unless the scheduler assigns one of these cells "
+            "(comma separated, e.g. cell-01). A single cell is also sent to the "
+            "scheduler, so the job waits for that cell"
+        ),
+    )
+    parser.add_argument(
+        "--armnet.variation",
+        dest="variation",
+        action="store_true",
+        help="Sample configured cell variation independently for each rollout",
+    )
+    parser.add_argument(
+        "--armnet.variation-rail",
+        dest="variation_rail",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override rail variation independently",
+    )
+    parser.add_argument(
+        "--armnet.variation-cameras",
+        dest="variation_cameras",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override camera variation independently",
+    )
+    parser.add_argument(
+        "--armnet.variation-lighting",
+        dest="variation_lighting",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override lighting variation independently",
+    )
+    parser.add_argument(
+        "--armnet.rail",
+        dest="rail",
+        type=float,
+        default=None,
+        help="Rail position for the job as 0-1 of the usable rail; omit to leave the rail as the cell has it",
+    )
+    parser.add_argument(
+        "--armnet.lightbox-brightness",
+        dest="lightbox_brightness",
+        type=int,
+        default=None,
+        help="Lightbox brightness for the job, percent 0-100; omit to leave the lightbox as the cell has it",
+    )
+    parser.add_argument(
+        "--armnet.camera-aim",
+        dest="camera_aim",
+        default=None,
+        help=(
+            "Aim pan/tilt cameras for the job as 0-1 of each axis's travel, "
+            "e.g. top.tilt=0.6; turns camera variation off. Defaults to the "
+            "configured aim for the required cell; '' for none"
+        ),
+    )
+    parser.add_argument(
+        "--armnet.variation-seed",
+        dest="variation_seed",
+        type=int,
+        default=DEFAULT_VARIATION_SEED,
+        help="Seed for deterministic per-rollout scene variation",
+    )
+    parser.add_argument(
+        "--armnet.variation-episode-offset",
+        dest="variation_episode_offset",
+        type=int,
+        default=0,
+        help="Continue a deterministic variation sequence across actor jobs",
+    )
+    parser.add_argument(
+        "--warmup-exploration-scale",
+        type=float,
+        default=None,
+        help="Noise on the base policy's chunk during warmup; defaults to "
+        "--exploration-scale",
+    )
+    parser.add_argument(
+        "--bc-warmup-episodes",
+        type=int,
+        default=0,
+        help="Roll out the base chunk with exploration noise for this many "
+        "episodes before the head takes over",
+    )
+    parser.add_argument(
+        "--episodes-per-round",
+        default="0",
+        help="Rollouts between training rounds, as a schedule whose last "
+        "entry repeats (e.g. 30,30,10). 0 collects without pausing",
+    )
+    parser.add_argument(
+        "--steps-per-round",
+        type=int,
+        default=0,
+        help="Learner steps to wait for at each round; must match the "
+        "learner's --steps-per-round",
+    )
+    parser.add_argument(
+        "--round-wait-timeout-s",
+        type=float,
+        default=120.0,
+        help="Give up waiting for the learner after this many seconds",
+    )
+    parser.add_argument(
+        "--scene-retry-delay",
+        type=int,
+        default=0,
+        help="Revisit a failed scene after this many further rollouts; "
+        "0 disables retries",
+    )
+    parser.add_argument(
+        "--retry-after-round",
+        action="store_true",
+        help="Hold failed scenes until a training round lands instead of "
+        "revisiting them after --scene-retry-delay rollouts",
+    )
+    parser.add_argument(
+        "--scene-retry-limit",
+        type=int,
+        default=1,
+        help="Queue each failed scene for at most this many retries",
+    )
+    parser.add_argument(
+        "--variation-curriculum",
+        action="store_true",
+        help="Adapt scene-variation scale from rolling rollout success",
+    )
+    parser.add_argument("--variation-scale-start", type=float, default=0.25)
+    parser.add_argument("--variation-scale-min", type=float, default=0.1)
+    parser.add_argument("--variation-scale-max", type=float, default=1.0)
+    parser.add_argument("--variation-scale-step-up", type=float, default=0.05)
+    parser.add_argument("--variation-scale-step-down", type=float, default=0.1)
+    parser.add_argument("--variation-window", type=int, default=20)
+    parser.add_argument(
+        "--variation-promote-threshold", type=float, default=0.8
+    )
+    parser.add_argument(
+        "--variation-demote-threshold", type=float, default=0.55
+    )
+    parser.add_argument(
+        "--variation-frontier-fraction", type=float, default=0.2
+    )
+    parser.add_argument(
+        "--record-dataset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Record rollouts into a private eval_rlt_* LeRobot dataset",
+    )
+    parser.add_argument(
+        "--record-dataset-repo-id",
+        help="Explicit HuggingFace dataset repo id (defaults to eval_rlt_<task>_<timestamp>)",
+    )
+    parser.add_argument("--hf-user", help="HuggingFace username for generated dataset ids")
+    parser.add_argument("--no-push-to-hub", action="store_true")
+    parser.add_argument(
+        "--robot-telemetry",
+        choices=("off", "context", "safety", "full"),
+        default="full",
+        help="Frame-aligned motor telemetry sidecar detail",
+    )
+    parser.add_argument(
+        "--robot-telemetry-strict",
+        action="store_true",
+        help="Fail the actor if telemetry recording is incomplete",
+    )
+    add_rerun_argument(parser)
+    parser.add_argument(
+        "--episode-timeout-s",
+        type=float,
+        default=0.0,
+        help="Seconds a rollout may run before it is scored a timeout",
+    )
+    parser.add_argument("--timeout-seconds", type=int, default=3600)
+    parser.add_argument("--auth-secret", default="armnet-rlt-auth")
+    add_remote_policy_arguments(parser)
+    parser.add_argument(
+        "--hf-secret",
+        default=os.environ.get("RLT_HF_SECRET", "huggingface-token"),
+        help="Armnet secret holding the HF token; defaults to $RLT_HF_SECRET",
+    )
+    parser.add_argument("--image-name", default="armnet-rlt-actor")
+    parser.add_argument(
+        "--image-ref",
+        default="",
+        help="Submit this already-pushed actor image instead of building one",
+    )
+    parser.add_argument("--detach", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def resolve_rendezvous(key: str) -> dict[str, Any]:
+    """Read one namespaced learner endpoint: a local learner's, else Modal's."""
+    entry = read_local_rendezvous(key)
+    if entry is None:
+        try:
+            import modal
+
+            entry = modal.Dict.from_name(RENDEZVOUS_DICT).get(key)
+        except Exception as exc:
+            raise RuntimeError(
+                f"No local learner at {local_rendezvous_path(key)} and Modal "
+                f"Dict {RENDEZVOUS_DICT!r} is unreachable: {exc}"
+            ) from exc
+    if not entry:
+        raise RuntimeError(
+            f"No learner registered at {local_rendezvous_path(key)} or in Modal "
+            f"Dict {RENDEZVOUS_DICT!r} at {key!r}. Start the learner and use "
+            "the key it prints."
+        )
+    required = {"host", "port", "use_tls", "config_name", "run_id"}
+    missing = required.difference(entry)
+    if missing:
+        raise RuntimeError(f"Learner rendezvous {key!r} lacks {sorted(missing)}")
+    return dict(entry)
+
+
+def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str, Any]:
+    """Construct runtime args, rejecting accidental cross-task connections."""
+    if entry["config_name"] != args.config_name:
+        raise ValueError(
+            f"learner {args.learner_key!r} serves {entry['config_name']!r}, "
+            f"not requested config {args.config_name!r}"
+        )
+    job_args: dict[str, Any] = {
+        "config_name": args.config_name,
+        "language_instruction": args.language_instruction,
+        "reference_action_len": args.reference_action_len,
+        "learner_host": entry["host"],
+        "learner_port": int(entry["port"]),
+        "use_tls": bool(entry["use_tls"]),
+        "delta_actions": True,
+        "algorithm": str(getattr(args, "algorithm", "rlt")),
+        "dsrl_noise_bound": float(getattr(args, "dsrl_noise_bound", 2.5)),
+        "dsrl_noise_steps": int(getattr(args, "dsrl_noise_steps", 1)),
+        "exploration_scale": float(getattr(args, "exploration_scale", 0.5)),
+        "bc_warmup_episodes": int(getattr(args, "bc_warmup_episodes", 0)),
+        "warmup_exploration_scale": float(
+            getattr(args, "warmup_exploration_scale", None)
+            if getattr(args, "warmup_exploration_scale", None) is not None
+            else getattr(args, "exploration_scale", 0.5)
+        ),
+        "episodes_per_round": str(getattr(args, "episodes_per_round", "0")),
+        "steps_per_round": int(getattr(args, "steps_per_round", 0)),
+        **(
+            {"episode_timeout_s": float(args.episode_timeout_s)}
+            if getattr(args, "episode_timeout_s", 0.0) > 0
+            else {}
+        ),
+        "round_wait_timeout_s": float(
+            getattr(args, "round_wait_timeout_s", 120.0)
+        ),
+        "scene_retry_delay": int(getattr(args, "scene_retry_delay", 0)),
+        "scene_retry_limit": int(getattr(args, "scene_retry_limit", 1)),
+        "retry_after_round": bool(getattr(args, "retry_after_round", False)),
+        "record_dataset": bool(getattr(args, "record_dataset", True)),
+        "robot_telemetry": str(getattr(args, "robot_telemetry", "full")),
+        "robot_telemetry_strict": bool(
+            getattr(args, "robot_telemetry_strict", False)
+        ),
+        "use_rerun": rerun_job_enabled(args),
+    }
+    policy_type = getattr(args, "policy_type", "rlt")
+    if policy_type == "lerobot":
+        if not args.checkpoint_dir:
+            raise ValueError(f"--policy-type {policy_type} needs --checkpoint-dir")
+        job_args["policy_type"] = policy_type
+        if getattr(args, "n_action_steps", 0):
+            job_args["n_action_steps"] = int(args.n_action_steps)
+        if getattr(args, "temporal_ensemble_coeff", None) is not None:
+            job_args["temporal_ensemble_coeff"] = float(args.temporal_ensemble_coeff)
+        if getattr(args, "policy_image_size", ""):
+            job_args["policy_image_size"] = str(args.policy_image_size)
+        if not getattr(args, "stream_episodes", True):
+            job_args["stream_episodes"] = False
+    require_cell = str(getattr(args, "require_cell", "") or "").strip()
+    if require_cell:
+        job_args["require_cell"] = require_cell
+    if args.checkpoint_dir:
+        job_args["checkpoint_dir"] = args.checkpoint_dir
+    else:
+        job_args["hf_checkpoint_repo"] = args.hf_checkpoint_repo
+    if args.hf_checkpoint_revision and args.hf_checkpoint_repo:
+        job_args["hf_checkpoint_revision"] = args.hf_checkpoint_revision
+    if args.num_rollouts > 0:
+        job_args["num_rollouts"] = args.num_rollouts
+    curriculum_enabled = bool(
+        getattr(args, "variation_curriculum", False)
+    )
+    selectors = {
+        "variation_rail": getattr(args, "variation_rail", None),
+        "variation_cameras": getattr(args, "variation_cameras", None),
+        "variation_lighting": getattr(args, "variation_lighting", None),
+    }
+    variation_enabled = (
+        bool(getattr(args, "variation", False))
+        or curriculum_enabled
+        or any(value is True for value in selectors.values())
+    )
+    job_args.update(
+        variation_job_args(
+            variation_enabled,
+            int(getattr(args, "variation_seed", DEFAULT_VARIATION_SEED)),
+        )
+    )
+    job_args.update(
+        {
+            name: bool(value)
+            for name, value in selectors.items()
+            if value is not None
+        }
+    )
+    job_args.update(
+        camera_aim_args(
+            getattr(args, "camera_aim", None),
+            str(getattr(args, "require_cell", "") or ""),
+            job_args,
+        )
+    )
+    job_args.update(
+        device_override_args(
+            getattr(args, "rail", None),
+            getattr(args, "lightbox_brightness", None),
+        )
+    )
+    variation_offset = int(
+        getattr(args, "variation_episode_offset", 0)
+    )
+    if variation_offset < 0:
+        raise ValueError("variation_episode_offset must be nonnegative")
+    if variation_offset:
+        job_args["variation_episode_offset"] = variation_offset
+    if curriculum_enabled:
+        job_args.update(
+            {
+                "variation_curriculum": True,
+                "variation_scale_start": float(args.variation_scale_start),
+                "variation_scale_min": float(args.variation_scale_min),
+                "variation_scale_max": float(args.variation_scale_max),
+                "variation_scale_step_up": float(
+                    args.variation_scale_step_up
+                ),
+                "variation_scale_step_down": float(
+                    args.variation_scale_step_down
+                ),
+                "variation_window": int(args.variation_window),
+                "variation_promote_threshold": float(
+                    args.variation_promote_threshold
+                ),
+                "variation_demote_threshold": float(
+                    args.variation_demote_threshold
+                ),
+                "variation_frontier_fraction": float(
+                    args.variation_frontier_fraction
+                ),
+            }
+        )
+    if repo_id := getattr(args, "record_dataset_repo_id", None):
+        job_args["record_dataset_repo_id"] = repo_id
+    if hf_user := getattr(args, "hf_user", None):
+        job_args["hf_user"] = hf_user
+    if bool(getattr(args, "no_push_to_hub", False)):
+        job_args["no_push_to_hub"] = True
+    if cert := entry.get("tls_root_cert_pem"):
+        job_args["tls_root_cert_pem"] = cert
+    if server_name := entry.get("tls_server_name"):
+        job_args["tls_server_name"] = server_name
+    if bool(getattr(args, "remote_policy", False)):
+        job_args.update(
+            remote_policy_job_args(
+                args.config_name,
+                timeout_s=args.remote_policy_timeout_s,
+                image_codec=args.remote_policy_image_codec,
+            )
+        )
+    return job_args
+
+
+def upload_checkpoint(local_path: str, checkpoint_dir: str | None) -> None:
+    """Copy a local checkpoint directory to the Armnet volume path."""
+    if not checkpoint_dir or not checkpoint_dir.startswith("volume://"):
+        raise SystemExit("--upload-checkpoint needs --checkpoint-dir volume://<path>")
+    from armnet_client.client import OrchestratorClient
+    from armnet_client.volume import upload_to_cloud_volume
+
+    volume_path = checkpoint_dir.removeprefix("volume://")
+    with OrchestratorClient() as client:
+        username = client.whoami().username
+        credentials = client.get_volume_credentials()
+    upload_to_cloud_volume(
+        credentials=credentials,
+        username=username,
+        local_path=local_path,
+        volume_path=volume_path,
+        overwrite=True,
+    )
+    print(f"[rlt] uploaded {local_path} -> {checkpoint_dir}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    load_dotenv(PROJECT_ROOT / ".env")
+    args = _parser().parse_args(argv)
+    if not os.environ.get("ARMNET_API_KEY") and not args.dry_run:
+        raise SystemExit(
+            "ARMNET_API_KEY is missing. Export it or put it in "
+            f"{PROJECT_ROOT / '.env'}."
+        )
+
+    entry = resolve_rendezvous(args.learner_key)
+    job_args = build_job_args(args, entry)
+    secrets = {"RLT_LEARNER_AUTH_TOKEN": args.auth_secret}
+    if args.hf_secret:
+        secrets["HF_TOKEN"] = args.hf_secret
+
+    print(f"[rlt] learner={entry['host']}:{entry['port']} tls={entry['use_tls']}")
+    print(f"[rlt] embodiment={SO101_EMBODIMENT} task={args.task}")
+    print(f"[rlt] args={job_args}")
+    print(f"[rlt] secrets={secrets}")
+    if args.image_ref:
+        print(f"[rlt] image={args.image_ref} (prebuilt)")
+    if args.use_rerun and args.detach:
+        print(
+            "[rlt] Rerun stays on this machine, so --detach disables it. "
+            "Submit without --detach to watch each rollout live."
+        )
+    if args.dry_run:
+        print("[rlt] dry run: no image build or job submission")
+        return
+    if rerun_job_enabled(args):
+        start_live_view()
+
+    from armnet_client import Image, execute
+
+    if args.upload_checkpoint:
+        upload_checkpoint(args.upload_checkpoint, args.checkpoint_dir)
+    preflight_device_overrides(args, embodiment=SO101_EMBODIMENT)
+
+    if args.image_ref:
+        image = Image.from_ref(args.image_ref)
+    else:
+        image = Image.build(
+            dockerfile=PROJECT_ROOT / "Dockerfile.actor",
+            context_dir=PROJECT_ROOT,
+            name=args.image_name,
+        ).push(if_possible=True)
+    result = execute(
+        image=image,
+        embodiment=SO101_EMBODIMENT,
+        task=args.task,
+        args=job_args,
+        secrets=secrets,
+        detach=args.detach,
+        stream_logs=not args.detach,
+        use_rerun=rerun_job_enabled(args),
+        timeout_seconds=args.timeout_seconds,
+        cell=scheduled_cell(str(getattr(args, "require_cell", "") or "")),
+    )
+    report_job_outcome(result, prefix="rlt")
+
+
+if __name__ == "__main__":
+    main()

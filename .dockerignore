@@ -1,0 +1,6 @@
+**
+!Dockerfile.actor
+!pyproject.toml
+!README.md
+!src/
+!src/**

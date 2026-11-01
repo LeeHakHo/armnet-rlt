@@ -1,0 +1,344 @@
+"""Submit a paired base-vs-frozen-RLT evaluation to Armnet."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+
+from armnet_rlt.resources import (
+    add_remote_policy_arguments,
+    camera_aim_args,
+    device_override_args,
+    preflight_device_overrides,
+    remote_policy_job_args,
+    report_job_outcome,
+    scheduled_cell,
+)
+from armnet_client.variation import variation_job_args
+
+from armnet_rlt.rerun_view import (
+    add_rerun_argument,
+    rerun_job_enabled,
+    start_live_view,
+)
+
+
+SO101_EMBODIMENT = "lerobot/so-101"
+EVAL_VARIATION_SEED = 1042
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", required=True)
+    parser.add_argument("--config-name", required=True)
+    parser.add_argument(
+        "--checkpoint-dir",
+        required=True,
+        help="OpenPI checkpoint on the Armnet volume",
+    )
+    parser.add_argument(
+        "--frozen-rlt-checkpoint",
+        required=True,
+        help="Frozen actor file on the Armnet volume",
+    )
+    parser.add_argument("--language-instruction", required=True)
+    parser.add_argument(
+        "--collect",
+        action="store_true",
+        help="Run the frozen actor with exploration noise and record the rollouts",
+    )
+    parser.add_argument(
+        "--exploration-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Exploration noise on the frozen actor's chunk, in units of the "
+            "actor's action standard deviation; requires --collect"
+        ),
+    )
+    parser.add_argument(
+        "--base-only",
+        action="store_true",
+        help="Run every rollout with the base policy instead of pairing it "
+        "with the frozen actor",
+    )
+    parser.add_argument(
+        "--base-exploration-scale",
+        type=float,
+        default=0.0,
+        help="Exploration noise on the base policy's chunk, in units of the "
+        "actor's action standard deviation",
+    )
+    parser.add_argument(
+        "--num-rollouts",
+        type=int,
+        default=20,
+        help="Number of paired scenes; base and frozen RLT each run once",
+    )
+    parser.add_argument(
+        "--include-base",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Evaluate the base OpenPI policy on each paired scene",
+    )
+    parser.add_argument(
+        "--armnet.require-cell",
+        dest="require_cell",
+        default="",
+        help=(
+            "Abort at startup unless the scheduler assigns one of these cells "
+            "(comma separated). A single cell is also sent to the scheduler, "
+            "so the job waits for that cell"
+        ),
+    )
+    parser.add_argument(
+        "--armnet.variation",
+        dest="variation",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--armnet.variation-rail",
+        dest="variation_rail",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override rail variation independently",
+    )
+    parser.add_argument(
+        "--armnet.variation-cameras",
+        dest="variation_cameras",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override camera variation independently",
+    )
+    parser.add_argument(
+        "--armnet.variation-lighting",
+        dest="variation_lighting",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override lighting variation independently",
+    )
+    parser.add_argument(
+        "--armnet.rail",
+        dest="rail",
+        type=float,
+        default=None,
+        help="Rail position for the job as 0-1 of the usable rail; omit to leave the rail as the cell has it",
+    )
+    parser.add_argument(
+        "--armnet.lightbox-brightness",
+        dest="lightbox_brightness",
+        type=int,
+        default=None,
+        help="Lightbox brightness for the job, percent 0-100; omit to leave the lightbox as the cell has it",
+    )
+    parser.add_argument(
+        "--armnet.camera-aim",
+        dest="camera_aim",
+        default=None,
+        help=(
+            "Aim pan/tilt cameras for the job as 0-1 of each axis's travel, "
+            "e.g. top.tilt=0.6; turns camera variation off. Defaults to the "
+            "configured aim for the required cell; '' for none"
+        ),
+    )
+    parser.add_argument(
+        "--armnet.variation-seed",
+        dest="variation_seed",
+        type=int,
+        default=EVAL_VARIATION_SEED,
+    )
+    parser.add_argument(
+        "--armnet.variation-episode-offset",
+        dest="variation_episode_offset",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--record-dataset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--record-dataset-repo-id")
+    parser.add_argument("--hf-user")
+    parser.add_argument("--no-push-to-hub", action="store_true")
+    parser.add_argument(
+        "--robot-telemetry",
+        choices=("off", "context", "safety", "full"),
+        default="full",
+    )
+    parser.add_argument("--robot-telemetry-strict", action="store_true")
+    parser.add_argument(
+        "--hf-secret",
+        default=os.environ.get("RLT_HF_SECRET", "huggingface-token"),
+        help="Armnet secret holding the HF token; defaults to $RLT_HF_SECRET",
+    )
+    add_rerun_argument(parser)
+    parser.add_argument(
+        "--episode-timeout-s",
+        type=float,
+        default=0.0,
+        help="Seconds a rollout may run before it is scored a timeout",
+    )
+    parser.add_argument("--timeout-seconds", type=int, default=10800)
+    add_remote_policy_arguments(parser)
+    parser.add_argument(
+        "--auth-secret",
+        default="armnet-rlt-auth",
+        help="Armnet secret holding the policy server token; used with "
+        "--remote-policy",
+    )
+    parser.add_argument("--image-name", default="armnet-rlt-frozen-eval")
+    parser.add_argument(
+        "--image-ref",
+        default="",
+        help="Submit this already-pushed actor image instead of building one",
+    )
+    parser.add_argument("--detach", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def _volume_path(value: str, *, name: str) -> str:
+    if not value.startswith("volume://"):
+        raise ValueError(f"{name} must be a volume:// path")
+    if not value.removeprefix("volume://").strip("/"):
+        raise ValueError(f"{name} must not be empty")
+    return value
+
+
+def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
+    if args.num_rollouts <= 0:
+        raise ValueError("num_rollouts must be positive")
+    if args.variation_episode_offset < 0:
+        raise ValueError("variation_episode_offset must be nonnegative")
+    job_args: dict[str, Any] = {
+        "config_name": args.config_name,
+        "checkpoint_dir": _volume_path(
+            args.checkpoint_dir,
+            name="checkpoint_dir",
+        ),
+        "frozen_rlt_checkpoint": _volume_path(
+            args.frozen_rlt_checkpoint,
+            name="frozen_rlt_checkpoint",
+        ),
+        "language_instruction": args.language_instruction,
+        "num_rollouts": int(args.num_rollouts),
+        "eval_include_base": bool(args.include_base),
+        "collect": bool(getattr(args, "collect", False)),
+        "exploration_scale": float(getattr(args, "exploration_scale", 0.0)),
+        "base_only": bool(getattr(args, "base_only", False)),
+        "base_exploration_scale": float(
+            getattr(args, "base_exploration_scale", 0.0)
+        ),
+        "record_dataset": bool(args.record_dataset),
+        "robot_telemetry": str(args.robot_telemetry),
+        "robot_telemetry_strict": bool(args.robot_telemetry_strict),
+        "use_rerun": rerun_job_enabled(args),
+    }
+    job_args.update(
+        variation_job_args(
+            bool(args.variation),
+            int(args.variation_seed),
+            rail=getattr(args, "variation_rail", None),
+            cameras=getattr(args, "variation_cameras", None),
+            lighting=getattr(args, "variation_lighting", None),
+        )
+    )
+    job_args.update(
+        camera_aim_args(
+            getattr(args, "camera_aim", None),
+            str(getattr(args, "require_cell", "") or ""),
+            job_args,
+        )
+    )
+    job_args.update(
+        device_override_args(
+            getattr(args, "rail", None),
+            getattr(args, "lightbox_brightness", None),
+        )
+    )
+    if args.variation_episode_offset:
+        job_args["variation_episode_offset"] = int(
+            args.variation_episode_offset
+        )
+    if getattr(args, "episode_timeout_s", 0.0) > 0:
+        job_args["episode_timeout_s"] = float(args.episode_timeout_s)
+    if args.record_dataset_repo_id:
+        job_args["record_dataset_repo_id"] = args.record_dataset_repo_id
+    if args.hf_user:
+        job_args["hf_user"] = args.hf_user
+    if args.no_push_to_hub:
+        job_args["no_push_to_hub"] = True
+    require_cell = str(getattr(args, "require_cell", "") or "").strip()
+    if require_cell:
+        job_args["require_cell"] = require_cell
+    if bool(getattr(args, "remote_policy", False)):
+        job_args.update(
+            remote_policy_job_args(
+                args.config_name,
+                timeout_s=args.remote_policy_timeout_s,
+                image_codec=args.remote_policy_image_codec,
+            )
+        )
+    return job_args
+
+
+def main(argv: list[str] | None = None) -> None:
+    load_dotenv(PROJECT_ROOT / ".env")
+    args = _parser().parse_args(argv)
+    if not os.environ.get("ARMNET_API_KEY") and not args.dry_run:
+        raise SystemExit(
+            "ARMNET_API_KEY is missing. Export it or use --dry-run."
+        )
+    job_args = build_job_args(args)
+    secrets = {"HF_TOKEN": args.hf_secret} if args.hf_secret else {}
+    if args.remote_policy:
+        secrets["RLT_LEARNER_AUTH_TOKEN"] = args.auth_secret
+    print(f"[rlt eval] task={args.task} args={job_args}")
+    print(f"[rlt eval] secrets={secrets}")
+    if args.image_ref:
+        print(f"[rlt eval] image={args.image_ref} (prebuilt)")
+    if args.use_rerun and args.detach:
+        print(
+            "[rlt eval] Rerun stays on this machine, so --detach disables it. "
+            "Submit without --detach to watch each rollout live."
+        )
+    if args.dry_run:
+        return
+    if rerun_job_enabled(args):
+        start_live_view()
+
+    from armnet_client import Image, execute
+
+    preflight_device_overrides(args, embodiment=SO101_EMBODIMENT)
+
+    if args.image_ref:
+        image = Image.from_ref(args.image_ref)
+    else:
+        image = Image.build(
+            dockerfile=PROJECT_ROOT / "Dockerfile.actor",
+            context_dir=PROJECT_ROOT,
+            name=args.image_name,
+        ).push(if_possible=True)
+    result = execute(
+        image=image,
+        embodiment=SO101_EMBODIMENT,
+        task=args.task,
+        args=job_args,
+        secrets=secrets,
+        detach=args.detach,
+        stream_logs=not args.detach,
+        use_rerun=rerun_job_enabled(args),
+        timeout_seconds=args.timeout_seconds,
+        cell=scheduled_cell(str(getattr(args, "require_cell", "") or "")),
+    )
+    report_job_outcome(result, prefix="rlt eval")
+
+
+if __name__ == "__main__":
+    main()
