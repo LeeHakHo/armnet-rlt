@@ -221,6 +221,9 @@ To run the policy on the cell instead, upload it and pass
 `--no-remote-policy --checkpoint-dir volume://<path> --upload-checkpoint <pretrained_model dir>`.
 
 Results go to `experiment-data/checkpoint-eval/<run-id>/checkpoint_success.jsonl`.
+`--checkpoint <pretrained_model dir>` (repeatable) evaluates those directories
+instead of a training run; with one checkpoint whose copy the cell loads as
+`--checkpoint-dir`, nothing has to be pushed.
 
 ## Modal learner
 
