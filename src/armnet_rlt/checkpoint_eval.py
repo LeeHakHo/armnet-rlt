@@ -64,28 +64,54 @@ class _CheckpointWeights:
         return self.changed
 
 
+def checkpoint_label(path: str | Path) -> int:
+    """The step a ``pretrained_model`` directory is labelled with: the digits of
+    its parent directory's name (``checkpoints/003000/pretrained_model``), or
+    of its own name."""
+    for name in (Path(path).parent.name, Path(path).name):
+        digits = "".join(ch for ch in name if ch.isdigit())
+        if name.isdigit() or (digits and name.startswith(digits)):
+            return int(digits)
+    raise ValueError(f"no step number in the checkpoint path {path}")
+
+
 def run_checkpoint_eval(
     config: Any,
     *,
-    train_dir: str | Path,
-    base_checkpoint: str | Path,
+    train_dir: str | Path | None = None,
+    checkpoints: list[str | Path] | None = None,
+    base_checkpoint: str | Path | None = None,
     run_dir: Path,
     run_id: str,
     rollouts_per_checkpoint: int = 10,
-    final_step: int,
+    final_step: int | None = None,
     first_step: int = 0,
     poll_s: float = 30.0,
     wandb_project: str | None = None,
 ) -> dict[str, Any]:
     """Push each checkpoint in step order and wait for its rollouts before the next.
 
-    The actor starts from ``base_checkpoint``; each push carries only the
-    tensors that differ from it. Stops after the checkpoint at ``final_step``.
+    Checkpoints come from a lerobot-train ``train_dir`` (waiting for ones not
+    saved yet, up to ``final_step``) or from an explicit ``checkpoints`` list of
+    ``pretrained_model`` directories labelled by their step (``checkpoint_label``).
+    The actor starts from ``base_checkpoint`` (default: the first explicit
+    checkpoint); each push carries only the tensors that differ from it.
     """
     from safetensors.torch import load_file
 
     if rollouts_per_checkpoint < 1:
         raise ValueError("rollouts_per_checkpoint must be at least 1")
+    explicit: dict[int, Path] | None = None
+    if checkpoints:
+        explicit = {checkpoint_label(path): Path(path) for path in checkpoints}
+        if len(explicit) != len(checkpoints):
+            raise ValueError("explicit checkpoints must have distinct step labels")
+        if base_checkpoint is None:
+            base_checkpoint = explicit[min(explicit)]
+        if final_step is None:
+            final_step = max(explicit)
+    elif train_dir is None or base_checkpoint is None or final_step is None:
+        raise ValueError("train_dir, base_checkpoint and final_step are required without checkpoints")
     run_dir.mkdir(parents=True, exist_ok=True)
     rollout_log = run_dir / "rollout_metrics.jsonl"
     eval_log = run_dir / "checkpoint_success.jsonl"
@@ -124,12 +150,15 @@ def run_checkpoint_eval(
     stale = 0
     parameters_queue: Any = None
 
+    available: dict[int, Path] = {}
+
     def advance() -> bool:
         """Load (and once serving, push) the next unevaluated checkpoint; false if none is saved yet."""
-        nonlocal current_step, current
+        nonlocal current_step, current, available
+        available = explicit if explicit is not None else saved_checkpoints(train_dir)
         pending = [
             (step, path)
-            for step, path in saved_checkpoints(train_dir).items()
+            for step, path in sorted(available.items())
             if step >= first_step
             and step not in done_steps
             and (current_step is None or step > current_step)
@@ -165,7 +194,7 @@ def run_checkpoint_eval(
         )
     )
     print(
-        f"[ckpt eval] serving {train_dir} from base {base_checkpoint}; "
+        f"[ckpt eval] serving {train_dir or [str(p) for p in explicit.values()]} from base {base_checkpoint}; "
         f"{rollouts_per_checkpoint} rollouts per checkpoint up to step {final_step}",
         flush=True,
     )
@@ -206,6 +235,7 @@ def run_checkpoint_eval(
                 result = {
                     "timestamp": datetime.now(UTC).isoformat(),
                     "checkpoint_step": current_step,
+                    "checkpoint": str(available[current_step]),
                     "rollouts": len(evaluated),
                     "successes": successes,
                     "success_rate": successes / len(evaluated),

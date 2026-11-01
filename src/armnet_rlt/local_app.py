@@ -546,8 +546,9 @@ def cmd_checkpoint_eval(args: argparse.Namespace) -> None:
     with _serve(args, cfg, token):
         run_checkpoint_eval(
             cfg,
-            train_dir=args.train_dir,
-            base_checkpoint=args.base_checkpoint,
+            train_dir=args.train_dir or None,
+            checkpoints=args.checkpoint or None,
+            base_checkpoint=args.base_checkpoint or None,
             run_dir=local_data_root() / "checkpoint-eval" / args.run_id,
             run_id=args.run_id,
             rollouts_per_checkpoint=args.rollouts_per_checkpoint,
@@ -771,16 +772,22 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint_eval.add_argument("--run-id", default="")
     checkpoint_eval.add_argument("--wandb-project", default="")
     checkpoint_eval.add_argument(
-        "--train-dir", required=True, help="lerobot-train --output_dir"
+        "--train-dir", default="", help="lerobot-train --output_dir whose checkpoints are evaluated in step order"
+    )
+    checkpoint_eval.add_argument(
+        "--checkpoint",
+        action="append",
+        help="A pretrained_model directory to evaluate (repeatable); labelled by "
+        "the step in its path. Replaces --train-dir",
     )
     checkpoint_eval.add_argument(
         "--base-checkpoint",
-        required=True,
-        help="pretrained_model directory the actor loads at start",
+        default="",
+        help="pretrained_model directory the actor loads at start (default: the first --checkpoint)",
     )
     checkpoint_eval.add_argument("--rollouts-per-checkpoint", type=int, default=10)
     checkpoint_eval.add_argument(
-        "--final-step", type=int, required=True, help="Stop after this checkpoint"
+        "--final-step", type=int, default=None, help="Stop after this checkpoint (default: the last --checkpoint)"
     )
     checkpoint_eval.add_argument(
         "--first-step", type=int, default=0, help="Skip checkpoints before this step"

@@ -75,3 +75,15 @@ def test_image_shapes_map_renamed_features_back_to_dataset_keys() -> None:
     }
     with pytest.raises(ValueError):
         parse_image_size("240")
+
+
+def test_checkpoint_label_reads_the_step_from_the_path(tmp_path) -> None:
+    import pytest
+
+    from armnet_rlt.checkpoint_eval import checkpoint_label
+
+    assert checkpoint_label(tmp_path / "checkpoints" / "003000" / "pretrained_model") == 3000
+    assert checkpoint_label("runs/x/checkpoints/000100/pretrained_model") == 100
+    assert checkpoint_label("exports/2100") == 2100
+    with pytest.raises(ValueError, match="no step number"):
+        checkpoint_label("exports/final/pretrained_model")
