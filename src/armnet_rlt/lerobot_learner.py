@@ -248,6 +248,7 @@ def run_lerobot_streaming_bc(
     task: str = "",
     episodes_per_round: str | int,
     steps_per_round: int,
+    save_freq: int = 500,
     batch_size: int = 32,
     online_steps: int = 30_000,
     lr: float = 0.0,
@@ -267,13 +268,16 @@ def run_lerobot_streaming_bc(
     """Fine-tune a LeRobot policy on the successes a live actor streams in, round by round.
 
     ``config.actor_learner`` holds the gRPC server settings. ``task`` is the
-    language instruction given to a language-conditioned policy. With
+    language instruction given to a language-conditioned policy. Every
+    ``save_freq`` learner steps the policy is checkpointed and pushed. With
     ``resume`` the policy, step count and success episodes come from
     ``run_dir``; ``policy_path`` is then ignored.
     """
     round_schedule = parse_round_schedule(episodes_per_round)
     if not round_schedule or steps_per_round <= 0:
         raise ValueError("episodes_per_round and steps_per_round are required")
+    if save_freq <= 0:
+        raise ValueError("save_freq must be positive")
     if not 0.0 <= base_batch_fraction < 1.0:
         raise ValueError("base_batch_fraction must be in [0, 1)")
     if base_batch_fraction > 0 and not base_dataset:
@@ -344,6 +348,7 @@ def run_lerobot_streaming_bc(
                 "task": task,
                 "episodes_per_round": str(episodes_per_round),
                 "steps_per_round": steps_per_round,
+                "save_freq": save_freq,
                 "batch_size": batch_size,
                 "lr": learning_rate,
                 "base_dataset": base_dataset,
@@ -569,9 +574,9 @@ def run_lerobot_streaming_bc(
                         },
                         step=completed_steps,
                     )
-            if completed_steps % steps_per_round == 0:
-                # Every round's worth of steps is checkpointed and pushed, even
-                # when later rounds are already queued behind it.
+            if completed_steps % save_freq == 0:
+                # Checkpoint and push every save_freq steps, even when later
+                # rounds are already queued behind the current one.
                 policy.eval()
                 checkpoint = _save(policy, preprocessor, postprocessor, run_dir, completed_steps)
                 weights.mark_checkpoint()

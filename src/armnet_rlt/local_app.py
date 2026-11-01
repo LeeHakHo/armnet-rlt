@@ -521,6 +521,7 @@ def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
             task=args.task,
             episodes_per_round=args.episodes_per_round,
             steps_per_round=args.steps_per_round,
+            save_freq=args.save_freq,
             batch_size=args.batch_size,
             online_steps=args.online_steps,
             lr=args.lr,
@@ -745,6 +746,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     lerobot_sbc.add_argument("--episodes-per-round", default="30,30,10")
     lerobot_sbc.add_argument("--steps-per-round", type=int, default=500)
+    lerobot_sbc.add_argument(
+        "--save-freq", type=int, default=500, help="Learner steps between checkpoints and weight pushes"
+    )
     lerobot_sbc.add_argument("--batch-size", type=int, default=32)
     lerobot_sbc.add_argument("--online-steps", type=int, default=30_000)
     lerobot_sbc.add_argument(

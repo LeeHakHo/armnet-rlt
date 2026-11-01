@@ -122,8 +122,8 @@ envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID" --steps 5000
 
 Streaming BC for a LeRobot policy (Diffusion, DiT, ACT, ...) works the same
 way: the learner fine-tunes the checkpoint on the successful episodes the
-actor streams, pushes the weights to the policy server after every round and
-saves a `pretrained_model` checkpoint that `checkpoint-eval` can evaluate:
+actor streams, and every `--save-freq` learner steps (default 500) saves a
+`pretrained_model` checkpoint and pushes the weights to the policy server:
 
 ```bash
 envs/venv-learner/bin/rlt-local lerobot-streaming-bc --gpu 0 --run-id sbc-dit \
