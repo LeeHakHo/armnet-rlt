@@ -51,7 +51,14 @@ class _PolicyWeights:
         self.last_push_tensors = 0
 
     def rebase(self) -> None:
+        """The next push carries everything changed since the last checkpoint."""
         self._sent = dict(self._base)
+
+    def mark_checkpoint(self) -> None:
+        """The policy was just saved; a reconnecting actor loads that checkpoint."""
+        self._base = {
+            key: value.detach().cpu().clone() for key, value in self.policy.state_dict().items()
+        }
 
     def actor_state_bytes(self) -> dict[str, Tensor]:
         changed: dict[str, Tensor] = {}
@@ -562,16 +569,20 @@ def run_lerobot_streaming_bc(
                         },
                         step=completed_steps,
                     )
-            if pending_updates == 0:
+            if completed_steps % steps_per_round == 0:
+                # Every round's worth of steps is checkpointed and pushed, even
+                # when later rounds are already queued behind it.
                 policy.eval()
                 checkpoint = _save(policy, preprocessor, postprocessor, run_dir, completed_steps)
+                weights.mark_checkpoint()
                 _push_weights(
                     parameters_queue, weights, learner_step=completed_steps, partial=True
                 )
                 policy.train()
                 print(
-                    f"[lerobot sbc] round {rounds} done at step {completed_steps}; "
-                    f"pushed {weights.last_push_tensors} changed tensors, saved {checkpoint}",
+                    f"[lerobot sbc] step {completed_steps} ({completed_steps // steps_per_round} "
+                    f"rounds trained, {pending_updates} steps queued); pushed "
+                    f"{weights.last_push_tensors} changed tensors, saved {checkpoint}",
                     flush=True,
                 )
     finally:

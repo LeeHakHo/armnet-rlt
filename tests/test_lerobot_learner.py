@@ -91,3 +91,20 @@ def test_policy_weights_push_only_what_changed_since_the_last_push() -> None:
     weights.rebase()
     assert list(weights.actor_state_bytes()) == ["bias"]
     assert weights.last_push_tensors == 1
+
+
+def test_policy_weights_rebase_after_a_checkpoint_sends_only_later_changes() -> None:
+    from armnet_rlt.lerobot_learner import _PolicyWeights
+
+    policy = torch.nn.Linear(2, 2)
+    weights = _PolicyWeights(policy)
+    with torch.no_grad():
+        policy.bias.add_(1.0)
+    weights.actor_state_bytes()
+    weights.mark_checkpoint()
+    weights.rebase()
+    assert weights.actor_state_bytes() == {}
+    with torch.no_grad():
+        policy.weight.add_(1.0)
+    weights.rebase()
+    assert list(weights.actor_state_bytes()) == ["weight"]
