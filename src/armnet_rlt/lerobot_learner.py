@@ -33,15 +33,42 @@ EPISODE_SCHEMAS = (EPISODE_SCHEMA, "act_episode_v1")
 
 
 class _PolicyWeights:
-    """Gives ``_push_weights`` the policy's full state dict."""
+    """Gives ``_push_weights`` the tensors that changed since the last push.
 
-    def __init__(self, policy: Any) -> None:
+    Actors start from the same checkpoint the learner loaded, so the first
+    push carries nothing; ``rebase`` makes the next push carry everything that
+    changed since that checkpoint, for an actor that reconnects. Floating
+    point tensors travel as ``dtype``.
+    """
+
+    def __init__(self, policy: Any, *, dtype: torch.dtype = torch.float16) -> None:
         self.policy = policy
+        self._dtype = dtype
+        self._base = {
+            key: value.detach().cpu().clone() for key, value in policy.state_dict().items()
+        }
+        self._sent = dict(self._base)
+        self.last_push_tensors = 0
+
+    def rebase(self) -> None:
+        self._sent = dict(self._base)
 
     def actor_state_bytes(self) -> dict[str, Tensor]:
-        return {
-            key: value.detach().cpu() for key, value in self.policy.state_dict().items()
-        }
+        changed: dict[str, Tensor] = {}
+        for key, value in self.policy.state_dict().items():
+            current = value.detach().cpu()
+            previous = self._sent.get(key)
+            if (
+                previous is None
+                or previous.shape != current.shape
+                or not torch.equal(previous, current)
+            ):
+                changed[key] = (
+                    current.to(self._dtype) if current.is_floating_point() else current
+                )
+                self._sent[key] = current.clone()
+        self.last_push_tensors = len(changed)
+        return changed
 
 
 def frame_layout(config: Any) -> tuple[list[int] | None, list[int]]:
@@ -335,6 +362,7 @@ def run_lerobot_streaming_bc(
             shutdown_event,
             learner_step=completed_steps,
             on_parameter_stream=actor_subscribed.set,
+            partial=True,
         )
     )
     pool = ThreadPoolExecutor(max_workers=8)
@@ -446,7 +474,15 @@ def run_lerobot_streaming_bc(
 
             if actor_subscribed.is_set():
                 actor_subscribed.clear()
-                _push_weights(parameters_queue, weights, learner_step=completed_steps)
+                weights.rebase()
+                _push_weights(
+                    parameters_queue, weights, learner_step=completed_steps, partial=True
+                )
+                print(
+                    f"[lerobot sbc] actor subscribed; sent {weights.last_push_tensors} "
+                    "changed tensors",
+                    flush=True,
+                )
 
             if pending_updates <= 0:
                 time.sleep(0.05)
@@ -512,11 +548,13 @@ def run_lerobot_streaming_bc(
             if pending_updates == 0:
                 policy.eval()
                 checkpoint = _save(policy, preprocessor, postprocessor, run_dir, completed_steps)
-                _push_weights(parameters_queue, weights, learner_step=completed_steps)
+                _push_weights(
+                    parameters_queue, weights, learner_step=completed_steps, partial=True
+                )
                 policy.train()
                 print(
                     f"[lerobot sbc] round {rounds} done at step {completed_steps}; "
-                    f"pushed weights, saved {checkpoint}",
+                    f"pushed {weights.last_push_tensors} changed tensors, saved {checkpoint}",
                     flush=True,
                 )
     finally:

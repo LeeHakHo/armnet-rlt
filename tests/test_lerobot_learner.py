@@ -75,3 +75,19 @@ def test_online_batch_stacks_observation_history_and_pads_the_action_window(monk
     assert batch["action_is_pad"][0].tolist() == [False, True, True]
     assert batch["action"][0, :, 0].tolist() == [104, 104, 104]
     assert "task" not in batch
+
+
+def test_policy_weights_push_only_what_changed_since_the_last_push() -> None:
+    from armnet_rlt.lerobot_learner import _PolicyWeights
+
+    policy = torch.nn.Linear(2, 2)
+    weights = _PolicyWeights(policy)
+    assert weights.actor_state_bytes() == {}
+    with torch.no_grad():
+        policy.bias.add_(1.0)
+    pushed = weights.actor_state_bytes()
+    assert list(pushed) == ["bias"] and pushed["bias"].dtype == torch.float16
+    assert weights.actor_state_bytes() == {}
+    weights.rebase()
+    assert list(weights.actor_state_bytes()) == ["bias"]
+    assert weights.last_push_tensors == 1
