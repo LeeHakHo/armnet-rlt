@@ -448,3 +448,49 @@ def test_drain_online_transitions_ignores_a_replayed_episode(monkeypatch) -> Non
         == 2
     )
     assert len(buffer) == 5
+
+
+def test_rlt_learner_runs_without_a_demo_cache_when_it_uses_none(tmp_path) -> None:
+    import pytest
+
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=2,
+        predicted_action_len=2,
+    )
+    assets, _cache = _write_artifacts(tmp_path, network)
+    common = dict(
+        network=network,
+        assets_dir=assets,
+        demo_cache_path=tmp_path / "missing.pt",
+        output_dir=tmp_path / "runs",
+        actions_to_execute=2,
+        use_subsampling=False,
+        num_critics=2,
+        utd_ratio=1,
+        batch_size=2,
+        online_steps=1,
+        device="cpu",
+        save_freq=0,
+    )
+    summary = run_learner(
+        RLTConfig(
+            run_id="no-cache",
+            max_demo_pretrain_steps=0,
+            online_batch_fraction=1.0,
+            **common,
+        ),
+        offline_only=True,
+    )
+    assert summary["transition_count"] == 0 and summary["completed_steps"] == 0
+
+    with pytest.raises(ValueError, match="no demo cache"):
+        run_learner(
+            RLTConfig(
+                run_id="needs-cache",
+                max_demo_pretrain_steps=1,
+                online_batch_fraction=1.0,
+                **common,
+            ),
+            offline_only=True,
+        )

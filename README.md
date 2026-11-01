@@ -90,6 +90,10 @@ envs/venv-learner/bin/rlt-local online --gpu 0 --run-id "$RLT_RUN_ID" \
   --algorithm rlt --pretrain-steps 5000 --online-steps 30000 --tunnel ngrok-tcp
 ```
 
+Without a demo cache, pass `--pretrain-steps 0 --online-batch-fraction 1.0`
+and start the actor with `--bc-warmup-episodes N` so the first episodes come
+from π0.5 itself.
+
 DSRL (SAC over π0.5 noise), online only. The policy server installs the
 actor straight from the learner's parameter stream:
 

@@ -1409,8 +1409,15 @@ def run_learner(
     dsrl = config.algorithm == "dsrl"
     if not config.assets_dir:
         raise ValueError("assets_dir is required")
-    if not config.demo_cache_path and not dsrl:
-        raise ValueError("demo_cache_path is required; cache building is unsupported")
+    has_cache = bool(config.demo_cache_path) and Path(config.demo_cache_path).is_file()
+    if not dsrl and not has_cache:
+        # Without demonstrations the actor learns from its rollouts alone.
+        if config.max_demo_pretrain_steps > 0 or config.online_batch_fraction < 1.0:
+            raise ValueError(
+                f"no demo cache at {config.demo_cache_path!r}: run with "
+                "--pretrain-steps 0 --online-batch-fraction 1.0, or build one "
+                "with `rlt-local cache`"
+            )
 
     run_dir = config.checkpoint_dir
     if not resume and run_dir.exists() and any(run_dir.iterdir()):
@@ -1445,10 +1452,14 @@ def run_learner(
         transitions = []
         artifact_summary = _empty_summary(config.network)
         policy: Any = DSRLPolicy(config)
-    else:
+    elif has_cache:
         transitions, artifact_summary = load_transition_cache(
             config.demo_cache_path, config.network
         )
+        policy = RLTPolicy(config)
+    else:
+        transitions = []
+        artifact_summary = _empty_summary(config.network)
         policy = RLTPolicy(config)
     policy.set_norm_stats(
         norm_stats, use_quantiles=config.use_quantile_norm
