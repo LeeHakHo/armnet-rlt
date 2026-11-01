@@ -461,6 +461,8 @@ def run_lerobot_actor(
             episodes_for_round(round_schedule, 1) if round_schedule else 0
         )
         while not operator.should_stop():
+            if getattr(transport, "failed", False):
+                raise ConnectionError("lost the learner connection")
             tick = time.perf_counter()
             if (
                 round_schedule

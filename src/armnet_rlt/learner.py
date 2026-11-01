@@ -416,6 +416,10 @@ def _start_online_transport(
         options=(
             ("grpc.max_receive_message_length", MAX_MESSAGE_SIZE),
             ("grpc.max_send_message_length", MAX_MESSAGE_SIZE),
+            # Accept the actors' keepalive pings on a stream with no data.
+            ("grpc.keepalive_permit_without_calls", 1),
+            ("grpc.http2.min_ping_interval_without_data_ms", 20_000),
+            ("grpc.http2.max_ping_strikes", 0),
         ),
         interceptors=interceptors,
     )

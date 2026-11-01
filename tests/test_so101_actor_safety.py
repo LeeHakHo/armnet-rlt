@@ -290,3 +290,21 @@ def test_round_wait_is_satisfied_by_an_update_already_past_the_rounds_target() -
         _Transport(), actor, 300, steps_per_round=300, timeout_s=0.2
     )
     assert step == 600 and applied == 1
+
+
+def test_round_wait_stops_when_the_learner_connection_is_lost() -> None:
+    import pytest
+    import torch
+
+    from armnet_rlt.so101_actor import _await_learner_round
+
+    class _Transport:
+        failed = True
+
+        def latest_parameters(self):
+            return None
+
+    with pytest.raises(ConnectionError, match="round wait"):
+        _await_learner_round(
+            _Transport(), torch.nn.Linear(1, 1), 0, steps_per_round=1, timeout_s=5.0
+        )

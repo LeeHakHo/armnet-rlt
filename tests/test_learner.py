@@ -494,3 +494,13 @@ def test_rlt_learner_runs_without_a_demo_cache_when_it_uses_none(tmp_path) -> No
             ),
             offline_only=True,
         )
+
+
+def test_learner_accepts_actor_keepalive_pings_on_an_idle_stream() -> None:
+    import inspect
+
+    from armnet_rlt import learner
+
+    source = inspect.getsource(learner._start_online_transport)
+    assert '"grpc.http2.min_ping_interval_without_data_ms", 20_000' in source
+    assert '"grpc.http2.max_ping_strikes", 0' in source

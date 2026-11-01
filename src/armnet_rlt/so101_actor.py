@@ -542,6 +542,8 @@ def _await_learner_round(
             if loaded >= target:
                 return loaded, reloads
     while time.monotonic() < deadline:
+        if getattr(transport, "failed", False):
+            raise ConnectionError("lost the learner connection during a round wait")
         update = transport.latest_parameters()
         if update is not None:
             loaded = _load_parameters(actor, update)
