@@ -368,6 +368,8 @@ def run_lerobot_streaming_bc(
     pool = ThreadPoolExecutor(max_workers=8)
     arrived_episodes: deque[dict[str, Any]] = deque()
     pending_labels: deque[EpisodeRecord] = deque()
+    pending_since: float | None = None
+    frames_timeout_s = 120.0
     pending_updates = 0
     episodes_since_round = 0
     rounds = completed_steps // steps_per_round
@@ -404,14 +406,29 @@ def run_lerobot_streaming_bc(
             episodes_since_round += len(labels)
             pending_labels.extend(labels)
 
-            # Pair success records with their frames in arrival order.
+            # Pair success records with their frames in arrival order. A record
+            # whose frames never arrive (the actor died mid-send) is dropped so
+            # it cannot hold up the rounds behind it.
             while pending_labels:
                 record = pending_labels[0]
                 if record.num_transitions == 0:
                     pending_labels.popleft()
                     continue
                 if not arrived_episodes:
+                    if pending_since is None:
+                        pending_since = time.monotonic()
+                    elif time.monotonic() - pending_since > frames_timeout_s:
+                        pending_labels.popleft()
+                        pending_since = None
+                        dropped_episodes += 1
+                        print(
+                            f"[lerobot sbc] dropped a success whose {record.num_transitions} "
+                            f"frames never arrived",
+                            flush=True,
+                        )
+                        continue
                     break
+                pending_since = None
                 pending_labels.popleft()
                 episode = arrived_episodes.popleft()
                 if len(episode["state"]) != record.num_transitions:
