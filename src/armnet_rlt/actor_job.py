@@ -265,13 +265,14 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
     args = ctx.args
     cameras = dict(ctx.camera_configs)
     value = str(args.get("checkpoint_dir") or "")
-    if not value:
+    remote = bool(args.get("remote_policy_host"))
+    if not value and not remote:
         raise ValueError("a LeRobot policy actor needs args['checkpoint_dir']")
     if value.startswith("volume://"):
         value = str(ctx.volume.path(value.removeprefix("volume://")))
-    elif not Path(value).is_absolute() and getattr(ctx.volume, "root", None):
+    elif value and not Path(value).is_absolute() and getattr(ctx.volume, "root", None):
         value = str(ctx.volume.path(value))
-    policy_dir = resolve_policy_dir(value)
+    policy_dir = resolve_policy_dir(value) if not remote else Path(value or "")
     robot_id, calibration_dir = _calibration_lookup(ctx)
     temporary_calibration = (
         calibration_dir if ctx.cell.calibration_file_path else None
@@ -310,6 +311,17 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
             args.get("reward_target_button")
             or ("green_button" if ctx.task == "push_green_button" else "")
         ),
+        remote_policy_host=str(args.get("remote_policy_host", "") or ""),
+        remote_policy_port=int(args.get("remote_policy_port", 443)),
+        remote_policy_use_tls=_as_bool(args.get("remote_policy_use_tls"), True),
+        remote_policy_timeout_s=float(args.get("remote_policy_timeout_s", 5.0)),
+        remote_policy_image_codec=str(
+            args.get("remote_policy_image_codec", "jpeg")
+        ),
+        remote_policy_auth_token=str(
+            (getattr(ctx, "secrets", None) or {}).get("RLT_LEARNER_AUTH_TOKEN")
+            or os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
+        ),
         actor_learner=learner,
         so101=SimpleNamespace(
             robot_port=ctx.cell.robot_port,
@@ -325,7 +337,7 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
         include_base=False,
     )
     ctx.report_progress(
-        f"starting single-arm ACT actor on {cell_id or '<unknown>'}: "
+        f"starting single-arm LeRobot policy actor on {cell_id or '<unknown>'}: "
         f"cameras={sorted(cameras)}, policy={policy_dir}, "
         f"learner={learner.learner_host}:{learner.learner_port}"
     )

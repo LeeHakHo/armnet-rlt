@@ -225,8 +225,9 @@ def _serialize_interaction(record: EpisodeRecord) -> bytes:
 class LearnerTransport:
     """Bidirectional LeRobot gRPC streams used by the online learner."""
 
-    def __init__(self, cfg: Any) -> None:
+    def __init__(self, cfg: Any, *, subscribe_parameters: bool = True) -> None:
         self._cfg = cfg
+        self._subscribe_parameters = subscribe_parameters
         self._shutdown = threading.Event()
         self._parameters: Queue[bytes] = Queue()
         self._transitions: Queue[bytes] = Queue()
@@ -238,7 +239,6 @@ class LearnerTransport:
     def start(self) -> None:
         self._channel, self._stub = _connect_learner(self._cfg)
         self._threads = [
-            threading.Thread(target=self._receive_parameters, daemon=True),
             threading.Thread(
                 target=self._send_stream,
                 args=("SendTransitions", self._transitions, "Transition"),
@@ -250,6 +250,10 @@ class LearnerTransport:
                 daemon=True,
             ),
         ]
+        if self._subscribe_parameters:
+            self._threads.insert(
+                0, threading.Thread(target=self._receive_parameters, daemon=True)
+            )
         for thread in self._threads:
             thread.start()
 

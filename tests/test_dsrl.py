@@ -548,3 +548,23 @@ def test_learner_steering_feed_takes_noise_steps_from_the_actor_weights() -> Non
     assert step == 7 and rebuilt.noise_steps == 2
     assert rebuilt.mean_head.out_features == 2 * network.action_dim
     assert feed._state_noise_steps() == 2
+
+
+def test_learner_steering_feed_hands_non_dsrl_weights_to_an_installer() -> None:
+    from armnet_rlt.steering_feed import LearnerSteeringFeed
+
+    installed: list[tuple[dict, int | None, bool]] = []
+    feed = LearnerSteeringFeed(
+        lambda payload: None,
+        host="127.0.0.1",
+        port=1,
+        use_tls=False,
+        token="",
+        max_message_bytes=1 << 20,
+        installer=lambda weights, step, partial: installed.append((weights, step, partial)),
+    )
+    weights = {"head.weight": torch.ones(2)}
+    assert feed.apply_state({"policy": weights, "learner_step": torch.tensor(3), "partial": torch.tensor(True)}) == 3
+    assert installed[-1][1] == 3 and installed[-1][2] is True
+    assert torch.equal(installed[-1][0]["head.weight"], torch.ones(2))
+    assert feed.learner_step == 3 and feed.updates == 1

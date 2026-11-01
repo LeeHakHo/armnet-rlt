@@ -302,3 +302,130 @@ def test_actor_skips_the_steering_upload_for_a_fed_server(capsys) -> None:
     _sync_steering(policy, Actor(), network=None, learner_step=4)
     assert policy.calls == 0
     assert capsys.readouterr().out.count("steering from the learner") == 1
+
+
+class _Processor:
+    def __call__(self, value):
+        return value
+
+
+class _FakeLeRobotPolicy:
+    """select_action returns the first state entry; predict_action_chunk a ramp."""
+
+    def __init__(self, policy_type: str, *, chunk_size: int = 10, n_action_steps: int = 1) -> None:
+        import torch
+
+        self.config = type(
+            "Config",
+            (),
+            {
+                "type": policy_type,
+                "chunk_size": chunk_size,
+                "n_action_steps": n_action_steps,
+                "temporal_ensemble_coeff": None,
+                "image_features": {"observation.images.front": type("F", (), {"shape": (3, 48, 64)})()},
+            },
+        )()
+        self.resets = 0
+        self.frames: list[dict] = []
+        self.weights = {"head.weight": torch.zeros(2)}
+        self.evals = 0
+
+    def eval(self) -> None:
+        self.evals += 1
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def select_action(self, frame):
+        import torch
+
+        self.frames.append(frame)
+        return torch.full((1, 6), float(frame["observation.state"][0]))
+
+    def predict_action_chunk(self, frame):
+        import torch
+
+        self.frames.append(frame)
+        return torch.arange(self.config.chunk_size * 6, dtype=torch.float32).reshape(
+            1, self.config.chunk_size, 6
+        )
+
+    def load_state_dict(self, state, strict=True):
+        self.weights.update(state)
+        return type("R", (), {"unexpected_keys": [], "missing_keys": []})()
+
+
+def _lerobot_client(port: int, token: str):
+    from armnet_rlt.remote_policy import RemoteLeRobotPolicy
+
+    return RemoteLeRobotPolicy(_channel(port, token), image_codec="raw")
+
+
+def test_lerobot_policy_server_answers_select_action_and_reports_the_step() -> None:
+    from armnet_rlt.lerobot_server import LeRobotPolicyBackend
+
+    policy = _FakeLeRobotPolicy("diffusion")
+    backend = LeRobotPolicyBackend(
+        policy, _Processor(), _Processor(), shapes={"observation.images.front": (48, 64)}
+    )
+    port = _free_port()
+    with serve(backend, bind=f"127.0.0.1:{port}", auth_token="tok") as server:
+        remote = _lerobot_client(port, "tok")
+        assert remote.lerobot_type == "diffusion" and not remote.chunked
+        assert remote.uses_task and remote.n_action_steps == 1
+        assert remote.shapes == {"observation.images.front": (48, 64)}
+        assert remote.policy_step is None
+        rng = np.random.default_rng(1)
+        image = rng.integers(0, 256, (48, 64, 3), dtype=np.uint8)
+        actions = remote.predict(
+            np.array([2.5, 0, 0, 0, 0, 0], np.float32),
+            {"observation.images.front": image},
+            task="push the green button",
+        )
+        assert actions.shape == (1, 6) and float(actions[0, 0]) == 2.5
+        frame = policy.frames[-1]
+        assert frame["task"] == "push the green button"
+        assert tuple(frame["observation.images.front"].shape) == (3, 48, 64)
+        # A learner update installs the weights and the step shows in later answers.
+        import torch
+
+        server.run_locked(backend.apply_weights, {"head.weight": torch.ones(2)}, 7, True)
+        assert torch.equal(policy.weights["head.weight"], torch.ones(2))
+        remote.predict(np.zeros(6, np.float32), {"observation.images.front": image}, task="t")
+        assert remote.policy_step == 7
+        assert remote.refresh()["learner_step"] == 7
+        remote.reset()
+        assert policy.resets == 1
+
+
+def test_lerobot_policy_server_returns_chunks_for_a_chunking_policy() -> None:
+    from armnet_rlt.lerobot_server import LeRobotPolicyBackend
+
+    policy = _FakeLeRobotPolicy("act", chunk_size=10, n_action_steps=4)
+    backend = LeRobotPolicyBackend(
+        policy, _Processor(), _Processor(), shapes={"observation.images.front": (48, 64)}, n_action_steps=5
+    )
+    port = _free_port()
+    with serve(backend, bind=f"127.0.0.1:{port}", auth_token="tok"):
+        remote = _lerobot_client(port, "tok")
+        assert remote.chunked and remote.n_action_steps == 5 and not remote.uses_task
+        actions = remote.predict(
+            np.zeros(6, np.float32),
+            {"observation.images.front": np.zeros((48, 64, 3), np.uint8)},
+        )
+        assert actions.shape == (5, 6)
+        assert float(actions[1, 0]) == 6.0
+        assert "task" not in policy.frames[-1]
+
+
+def test_openpi_client_refuses_a_lerobot_server() -> None:
+    from armnet_rlt.lerobot_server import LeRobotPolicyBackend
+
+    backend = LeRobotPolicyBackend(
+        _FakeLeRobotPolicy("diffusion"), _Processor(), _Processor(), shapes={"observation.images.front": (48, 64)}
+    )
+    port = _free_port()
+    with serve(backend, bind=f"127.0.0.1:{port}", auth_token="tok"):
+        with pytest.raises(RuntimeError, match="not OpenPI"):
+            RemoteOpenPIRLTPolicy(_channel(port, "tok"))

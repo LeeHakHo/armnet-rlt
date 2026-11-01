@@ -321,15 +321,13 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
             entry_path.unlink(missing_ok=True)
 
 
-def cmd_policy_server(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
+def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
+    """The OpenPI policy to serve and its image size, warmed up."""
     import numpy as np
     from openpi.models.model import IMAGE_RESOLUTION
 
     from armnet_rlt.openpi_rlt import OpenPIRLTPolicy, PolicyObservation
-    from armnet_rlt.remote_policy import serve
 
-    token = _learner_token()
     policy = OpenPIRLTPolicy.from_checkpoint(
         args.checkpoint, args.config_name, default_prompt=args.prompt
     )
@@ -345,6 +343,48 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     )
     policy.infer(warm_observation)
     policy.infer(warm_observation, exploration_std=1.0, steer=False)
+    return policy, (height, width)
+
+
+def _lerobot_backend(args: argparse.Namespace) -> Any:
+    """A LeRobot policy backend for the checkpoint in --checkpoint."""
+    import torch
+
+    from armnet_rlt.lerobot_actor import (
+        image_shapes,
+        load_lerobot_policy,
+        parse_image_size,
+        policy_rename_map,
+    )
+    from armnet_rlt.lerobot_server import LeRobotPolicyBackend
+
+    device = "cuda" if args.gpu != "cpu" and torch.cuda.is_available() else "cpu"
+    policy, preprocessor, postprocessor = load_lerobot_policy(args.checkpoint, device)
+    return LeRobotPolicyBackend(
+        policy,
+        preprocessor,
+        postprocessor,
+        shapes=image_shapes(
+            policy,
+            rename_map=policy_rename_map(args.checkpoint),
+            size=parse_image_size(args.policy_image_size),
+        ),
+        n_action_steps=args.n_action_steps,
+        temporal_ensemble_coeff=args.temporal_ensemble_coeff,
+        served_from_learner=bool(args.steering_from_learner),
+    )
+
+
+def cmd_policy_server(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    from armnet_rlt.remote_policy import serve
+
+    token = _learner_token()
+    if args.policy_type == "lerobot":
+        policy = _lerobot_backend(args)
+        image_size = None
+    else:
+        policy, image_size = _openpi_backend(args)
     edge_tls = _edge_terminates_tls(args)
     own_tls = bool(args.tls_cert or args.tls_key)
     if own_tls and edge_tls:
@@ -356,7 +396,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     with serve(
         policy,
         bind=f"{bind_host}:{args.port}",
-        image_size=(height, width),
+        image_size=image_size,
         auth_token=token,
         tls_cert_path=args.tls_cert,
         tls_key_path=args.tls_key,
@@ -367,7 +407,18 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             from armnet_rlt.steering_feed import LearnerSteeringFeed
 
             learner_host, _, learner_port = args.steering_from_learner.rpartition(":")
-            feed_config = _config(args, algorithm="dsrl")
+            if args.policy_type == "lerobot":
+                feed_options: dict[str, Any] = {
+                    "installer": lambda weights, step, partial: server.run_locked(
+                        policy.apply_weights, weights, step, partial
+                    )
+                }
+            else:
+                feed_config = _config(args, algorithm="dsrl")
+                feed_options = {
+                    "network": feed_config.network,
+                    "noise_steps": feed_config.dsrl_noise_steps,
+                }
             feed = LearnerSteeringFeed(
                 server.apply_steering,
                 host=learner_host or "127.0.0.1",
@@ -375,13 +426,12 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
                 use_tls=bool(args.steering_learner_tls_name),
                 token=token,
                 server_name=args.steering_learner_tls_name,
-                network=feed_config.network,
-                noise_steps=feed_config.dsrl_noise_steps,
                 max_message_bytes=MAX_MESSAGE_BYTES,
+                **feed_options,
             )
             feed.start()
             print(
-                f"[RLT] policy server steering from the learner at "
+                f"[RLT] policy server taking updates from the learner at "
                 f"{args.steering_from_learner}",
                 flush=True,
             )
@@ -394,6 +444,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
                     "use_tls": edge_tls or own_tls,
                     "config_name": args.config_name,
                     "checkpoint": str(args.checkpoint),
+                    "policy_type": args.policy_type,
                 },
                 indent=2,
             )
@@ -722,9 +773,38 @@ def _parser() -> argparse.ArgumentParser:
     )
     policy_server.add_argument("--config-name", default=MULTITASK_CONFIG)
     policy_server.add_argument(
-        "--checkpoint", required=True, help="Local OpenPI checkpoint directory"
+        "--policy-type",
+        choices=("openpi", "lerobot"),
+        default="openpi",
+        help="openpi: the RLT/DSRL base policy; lerobot: a LeRobot policy "
+        "(Diffusion, SmolVLA, ...) for --policy-type lerobot actors",
+    )
+    policy_server.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Local OpenPI checkpoint directory, or a LeRobot pretrained_model "
+        "directory with --policy-type lerobot",
     )
     policy_server.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
+    policy_server.add_argument(
+        "--n-action-steps",
+        type=int,
+        default=0,
+        help="Actions a chunking LeRobot policy returns per inference; "
+        "0 keeps the policy's n_action_steps",
+    )
+    policy_server.add_argument(
+        "--temporal-ensemble-coeff",
+        type=float,
+        default=None,
+        help="Temporal ensembling coefficient for a chunking LeRobot policy",
+    )
+    policy_server.add_argument(
+        "--policy-image-size",
+        default="",
+        help="<height>x<width> the server resizes camera images to for a "
+        "LeRobot policy; empty uses the policy config",
+    )
     policy_server.add_argument("--bind-host", default="0.0.0.0")
     policy_server.add_argument("--port", type=int, default=LEARNER_PORT + 1)
     policy_server.add_argument(
@@ -754,8 +834,8 @@ def _parser() -> argparse.ArgumentParser:
     policy_server.add_argument(
         "--steering-from-learner",
         default="",
-        help="<host>:<port> of the DSRL learner; the server installs the actor "
-        "from its parameter stream",
+        help="<host>:<port> of the learner; the server installs the DSRL actor "
+        "or the checkpoint-eval weights from its parameter stream",
     )
     policy_server.add_argument(
         "--steering-learner-tls-name",

@@ -1,5 +1,6 @@
-"""OpenPI RLT inference over gRPC: a policy server and a cell-side client.
+"""Policy inference over gRPC: a policy server and cell-side clients.
 
+The server serves one ``PolicyBackend`` (OpenPI RLT or a LeRobot policy).
 Messages are ``np.savez`` archives loaded with ``allow_pickle=False``.
 """
 
@@ -109,8 +110,35 @@ def unpack_norm_stats(arrays: dict[str, np.ndarray]) -> dict[str, RemoteNormStat
     return {name: RemoteNormStats(**values) for name, values in fields.items()}
 
 
-class PolicyServer:
-    """Serve one loaded policy; calls hold a lock."""
+class PolicyBackend:
+    """What a policy server serves. ``info`` returns the arrays of the Info
+    reply (``meta`` is a JSON string), ``infer`` answers one decoded request,
+    ``set_steering`` installs a DSRL actor and ``reset`` ends an episode."""
+
+    def info(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def infer(self, arrays: dict[str, np.ndarray]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def set_steering(self, payload: dict[str, Any]) -> int | None:
+        raise ValueError("this policy server takes no steering")
+
+    def reset(self) -> None:
+        pass
+
+
+def decode_images(arrays: dict[str, np.ndarray], codec: str) -> dict[str, np.ndarray]:
+    """The ``image/<name>`` entries of a request, decoded."""
+    return {
+        key.removeprefix("image/"): decode_image(value, codec)
+        for key, value in arrays.items()
+        if key.startswith("image/")
+    }
+
+
+class OpenPIBackend(PolicyBackend):
+    """Serve an ``OpenPIRLTPolicy``."""
 
     def __init__(
         self,
@@ -121,66 +149,85 @@ class PolicyServer:
     ) -> None:
         self._policy = policy
         self._image_size = image_size
-        self._lock = threading.Lock()
         self.steering_from_learner = steering_from_learner
 
-    def apply_steering(self, payload: dict[str, Any]) -> int | None:
-        """Install a steering payload from this process (the learner feed)."""
-        with self._lock:
-            return self._policy.set_steering(payload)
-
-    def info(self, request: bytes, context: Any) -> bytes:
+    def info(self) -> dict[str, Any]:
         meta = {
+            "policy_type": "openpi",
             "rl_token_dim": int(self._policy.rl_token_dim),
             "use_quantile_norm": bool(self._policy.use_quantile_norm),
             "uses_delta_actions": bool(self._policy.uses_delta_actions),
             "image_size": list(self._image_size),
             "steering_from_learner": bool(self.steering_from_learner),
         }
-        return pack(
-            {"meta": json.dumps(meta), **pack_norm_stats(self._policy.norm_stats)}
-        )
+        return {"meta": json.dumps(meta), **pack_norm_stats(self._policy.norm_stats)}
 
-    def infer(self, request: bytes, context: Any) -> bytes:
-        started = time.perf_counter()
-        arrays = unpack(request)
-        codec = str(arrays["codec"])
-        images = {
-            key.removeprefix("image/"): decode_image(value, codec)
-            for key, value in arrays.items()
-            if key.startswith("image/")
-        }
+    def infer(self, arrays: dict[str, np.ndarray]) -> dict[str, Any]:
         observation = PolicyObservation(
             state=np.asarray(arrays["state"], dtype=np.float32),
-            images=images,
+            images=decode_images(arrays, str(arrays["codec"])),
             prompt=str(arrays["prompt"]),
         )
         options: dict[str, Any] = {}
         if "exploration_std" in arrays:
             options["exploration_std"] = float(arrays["exploration_std"])
             options["steer"] = bool(arrays["steer"])
-        with self._lock:
-            result = self._policy.infer(observation, **options)
+        result = self._policy.infer(observation, **options)
         response: dict[str, Any] = {
             "action_chunk": result.action_chunk,
             "rl_token": result.rl_token,
-            "server_ms": (time.perf_counter() - started) * 1000.0,
         }
         if result.noise is not None:
             response["noise"] = result.noise
         if result.steering_step is not None:
             response["steering_step"] = result.steering_step
+        return response
+
+    def set_steering(self, payload: dict[str, Any]) -> int | None:
+        return self._policy.set_steering(payload)
+
+    def reset(self) -> None:
+        self._policy.reset()
+
+
+class PolicyServer:
+    """gRPC handlers around one backend; calls hold a lock."""
+
+    def __init__(self, backend: PolicyBackend) -> None:
+        self._backend = backend
+        self._lock = threading.Lock()
+
+    def apply_steering(self, payload: dict[str, Any]) -> int | None:
+        """Install a steering payload from this process (the learner feed)."""
+        with self._lock:
+            return self._backend.set_steering(payload)
+
+    def run_locked(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run ``fn`` while no request is being served."""
+        with self._lock:
+            return fn(*args, **kwargs)
+
+    def info(self, request: bytes, context: Any) -> bytes:
+        with self._lock:
+            return pack(self._backend.info())
+
+    def infer(self, request: bytes, context: Any) -> bytes:
+        started = time.perf_counter()
+        arrays = unpack(request)
+        with self._lock:
+            response = self._backend.infer(arrays)
+        response["server_ms"] = (time.perf_counter() - started) * 1000.0
         return pack(response)
 
     def set_steering(self, request: bytes, context: Any) -> bytes:
         payload = unpack(request)
         with self._lock:
-            step = self._policy.set_steering(payload)
+            step = self._backend.set_steering(payload)
         return pack({"steering_step": -1 if step is None else int(step)})
 
     def reset(self, request: bytes, context: Any) -> bytes:
         with self._lock:
-            self._policy.reset()
+            self._backend.reset()
         return b""
 
 
@@ -189,18 +236,19 @@ def serve(
     policy: Any,
     *,
     bind: str,
-    image_size: tuple[int, int],
+    image_size: tuple[int, int] | None = None,
     auth_token: str = "",
     tls_cert_path: str = "",
     tls_key_path: str = "",
     steering_from_learner: bool = False,
 ) -> Iterator[Any]:
-    """Run a gRPC server for ``policy`` on ``bind`` until the context exits.
+    """Run a gRPC server on ``bind`` until the context exits.
 
-    With ``tls_cert_path`` and ``tls_key_path`` the server terminates TLS
-    itself, for a raw TCP forwarder in front of it. ``steering_from_learner``
-    tells actors the server installs the DSRL actor itself; the yielded
-    server has ``apply_steering`` for that feed."""
+    ``policy`` is a ``PolicyBackend`` or an ``OpenPIRLTPolicy`` (served at
+    ``image_size``). With ``tls_cert_path`` and ``tls_key_path`` the server
+    terminates TLS itself. ``steering_from_learner`` tells actors the server
+    installs the DSRL actor itself. The yielded server has ``apply_steering``
+    and ``run_locked`` for a learner feed."""
     import grpc
 
     if bool(tls_cert_path) != bool(tls_key_path):
@@ -208,9 +256,15 @@ def serve(
 
     from armnet_rlt.learner import _make_auth_interceptor
 
-    server_impl = PolicyServer(
-        policy, image_size=image_size, steering_from_learner=steering_from_learner
-    )
+    if isinstance(policy, PolicyBackend):
+        backend = policy
+    else:
+        if image_size is None:
+            raise ValueError("image_size is required to serve an OpenPI policy")
+        backend = OpenPIBackend(
+            policy, image_size=image_size, steering_from_learner=steering_from_learner
+        )
+    server_impl = PolicyServer(backend)
     handlers = {
         name: grpc.unary_unary_rpc_method_handler(method)
         for name, method in (
@@ -244,6 +298,7 @@ def serve(
         raise RuntimeError(f"could not bind the policy server to {bind}")
     server.start()
     server.apply_steering = server_impl.apply_steering
+    server.run_locked = server_impl.run_locked
     try:
         yield server
     finally:
@@ -278,6 +333,11 @@ class RemoteOpenPIRLTPolicy:
         self.steering_step: int | None = None
         info = unpack(self._call("Info", b"", timeout_s=30.0))
         meta = json.loads(str(info["meta"]))
+        if meta.get("policy_type", "openpi") != "openpi":
+            raise RuntimeError(
+                f"the policy server serves a {meta.get('policy_type')} policy, "
+                "not OpenPI"
+            )
         self.steering_from_learner = bool(meta.get("steering_from_learner", False))
         self.rl_token_dim = int(meta["rl_token_dim"])
         self.use_quantile_norm = bool(meta["use_quantile_norm"])
@@ -386,6 +446,125 @@ class RemoteOpenPIRLTPolicy:
         summary = self.latency_summary()
         if summary["calls"]:
             print("[rlt remote policy] " + json.dumps(summary), flush=True)
+        self._latencies_ms.clear()
+        self._server_ms.clear()
+        self._request_bytes.clear()
+        self._call("Reset", b"")
+
+
+class RemoteLeRobotPolicy:
+    """Client of a policy server that serves a LeRobot policy."""
+
+    def __init__(
+        self,
+        channel: Any,
+        *,
+        timeout_s: float = 5.0,
+        image_codec: str = "jpeg",
+        jpeg_quality: int = 90,
+        retries: int = 1,
+    ) -> None:
+        if image_codec not in IMAGE_CODECS:
+            raise ValueError(
+                f"image codec must be one of {IMAGE_CODECS}, got {image_codec!r}"
+            )
+        self._timeout_s = timeout_s
+        self._image_codec = image_codec
+        self._jpeg_quality = jpeg_quality
+        self._retries = retries
+        self._calls = {
+            name: channel.unary_unary(f"/{SERVICE}/{name}")
+            for name in ("Info", "Infer", "Reset")
+        }
+        self._latencies_ms: list[float] = []
+        self._server_ms: list[float] = []
+        self._request_bytes: list[int] = []
+        self.policy_step: int | None = None
+        meta = self.refresh()
+        self.lerobot_type = str(meta["lerobot_type"])
+        self.chunked = bool(meta["chunked"])
+        self.n_action_steps = int(meta["n_action_steps"])
+        self.uses_task = bool(meta["uses_task"])
+        self.shapes = {
+            key: (int(shape[0]), int(shape[1])) for key, shape in meta["shapes"].items()
+        }
+        self.served_from_learner = bool(meta.get("steering_from_learner", False))
+
+    def _call(self, name: str, request: bytes, *, timeout_s: float | None = None) -> bytes:
+        import grpc
+
+        retryable = {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}
+        for attempt in range(self._retries + 1):
+            try:
+                return self._calls[name](request, timeout=timeout_s or self._timeout_s)
+            except grpc.RpcError as exc:
+                if exc.code() not in retryable or attempt == self._retries:
+                    raise
+                log.warning("remote policy %s failed (%s); retrying", name, exc.code())
+        raise AssertionError("unreachable")
+
+    def refresh(self) -> dict[str, Any]:
+        """Re-read the server's Info; updates ``policy_step``."""
+        meta = json.loads(str(unpack(self._call("Info", b"", timeout_s=30.0))["meta"]))
+        if meta.get("policy_type") != "lerobot":
+            raise RuntimeError(
+                f"the policy server serves a {meta.get('policy_type', 'openpi')} "
+                "policy, not a LeRobot policy"
+            )
+        step = int(meta.get("learner_step", -1))
+        self.policy_step = step if step >= 0 else None
+        return meta
+
+    def predict(
+        self,
+        state: np.ndarray,
+        images: dict[str, np.ndarray],
+        *,
+        task: str | None = None,
+        exploration_scale: float = 0.0,
+        exploration_correlation: float = 0.85,
+    ) -> np.ndarray:
+        """Actions ``(n, action_dim)`` for one observation whose images are
+        already at the server's ``shapes``."""
+        started = time.perf_counter()
+        arrays: dict[str, Any] = {
+            "state": np.asarray(state, dtype=np.float32),
+            "codec": self._image_codec,
+            "exploration_scale": float(exploration_scale),
+            "exploration_correlation": float(exploration_correlation),
+        }
+        if task is not None:
+            arrays["task"] = task
+        for key, image in images.items():
+            arrays[f"image/{key}"] = encode_image(image, self._image_codec, self._jpeg_quality)
+        request = pack(arrays)
+        response = unpack(self._call("Infer", request))
+        self._latencies_ms.append((time.perf_counter() - started) * 1000.0)
+        self._server_ms.append(float(response["server_ms"]))
+        self._request_bytes.append(len(request))
+        step = int(response["policy_step"])
+        self.policy_step = step if step >= 0 else None
+        return np.asarray(response["actions"], dtype=np.float32)
+
+    def latency_summary(self) -> dict[str, float | int]:
+        if not self._latencies_ms:
+            return {"calls": 0}
+        total = sorted(self._latencies_ms)
+        return {
+            "calls": len(total),
+            "p50_ms": round(total[len(total) // 2], 1),
+            "p95_ms": round(total[max(0, int(len(total) * 0.95) - 1)], 1),
+            "max_ms": round(total[-1], 1),
+            "server_p50_ms": round(sorted(self._server_ms)[len(total) // 2], 1),
+            "request_kb_mean": round(
+                sum(self._request_bytes) / len(self._request_bytes) / 1024, 1
+            ),
+        }
+
+    def reset(self) -> None:
+        summary = self.latency_summary()
+        if summary["calls"]:
+            print("[lerobot remote policy] " + json.dumps(summary), flush=True)
         self._latencies_ms.clear()
         self._server_ms.clear()
         self._request_bytes.clear()

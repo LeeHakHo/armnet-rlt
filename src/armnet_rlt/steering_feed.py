@@ -32,10 +32,11 @@ class LearnerSteeringFeed:
         use_tls: bool,
         token: str,
         server_name: str = "",
-        network: RLTNetworkConfig,
+        network: RLTNetworkConfig | None = None,
         noise_steps: int = 1,
         max_message_bytes: int,
         retry_s: float = 5.0,
+        installer: Callable[[Mapping[str, torch.Tensor], int | None, bool], None] | None = None,
     ) -> None:
         self._apply = apply
         self._host = host
@@ -45,6 +46,7 @@ class LearnerSteeringFeed:
         self._server_name = server_name
         self._network = network
         self._noise_steps = int(noise_steps)
+        self._installer = installer
         self._max_message_bytes = max_message_bytes
         self._retry_s = retry_s
         self._state: dict[str, torch.Tensor] = {}
@@ -66,7 +68,17 @@ class LearnerSteeringFeed:
         """Install one decoded parameter message: ``policy`` (the actor's
         state dict), ``learner_step`` and an optional ``partial`` flag."""
         weights = dict(state.get("policy", state))
-        if bool(_scalar(state.get("partial", False))):
+        partial = bool(_scalar(state.get("partial", False)))
+        raw_step = state.get("learner_step")
+        step = None if raw_step is None else int(_scalar(raw_step))
+        if self._installer is not None:
+            self._installer(weights, step, partial)
+            self.learner_step = step
+            self.updates += 1
+            return step
+        if self._network is None:
+            raise ValueError("a DSRL steering feed needs the actor network config")
+        if partial:
             if not self._state:
                 log.warning("partial actor update before any full one; skipped")
                 return self.learner_step
@@ -75,8 +87,6 @@ class LearnerSteeringFeed:
             self._state = weights
         if "noise_bound" not in self._state:
             raise ValueError("actor state has no noise_bound; not a DSRL actor")
-        raw_step = state.get("learner_step")
-        step = None if raw_step is None else int(_scalar(raw_step))
         payload = steering_payload(
             self._state,
             network=self._network,

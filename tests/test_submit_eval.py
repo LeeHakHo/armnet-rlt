@@ -59,3 +59,10 @@ def test_frozen_eval_requires_volume_paths(field: str) -> None:
 def test_frozen_eval_rejects_invalid_rollout_count() -> None:
     with pytest.raises(ValueError, match="positive"):
         build_job_args(_args(num_rollouts=0))
+
+
+def test_remote_policy_is_the_default_for_evaluation() -> None:
+    from armnet_rlt.submit_eval import _parser
+
+    parser = _parser()
+    assert parser.get_default("remote_policy") is True

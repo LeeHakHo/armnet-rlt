@@ -46,10 +46,11 @@ def _parser() -> argparse.ArgumentParser:
         "(--config-name eval)",
     )
     parser.add_argument("--config-name", required=True, help="OpenPI RLT config")
-    checkpoint = parser.add_mutually_exclusive_group(required=True)
+    checkpoint = parser.add_mutually_exclusive_group()
     checkpoint.add_argument(
         "--checkpoint-dir",
-        help="Armnet volume path, e.g. volume://openpi/checkpoints/<name>",
+        help="Armnet volume path, e.g. volume://openpi/checkpoints/<name>; "
+        "not needed by a --policy-type lerobot actor using the policy server",
     )
     checkpoint.add_argument("--hf-checkpoint-repo")
     parser.add_argument("--hf-checkpoint-revision", default="")
@@ -386,8 +387,9 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "use_rerun": rerun_job_enabled(args),
     }
     policy_type = getattr(args, "policy_type", "rlt")
+    remote = bool(getattr(args, "remote_policy", False))
     if policy_type == "lerobot":
-        if not args.checkpoint_dir:
+        if not args.checkpoint_dir and not remote:
             raise ValueError(f"--policy-type {policy_type} needs --checkpoint-dir")
         job_args["policy_type"] = policy_type
         if getattr(args, "n_action_steps", 0):
@@ -490,7 +492,11 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         job_args["tls_root_cert_pem"] = cert
     if server_name := entry.get("tls_server_name"):
         job_args["tls_server_name"] = server_name
-    if bool(getattr(args, "remote_policy", False)):
+    if not (policy_type == "lerobot" and remote) and not (
+        args.checkpoint_dir or getattr(args, "hf_checkpoint_repo", None)
+    ):
+        raise ValueError("--checkpoint-dir or --hf-checkpoint-repo is required")
+    if remote:
         job_args.update(
             remote_policy_job_args(
                 args.config_name,

@@ -215,3 +215,37 @@ def test_job_args_carry_the_algorithm_to_the_cell() -> None:
     assert parser.get_default("algorithm") == "rlt"
     assert parser.get_default("dsrl_noise_bound") == 2.5
     assert parser.get_default("dsrl_noise_steps") == 1
+
+
+def test_remote_policy_is_the_default_and_can_be_switched_off() -> None:
+    parser = _parser()
+    assert parser.get_default("remote_policy") is True
+    args = parser.parse_args(
+        [
+            "--task", "t", "--config-name", "c", "--language-instruction", "i",
+            "--learner-key", "c:r", "--no-remote-policy", "--hf-checkpoint-repo", "org/ckpt",
+        ]
+    )
+    assert args.remote_policy is False
+
+
+def test_lerobot_job_args_need_no_checkpoint_with_the_policy_server(monkeypatch) -> None:
+    import armnet_rlt.submit_actor as submit_actor
+
+    monkeypatch.setattr(
+        submit_actor,
+        "remote_policy_job_args",
+        lambda config_name, **_: {"remote_policy_host": "policy.example", "remote_policy_port": 443},
+    )
+    args = _args(
+        policy_type="lerobot",
+        config_name="eval",
+        hf_checkpoint_repo=None,
+        remote_policy=True,
+        remote_policy_timeout_s=5.0,
+        remote_policy_image_codec="jpeg",
+    )
+    result = build_job_args(args, _entry(config_name="eval"))
+    assert result["policy_type"] == "lerobot"
+    assert "checkpoint_dir" not in result
+    assert result["remote_policy_host"] == "policy.example"

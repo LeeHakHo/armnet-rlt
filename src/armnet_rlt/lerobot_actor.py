@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from armnet_rlt.grpc_util import grpc_channel
 from armnet_rlt.metrics import EpisodeRecord
 from armnet_rlt.openpi_rlt import MOTOR_NAMES
 from armnet_rlt.operator_control import CellOperatorControl
@@ -113,11 +114,11 @@ def parse_image_size(value: str | None) -> tuple[int, int] | None:
 
 
 def resize_image(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    import cv2
-
     height, width = size
     if image.shape[:2] == (height, width):
         return image
+    import cv2
+
     return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
 
 
@@ -234,9 +235,11 @@ def run_lerobot_actor(
 ) -> dict[str, Any]:
     """Roll out a LeRobot policy on one Armnet SO-101 cell and report to the learner.
 
-    A chunking policy executes ``n_action_steps`` per inference with optional
-    exploration noise; other policies use ``select_action``. Successful episodes
-    are streamed to the learner unless ``stream_episodes`` is false.
+    With ``remote_policy_host`` the policy runs on a policy server and the
+    learner's checkpoint updates reach that server, not the cell. A chunking
+    policy executes ``n_action_steps`` per inference with optional exploration
+    noise; other policies use ``select_action``. Successful episodes are
+    streamed to the learner unless ``stream_episodes`` is false.
     """
     device_name = str(_field(cfg, "device", "cuda"))
     device = (
@@ -253,45 +256,74 @@ def run_lerobot_actor(
         except TypeError:
             robot.connect()
 
+    remote: Any = None
+    policy = preprocessor = postprocessor = None
+    remote_host = str(_field(cfg, "remote_policy_host", "") or "")
     try:
-        policy, preprocessor, postprocessor = load_lerobot_policy(
-            cfg.policy_dir, device
-        )
-        policy.eval()
-        shapes = image_shapes(
-            policy,
-            rename_map=policy_rename_map(cfg.policy_dir),
-            size=parse_image_size(_field(cfg, "image_size", None)),
-        )
+        if remote_host:
+            from armnet_rlt.remote_policy import MAX_MESSAGE_BYTES, RemoteLeRobotPolicy
+
+            channel = grpc_channel(
+                remote_host,
+                int(_field(cfg, "remote_policy_port", 443)),
+                use_tls=bool(_field(cfg, "remote_policy_use_tls", True)),
+                token=str(_field(cfg, "remote_policy_auth_token", "") or ""),
+                max_message_bytes=MAX_MESSAGE_BYTES,
+            )
+            remote = RemoteLeRobotPolicy(
+                channel,
+                timeout_s=float(_field(cfg, "remote_policy_timeout_s", 5.0)),
+                image_codec=str(_field(cfg, "remote_policy_image_codec", "jpeg")),
+            )
+            shapes = remote.shapes
+            policy_type = remote.lerobot_type
+            chunked = remote.chunked
+            n_action_steps = remote.n_action_steps
+            uses_task = remote.uses_task
+        else:
+            policy, preprocessor, postprocessor = load_lerobot_policy(
+                cfg.policy_dir, device
+            )
+            policy.eval()
+            shapes = image_shapes(
+                policy,
+                rename_map=policy_rename_map(cfg.policy_dir),
+                size=parse_image_size(_field(cfg, "image_size", None)),
+            )
+            policy_type = str(policy.config.type)
+            is_act = policy_type == ACT_CONFIG_NAME
+            ensemble_coeff = _field(cfg, "temporal_ensemble_coeff", None)
+            if ensemble_coeff is not None:
+                if not is_act:
+                    raise ValueError(
+                        f"temporal_ensemble_coeff needs an ACT policy, not {policy_type}"
+                    )
+                from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
+
+                policy.config.temporal_ensemble_coeff = float(ensemble_coeff)
+                policy.config.n_action_steps = 1
+                policy.temporal_ensembler = ACTTemporalEnsembler(
+                    float(ensemble_coeff), policy.config.chunk_size
+                )
+            # ACT without temporal ensembling executes whole chunks; everything else uses select_action.
+            chunked = is_act and policy.config.temporal_ensemble_coeff is None
+            n_action_steps = int(_field(cfg, "n_action_steps", 0)) or int(
+                policy.config.n_action_steps
+            )
+            if is_act and not 1 <= n_action_steps <= int(policy.config.chunk_size):
+                raise ValueError(
+                    f"n_action_steps={n_action_steps} must be in "
+                    f"[1, chunk_size={policy.config.chunk_size}]"
+                )
+            uses_task = not is_act
     except Exception:
         _close_robot_and_cell(robot, ctx.cell)
         raise
-    policy_type = str(policy.config.type)
-    is_act = policy_type == ACT_CONFIG_NAME
-    ensemble_coeff = _field(cfg, "temporal_ensemble_coeff", None)
-    if ensemble_coeff is not None:
-        if not is_act:
-            raise ValueError(f"temporal_ensemble_coeff needs an ACT policy, not {policy_type}")
-        from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
-
-        policy.config.temporal_ensemble_coeff = float(ensemble_coeff)
-        policy.config.n_action_steps = 1
-        policy.temporal_ensembler = ACTTemporalEnsembler(
-            float(ensemble_coeff), policy.config.chunk_size
-        )
-    # ACT without temporal ensembling executes whole chunks; everything else uses select_action.
-    chunked = is_act and policy.config.temporal_ensemble_coeff is None
-    n_action_steps = int(_field(cfg, "n_action_steps", 0)) or int(
-        policy.config.n_action_steps
-    )
-    if is_act and not 1 <= n_action_steps <= int(policy.config.chunk_size):
-        raise ValueError(
-            f"n_action_steps={n_action_steps} must be in "
-            f"[1, chunk_size={policy.config.chunk_size}]"
-        )
     stream_episodes = bool(_field(cfg, "stream_episodes", True))
 
-    transport = transport or LearnerTransport(cfg.actor_learner)
+    transport = transport or LearnerTransport(
+        cfg.actor_learner, subscribe_parameters=remote is None
+    )
     operator = operator or CellOperatorControl(ctx.cell)
     state_machine = RLTStateMachine()
     fps = max(1, int(_field(cfg, "command_fps", 20)))
@@ -311,6 +343,8 @@ def run_lerobot_actor(
 
     round_schedule = parse_round_schedule(_field(cfg, "episodes_per_round", 0))
     steps_per_round = int(_field(cfg, "steps_per_round", 0))
+    if round_schedule and remote is not None:
+        raise ValueError("learner rounds need the policy on the cell, not a policy server")
     if round_schedule and steps_per_round <= 0:
         raise ValueError(
             "steps_per_round is required when episodes_per_round is set; "
@@ -323,7 +357,7 @@ def run_lerobot_actor(
         or getattr(ctx.cell, "language_instruction", "")
         or getattr(ctx, "task", "")
     )
-    task = None if is_act else instruction
+    task = instruction if uses_task else None
     eval_dataset, frame_writer, telemetry, eval_repo_id = open_rollout_recording(
         ctx, cfg, robot, instruction, action_source=f"{policy_type}_policy"
     )
@@ -345,17 +379,51 @@ def run_lerobot_actor(
     command_ticks = 0
     hardware_clamp_steps = 0
 
+    def predict(state: np.ndarray, images: dict[str, np.ndarray], scale: float) -> np.ndarray:
+        if remote is not None:
+            return remote.predict(
+                state,
+                images,
+                task=task,
+                exploration_scale=scale,
+                exploration_correlation=exploration_correlation,
+            )
+        if chunked:
+            return _predict_chunk(
+                policy,
+                preprocessor,
+                postprocessor,
+                policy_frame(state, images),
+                n_action_steps=n_action_steps,
+                exploration_scale=scale,
+                exploration_correlation=exploration_correlation,
+            )
+        return _select_action(
+            policy, preprocessor, postprocessor, policy_frame(state, images, task)
+        )
+
+    def reset_policy() -> None:
+        if remote is not None:
+            remote.reset()
+        else:
+            policy.reset()
+
     try:
         transport.start()
-        current_policy_step = _load_parameters(
-            policy,
-            transport.wait_for_initial_parameters(
-                timeout_s=float(_field(cfg, "initial_parameters_timeout_s", 600.0))
-            ),
-        )
-        policy.eval()
+        if remote is not None:
+            current_policy_step = remote.policy_step
+            source = f"policy server {remote_host}"
+        else:
+            current_policy_step = _load_parameters(
+                policy,
+                transport.wait_for_initial_parameters(
+                    timeout_s=float(_field(cfg, "initial_parameters_timeout_s", 600.0))
+                ),
+            )
+            policy.eval()
+            source = str(cfg.policy_dir)
         print(
-            f"[lerobot] {policy_type} policy {cfg.policy_dir}: images={shapes} "
+            f"[lerobot] {policy_type} policy {source}: images={shapes} "
             f"n_action_steps={n_action_steps} learner_step={current_policy_step}",
             flush=True,
         )
@@ -363,21 +431,8 @@ def run_lerobot_actor(
 
         # Run one inference before the first rollout.
         warm_state, warm_images = policy_observation(robot.get_observation(), shapes)
-        if chunked:
-            _predict_chunk(
-                policy,
-                preprocessor,
-                postprocessor,
-                policy_frame(warm_state, warm_images),
-                n_action_steps=n_action_steps,
-                exploration_scale=0.0,
-                exploration_correlation=exploration_correlation,
-            )
-        else:
-            _select_action(
-                policy, preprocessor, postprocessor, policy_frame(warm_state, warm_images, task)
-            )
-            policy.reset()
+        predict(warm_state, warm_images, 0.0)
+        reset_policy()
 
         rounds_done = 0
         next_round_at = (
@@ -422,13 +477,19 @@ def run_lerobot_actor(
                 previous_state is EpisodeState.END_EPISODE
                 and state_machine.state is EpisodeState.IN_EPISODE
             ):
-                update = transport.latest_parameters()
-                if update is not None:
-                    loaded_step = _load_parameters(policy, update)
-                    policy.eval()
-                    if loaded_step is not None:
-                        current_policy_step = loaded_step
-                    policy_reload_count += 1
+                if remote is not None:
+                    remote.refresh()
+                    if remote.policy_step != current_policy_step:
+                        current_policy_step = remote.policy_step
+                        policy_reload_count += 1
+                else:
+                    update = transport.latest_parameters()
+                    if update is not None:
+                        loaded_step = _load_parameters(policy, update)
+                        policy.eval()
+                        if loaded_step is not None:
+                            current_policy_step = loaded_step
+                        policy_reload_count += 1
                 episode_started_at = datetime.now(UTC).isoformat()
                 episode_policy_step_start = current_policy_step
                 if telemetry is not None and eval_dataset is not None:
@@ -520,7 +581,7 @@ def run_lerobot_actor(
                         telemetry=telemetry,
                         ticks=command_ticks,
                     )
-                policy.reset()
+                reset_policy()
                 states = []
                 actions = []
                 frames = {key: [] for key in shapes}
@@ -540,22 +601,14 @@ def run_lerobot_actor(
             raw_obs = robot.get_observation()
             state, images = policy_observation(raw_obs, shapes)
             if not chunked:
-                chunk = _select_action(
-                    policy, preprocessor, postprocessor, policy_frame(state, images, task)
-                )
+                chunk = predict(state, images, 0.0)
                 chunk_index = 0
             elif chunk is None or chunk_index >= len(chunk):
-                chunk = _predict_chunk(
-                    policy,
-                    preprocessor,
-                    postprocessor,
-                    policy_frame(state, images),
-                    n_action_steps=n_action_steps,
-                    exploration_scale=exploration_scale,
-                    exploration_correlation=exploration_correlation,
-                )
+                chunk = predict(state, images, exploration_scale)
                 chunk_index = 0
                 state_machine.episode_ctx.total_chunk_count += 1
+            if remote is not None and remote.policy_step is not None:
+                current_policy_step = remote.policy_step
 
             requested_action = robot_action(chunk[chunk_index])
             action_started = time.perf_counter()

@@ -15,6 +15,9 @@ Armnet SO-101 robot cells.
 
 The learner runs on a local GPU (`rlt-local`) or on Modal (`modal run`). The
 actor runs on the cell through Armnet and talks to the learner over gRPC.
+Policy inference runs on your GPU by default: `rlt-local policy-server`
+serves π0.5 or a LeRobot policy and the cell only streams observations to it
+(`--no-remote-policy` loads the policy on the cell instead).
 
 ## Install
 
@@ -87,8 +90,8 @@ envs/venv-learner/bin/rlt-local online --gpu 0 --run-id "$RLT_RUN_ID" \
   --algorithm rlt --pretrain-steps 5000 --online-steps 30000 --tunnel ngrok-tcp
 ```
 
-DSRL (SAC over π0.5 noise), online only. The policy server runs π0.5 for the
-cell and installs the actor straight from the learner's parameter stream:
+DSRL (SAC over π0.5 noise), online only. The policy server installs the
+actor straight from the learner's parameter stream:
 
 ```bash
 export RLT_RUN_ID="dsrl-$(date -u +%Y%m%d-%H%M%S)"
@@ -113,6 +116,24 @@ envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID" --steps 5000
 
 `--resume` continues a run from its newest checkpoint and replay snapshot.
 
+## Policy server
+
+The policy server registers itself under `--config-name`; every actor and
+evaluation submitted for that config sends observations to it.
+
+```bash
+envs/venv-openpi/bin/rlt-local policy-server --gpu 0 --config-name "$RLT_CONFIG" \
+  --checkpoint <openpi-checkpoint-dir> --tunnel ngrok            # π0.5 for RLT and DSRL
+envs/venv-learner/bin/rlt-local policy-server --gpu 0 --config-name eval \
+  --policy-type lerobot --checkpoint <pretrained_model dir> \
+  --steering-from-learner 127.0.0.1:50051 --tunnel ngrok           # a LeRobot policy
+```
+
+With `--steering-from-learner` the server takes the DSRL actor, or the
+checkpoint-eval weight diffs, from the learner on this machine, so nothing
+large crosses to the cell. `--tunnel none --public-endpoint <host>:<port>`
+with `--tls-cert/--tls-key` uses your own ingress.
+
 ## Actor
 
 ```bash
@@ -126,9 +147,10 @@ uv run --env-file .env rlt-submit-actor \
   --image-ref <actor-image-ref>
 ```
 
-For DSRL add `--remote-policy --algorithm dsrl --dsrl-noise-bound 2.5
---dsrl-noise-steps 1 --exploration-scale 1.0` (the policy server must be up;
-`--exploration-scale` scales the actor's sampling std, 0 is deterministic).
+For DSRL add `--algorithm dsrl --dsrl-noise-bound 2.5 --dsrl-noise-steps 1
+--exploration-scale 1.0` (`--exploration-scale` scales the actor's sampling
+std, 0 is deterministic). The checkpoint is still named so the cell can fall
+back to it with `--no-remote-policy`.
 For RLT, `--exploration-scale` scales the fixed exploration noise and
 `--bc-warmup-episodes N` rolls out π0.5 with noise before the head takes over.
 
@@ -154,22 +176,27 @@ uv run --env-file .env rlt-submit-eval \
   --exploration-scale 0 --image-ref <actor-image-ref>
 ```
 
-Add `--remote-policy` for a DSRL run (the frozen file records the algorithm).
+The frozen file records the algorithm, so a DSRL run evaluates the same way.
 
 LeRobot baselines trained with `lerobot-train` are evaluated checkpoint by
-checkpoint. The learner serves each checkpoint's weight diff; the actor rolls
-it out and reports success:
+checkpoint. The learner pushes each checkpoint's weight diff to the policy
+server; the actor rolls it out and reports success:
 
 ```bash
 envs/venv-learner/bin/rlt-local checkpoint-eval --run-id eval-dit \
   --train-dir <lerobot-train output_dir> --base-checkpoint <pretrained_model dir> \
   --final-step 30000 --rollouts-per-checkpoint 10 --tunnel ngrok-tcp
+envs/venv-learner/bin/rlt-local policy-server --gpu 0 --config-name eval \
+  --policy-type lerobot --checkpoint <pretrained_model dir> \
+  --steering-from-learner 127.0.0.1:50051 --tunnel ngrok
 uv run --env-file .env rlt-submit-actor --policy-type lerobot \
   --task push_green_button --config-name eval \
-  --checkpoint-dir volume://<uploaded pretrained_model> --upload-checkpoint <pretrained_model dir> \
   --language-instruction "push the green button" --learner-key eval:eval-dit \
   --num-rollouts 70 --image-ref <actor-image-ref>
 ```
+
+To run the policy on the cell instead, upload it and pass
+`--no-remote-policy --checkpoint-dir volume://<path> --upload-checkpoint <pretrained_model dir>`.
 
 Results go to `experiment-data/checkpoint-eval/<run-id>/checkpoint_success.jsonl`.
 

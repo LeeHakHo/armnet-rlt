@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -76,9 +77,11 @@ def policy_rendezvous_key(config_name: str) -> str:
 def add_remote_policy_arguments(parser: Any) -> None:
     parser.add_argument(
         "--remote-policy",
-        action="store_true",
-        help="Run OpenPI inference on the local `rlt-local policy-server` "
-        "instead of the cell GPU",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run policy inference on the `rlt-local policy-server` registered "
+        "for --config-name instead of the cell GPU (--no-remote-policy loads "
+        "the policy on the cell)",
     )
     parser.add_argument("--remote-policy-timeout-s", type=float, default=5.0)
     parser.add_argument(
