@@ -120,6 +120,24 @@ envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID" --steps 5000
 
 `--resume` continues a run from its newest checkpoint and replay snapshot.
 
+Streaming BC for a LeRobot policy (Diffusion, DiT, ACT, ...) works the same
+way: the learner fine-tunes the checkpoint on the successful episodes the
+actor streams, pushes the weights to the policy server after every round and
+saves a `pretrained_model` checkpoint that `checkpoint-eval` can evaluate:
+
+```bash
+envs/venv-learner/bin/rlt-local lerobot-streaming-bc --gpu 0 --run-id sbc-dit \
+  --policy-path <pretrained_model dir> --task "push the green button" \
+  --episodes-per-round 30,30,10 --steps-per-round 500 --online-steps 20000 \
+  --base-dataset <repo_id> --base-batch-fraction 0.5 --tunnel ngrok-tcp
+envs/venv-learner/bin/rlt-local policy-server --gpu 0 --config-name eval \
+  --policy-type lerobot --checkpoint <pretrained_model dir> \
+  --steering-from-learner 127.0.0.1:50051 --tunnel ngrok
+```
+
+The actor is submitted with `--policy-type lerobot --config-name eval`
+(see Evaluation).
+
 ## Policy server
 
 The policy server registers itself under `--config-name`; every actor and
