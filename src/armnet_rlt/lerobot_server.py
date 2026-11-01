@@ -25,7 +25,8 @@ class LeRobotPolicyBackend(PolicyBackend):
 
     A chunking policy (ACT without temporal ensembling) answers with
     ``n_action_steps`` actions and takes exploration noise; other policies
-    answer with one action from ``select_action``.
+    answer with ``select_action``'s action followed by the actions the policy
+    queued for the next steps.
     """
 
     def __init__(
@@ -103,13 +104,25 @@ class LeRobotPolicyBackend(PolicyBackend):
                 exploration_correlation=float(arrays.get("exploration_correlation", 0.85)),
             )
         else:
-            actions = _select_action(
-                self._policy, self._preprocessor, self._postprocessor, frame
-            )
+            actions = self._select_actions(frame)
         return {
             "actions": np.asarray(actions, dtype=np.float32),
             "policy_step": -1 if self.learner_step is None else int(self.learner_step),
         }
+
+    def _select_actions(self, frame: dict[str, Any]) -> np.ndarray:
+        """``select_action`` plus whatever the policy queued for the following
+        steps, so one request covers a whole planning interval; the queue is
+        emptied so the next request plans afresh."""
+        with torch.inference_mode():
+            first = self._policy.select_action(self._preprocessor(frame))
+            queue = (getattr(self._policy, "_queues", None) or {}).get("action")
+            rest = list(queue) if queue else []
+            if queue:
+                queue.clear()
+            stacked = torch.stack([first.reshape(1, -1), *(a.reshape(1, -1) for a in rest)])
+            actions = self._postprocessor(stacked.reshape(len(stacked), -1))
+        return actions.reshape(-1, actions.shape[-1]).cpu().numpy()
 
     def apply_weights(
         self, weights: Mapping[str, torch.Tensor], learner_step: int | None, partial: bool

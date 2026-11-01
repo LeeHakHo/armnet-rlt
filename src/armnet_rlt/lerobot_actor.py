@@ -630,10 +630,12 @@ def run_lerobot_actor(
 
             raw_obs = robot.get_observation()
             state, images = policy_observation(raw_obs, shapes)
-            if not chunked:
+            if not chunked and remote is None:
                 chunk = predict(state, images, 0.0)
                 chunk_index = 0
             elif chunk is None or chunk_index >= len(chunk):
+                # A policy server answers with the policy's queued actions for
+                # the coming steps, so it is asked once per planning interval.
                 chunk = predict(state, images, exploration_scale)
                 chunk_index = 0
                 state_machine.episode_ctx.total_chunk_count += 1

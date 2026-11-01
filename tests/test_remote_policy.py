@@ -339,9 +339,13 @@ class _FakeLeRobotPolicy:
 
     def select_action(self, frame):
         import torch
+        from collections import deque
 
         self.frames.append(frame)
-        return torch.full((1, 6), float(frame["observation.state"][0]))
+        value = float(frame["observation.state"][0])
+        # Like LeRobot's queued policies: the actions for the next steps wait in _queues.
+        self._queues = {"action": deque([torch.full((1, 6), value + 10.0), torch.full((1, 6), value + 20.0)])}
+        return torch.full((1, 6), value)
 
     def predict_action_chunk(self, frame):
         import torch
@@ -383,7 +387,9 @@ def test_lerobot_policy_server_answers_select_action_and_reports_the_step() -> N
             {"observation.images.front": image},
             task="push the green button",
         )
-        assert actions.shape == (1, 6) and float(actions[0, 0]) == 2.5
+        # select_action's action plus the two the fake policy queued behind it.
+        assert actions.shape == (3, 6) and float(actions[0, 0]) == 2.5
+        assert actions[1:, 0].tolist() == [12.5, 22.5]
         frame = policy.frames[-1]
         assert frame["task"] == "push the green button"
         assert tuple(frame["observation.images.front"].shape) == (3, 48, 64)
