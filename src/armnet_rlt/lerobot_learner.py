@@ -28,6 +28,9 @@ from armnet_rlt.learner import (
 from armnet_rlt.lerobot_actor import EPISODE_SCHEMA, decode_jpeg, load_lerobot_policy
 from armnet_rlt.metrics import EpisodeRecord
 
+# Episode payload schemas accepted from actors, newest first.
+EPISODE_SCHEMAS = (EPISODE_SCHEMA, "act_episode_v1")
+
 
 class _PolicyWeights:
     """Gives ``_push_weights`` the policy's full state dict."""
@@ -68,7 +71,7 @@ def _drain_episodes(
         if _replayed(payload, seen):
             continue
         episode = bytes_to_python_object(payload)
-        if not isinstance(episode, dict) or episode.get("schema") != EPISODE_SCHEMA:
+        if not isinstance(episode, dict) or episode.get("schema") not in EPISODE_SCHEMAS:
             raise ValueError("episode payload has an unknown schema")
         completed.append(episode)
         count += 1

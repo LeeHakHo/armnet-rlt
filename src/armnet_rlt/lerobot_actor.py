@@ -225,6 +225,30 @@ def _select_action(
     return action.reshape(1, -1).cpu().numpy()
 
 
+def _await_remote_round(
+    remote: Any, current_step: int | None, *, steps_per_round: int, timeout_s: float
+) -> tuple[int | None, int]:
+    """Block until the policy server reports ``steps_per_round`` more learner
+    steps; returns the server's step and 1 when it changed."""
+    deadline = time.monotonic() + timeout_s
+    remote.refresh()
+    latest = remote.policy_step if remote.policy_step is not None else current_step
+    target = (latest or 0) + max(1, steps_per_round)
+    while time.monotonic() < deadline:
+        remote.refresh()
+        if remote.policy_step is not None and remote.policy_step >= target:
+            return remote.policy_step, 1
+        time.sleep(1.0)
+    log.warning(
+        "policy server reached step %s of the %d expected within %.0fs; continuing",
+        remote.policy_step,
+        target,
+        timeout_s,
+    )
+    changed = remote.policy_step is not None and remote.policy_step != latest
+    return remote.policy_step if remote.policy_step is not None else latest, int(changed)
+
+
 def run_lerobot_actor(
     ctx: Any,
     cfg: Any,
@@ -343,8 +367,6 @@ def run_lerobot_actor(
 
     round_schedule = parse_round_schedule(_field(cfg, "episodes_per_round", 0))
     steps_per_round = int(_field(cfg, "steps_per_round", 0))
-    if round_schedule and remote is not None:
-        raise ValueError("learner rounds need the policy on the cell, not a policy server")
     if round_schedule and steps_per_round <= 0:
         raise ValueError(
             "steps_per_round is required when episodes_per_round is set; "
@@ -453,14 +475,22 @@ def run_lerobot_actor(
                     f"past {current_policy_step}",
                     flush=True,
                 )
-                current_policy_step, applied = _await_learner_round(
-                    transport,
-                    policy,
-                    current_policy_step,
-                    steps_per_round=steps_per_round,
-                    timeout_s=round_wait_timeout_s,
-                )
-                policy.eval()
+                if remote is not None:
+                    current_policy_step, applied = _await_remote_round(
+                        remote,
+                        current_policy_step,
+                        steps_per_round=steps_per_round,
+                        timeout_s=round_wait_timeout_s,
+                    )
+                else:
+                    current_policy_step, applied = _await_learner_round(
+                        transport,
+                        policy,
+                        current_policy_step,
+                        steps_per_round=steps_per_round,
+                        timeout_s=round_wait_timeout_s,
+                    )
+                    policy.eval()
                 policy_reload_count += applied
                 release = getattr(operator, "release_round_retries", None)
                 released = release() if callable(release) else 0
