@@ -268,3 +268,25 @@ def test_a_lost_learner_link_ends_the_job_instead_of_blind_rollouts(run) -> None
             robot=robot, policy=_Policy(), transport=_FailingTransport(),
         )
     assert cell.ended == [{"success": True}]
+
+
+def test_round_wait_is_satisfied_by_an_update_already_past_the_rounds_target() -> None:
+    import torch
+
+    from armnet_rlt.so101_actor import _await_learner_round
+
+    actor = torch.nn.Linear(1, 1)
+    state = {"policy": dict(actor.state_dict()), "learner_step": torch.tensor(600)}
+
+    class _Transport:
+        def __init__(self) -> None:
+            self.updates = [state]
+
+        def latest_parameters(self):
+            return self.updates.pop() if self.updates else None
+
+    # The round ran on step 300; a pending step-600 update already covers it.
+    step, applied = _await_learner_round(
+        _Transport(), actor, 300, steps_per_round=300, timeout_s=0.2
+    )
+    assert step == 600 and applied == 1

@@ -523,21 +523,24 @@ def _await_learner_round(
     steps_per_round: int,
     timeout_s: float,
 ) -> tuple[int | None, int]:
-    """Block until the learner has applied ``steps_per_round`` more steps.
+    """Block until the learner is ``steps_per_round`` steps past
+    ``current_step``, the step this round's rollouts ran on.
 
-    The target is the learner's step when the wait begins. Returns the loaded
-    step and the number of payloads applied; on timeout the latest step.
+    Returns the loaded step and the number of payloads applied; on timeout the
+    latest step.
     """
     deadline = time.monotonic() + timeout_s
     reloads = 0
     latest = current_step
+    target = (current_step or 0) + max(1, steps_per_round)
     update = transport.latest_parameters()
     if update is not None:
         loaded = _load_parameters(actor, update)
         reloads += 1
         if loaded is not None:
             latest = loaded
-    target = (latest or 0) + max(1, steps_per_round)
+            if loaded >= target:
+                return loaded, reloads
     while time.monotonic() < deadline:
         update = transport.latest_parameters()
         if update is not None:
