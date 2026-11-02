@@ -108,3 +108,17 @@ def test_policy_weights_rebase_after_a_checkpoint_sends_only_later_changes() -> 
         policy.weight.add_(1.0)
     weights.rebase()
     assert list(weights.actor_state_bytes()) == ["weight"]
+
+
+def test_update_ema_averages_parameters_and_copies_buffers() -> None:
+    policy = torch.nn.BatchNorm1d(2)
+    ema = torch.nn.BatchNorm1d(2)
+    with torch.no_grad():
+        policy.weight.fill_(1.0)
+        ema.weight.fill_(0.0)
+        policy.running_mean.fill_(3.0)
+
+    lerobot_learner.update_ema(ema, policy, 0.75)
+
+    assert torch.allclose(ema.weight, torch.full((2,), 0.25))
+    assert torch.equal(ema.running_mean, policy.running_mean)

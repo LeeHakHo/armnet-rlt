@@ -525,6 +525,7 @@ def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
             batch_size=args.batch_size,
             online_steps=args.online_steps,
             lr=args.lr,
+            ema_decay=args.ema_decay,
             base_dataset=args.base_dataset,
             base_batch_fraction=args.base_batch_fraction,
             num_workers=args.num_workers,
@@ -753,6 +754,12 @@ def _parser() -> argparse.ArgumentParser:
     lerobot_sbc.add_argument("--online-steps", type=int, default=30_000)
     lerobot_sbc.add_argument(
         "--lr", type=float, default=0.0, help="0 keeps the policy's optimizer_lr"
+    )
+    lerobot_sbc.add_argument(
+        "--ema-decay",
+        type=float,
+        default=0.0,
+        help="Checkpoint and push a moving average of the weights; 0 turns it off",
     )
     lerobot_sbc.add_argument(
         "--base-dataset", default="", help="Offline LeRobot dataset mixed into every batch"

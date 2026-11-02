@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import random
 import time
 from collections import deque
@@ -76,6 +77,15 @@ class _PolicyWeights:
                 self._sent[key] = current.clone()
         self.last_push_tensors = len(changed)
         return changed
+
+
+def update_ema(ema: Any, policy: Any, decay: float) -> None:
+    """Move ``ema``'s parameters toward ``policy``'s and copy its buffers."""
+    with torch.no_grad():
+        for average, current in zip(ema.parameters(), policy.parameters(), strict=True):
+            average.lerp_(current, 1.0 - decay)
+        for average, current in zip(ema.buffers(), policy.buffers(), strict=True):
+            average.copy_(current)
 
 
 def frame_layout(config: Any) -> tuple[list[int] | None, list[int]]:
@@ -260,6 +270,7 @@ def run_lerobot_streaming_bc(
     idle_min_episodes: int = 5,
     log_freq: int = 50,
     grad_clip_norm: float = 10.0,
+    ema_decay: float = 0.0,
     seed: int = 42,
     device: str = "cuda",
     wandb_project: str | None = None,
@@ -271,7 +282,9 @@ def run_lerobot_streaming_bc(
     language instruction given to a language-conditioned policy. Every
     ``save_freq`` learner steps the policy is checkpointed and pushed. With
     ``resume`` the policy, step count and success episodes come from
-    ``run_dir``; ``policy_path`` is then ignored.
+    ``run_dir``; ``policy_path`` is then ignored. A nonzero ``ema_decay``
+    checkpoints and pushes an exponential moving average of the weights, which
+    starts from the loaded policy; a resumed run trains on from that average.
     """
     round_schedule = parse_round_schedule(episodes_per_round)
     if not round_schedule or steps_per_round <= 0:
@@ -282,6 +295,8 @@ def run_lerobot_streaming_bc(
         raise ValueError("base_batch_fraction must be in [0, 1)")
     if base_batch_fraction > 0 and not base_dataset:
         raise ValueError("base_batch_fraction needs base_dataset")
+    if not 0.0 <= ema_decay < 1.0:
+        raise ValueError("ema_decay must be in [0, 1)")
 
     random.seed(seed)
     np.random.seed(seed)
@@ -305,6 +320,7 @@ def run_lerobot_streaming_bc(
         raise ValueError("policy_path is required unless resume is set")
 
     policy, preprocessor, postprocessor = load_lerobot_policy(policy_path, device)
+    served = copy.deepcopy(policy).eval() if ema_decay else policy
     policy.train()
     observation_offsets, action_offsets = frame_layout(policy.config)
     image_keys = list(policy.config.image_features)
@@ -351,6 +367,7 @@ def run_lerobot_streaming_bc(
                 "save_freq": save_freq,
                 "batch_size": batch_size,
                 "lr": learning_rate,
+                "ema_decay": ema_decay,
                 "base_dataset": base_dataset,
                 "base_batch_fraction": base_batch_fraction,
                 "min_shaped_reward": min_shaped_reward,
@@ -366,7 +383,7 @@ def run_lerobot_streaming_bc(
     seen_transitions: set[bytes] = set()
     shutdown_event = Event()
     actor_subscribed = Event()
-    weights = _PolicyWeights(policy)
+    weights = _PolicyWeights(served)
     server, transition_queue, interaction_queue, parameters_queue = (
         _start_online_transport(
             config,
@@ -394,7 +411,7 @@ def run_lerobot_streaming_bc(
         f"[lerobot sbc] serving {policy.config.type} from {policy_path}; "
         f"{steps_per_round} step(s) per round on the episode schedule "
         f"{list(round_schedule)}, batch={batch_size} (base {base_size}), "
-        f"lr={learning_rate:g}, actions {action_offsets[0]}..{action_offsets[-1]}, "
+        f"lr={learning_rate:g}, ema_decay={ema_decay:g}, actions {action_offsets[0]}..{action_offsets[-1]}, "
         f"observations {observation_offsets}",
         flush=True,
     )
@@ -533,6 +550,8 @@ def run_lerobot_streaming_bc(
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
             optimizer.step()
+            if ema_decay:
+                update_ema(served, policy, ema_decay)
             final_loss = float(loss.detach())
             completed_steps += 1
             pending_updates -= 1
@@ -577,8 +596,8 @@ def run_lerobot_streaming_bc(
             if completed_steps % save_freq == 0:
                 # Checkpoint and push every save_freq steps, even when later
                 # rounds are already queued behind the current one.
-                policy.eval()
-                checkpoint = _save(policy, preprocessor, postprocessor, run_dir, completed_steps)
+                served.eval()
+                checkpoint = _save(served, preprocessor, postprocessor, run_dir, completed_steps)
                 weights.mark_checkpoint()
                 _push_weights(
                     parameters_queue, weights, learner_step=completed_steps, partial=True
@@ -595,8 +614,8 @@ def run_lerobot_streaming_bc(
         server.stop(grace=1.0)
         pool.shutdown(wait=False)
 
-    policy.eval()
-    checkpoint = _save(policy, preprocessor, postprocessor, run_dir, completed_steps)
+    served.eval()
+    checkpoint = _save(served, preprocessor, postprocessor, run_dir, completed_steps)
     summary = {
         "phase": "lerobot_streaming_bc",
         "policy_type": str(policy.config.type),
