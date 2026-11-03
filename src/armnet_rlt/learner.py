@@ -396,7 +396,13 @@ def _start_online_transport(
         def StreamParameters(self, request, context):  # noqa: N802
             if on_parameter_stream is not None:
                 on_parameter_stream()
-            yield from super().StreamParameters(request, context)
+            yield from _active_parameter_stream(
+                parameters_queue,
+                context,
+                shutdown_event,
+                seconds_between_pushes=transport.policy_parameters_push_frequency,
+                queue_get_timeout=transport.queue_get_timeout,
+            )
 
     service = Service(
         shutdown_event=shutdown_event,
@@ -435,6 +441,41 @@ def _start_online_transport(
         raise RuntimeError(f"failed to bind learner server to {address}")
     server.start()
     return server, transition_queue, interaction_queue, parameters_queue
+
+
+def _active_parameter_stream(
+    parameters_queue: Queue,
+    context: Any,
+    shutdown_event: Event,
+    *,
+    seconds_between_pushes: float,
+    queue_get_timeout: float,
+) -> Any:
+    """Yield queued parameters to one actor until its stream ends. A payload
+    taken while the stream is ending returns to the queue for the next actor."""
+    from lerobot.transport import services_pb2
+    from lerobot.transport.utils import send_bytes_in_chunks
+
+    last_push = 0.0
+    while not shutdown_event.is_set() and context.is_active():
+        remaining = seconds_between_pushes - (time.time() - last_push)
+        if remaining > 0:
+            shutdown_event.wait(min(remaining, 1.0))
+            continue
+        try:
+            buffer = parameters_queue.get(timeout=min(queue_get_timeout, 1.0))
+        except Empty:
+            continue
+        if not context.is_active():
+            try:
+                parameters_queue.put_nowait(buffer)
+            except Full:
+                pass
+            return
+        yield from send_bytes_in_chunks(
+            buffer, services_pb2.Parameters, log_prefix="[LEARNER] Sending parameters", silent=True
+        )
+        last_push = time.time()
 
 
 def _push_weights(
