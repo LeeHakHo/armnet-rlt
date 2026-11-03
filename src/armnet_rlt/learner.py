@@ -21,7 +21,7 @@ from armnet_rlt.artifacts import (
     load_norm_stats,
     load_transition_cache,
 )
-from armnet_rlt.config import RLTConfig
+from armnet_rlt.config import RLTConfig, without_secrets
 from armnet_rlt.jsonl_log import append_jsonl, read_jsonl
 from armnet_rlt.metrics import EpisodeRecord, RollingMetrics, episode_metrics
 from armnet_rlt.policy import RLTPolicy
@@ -279,7 +279,7 @@ def _save_checkpoint(
             "critic_optimizer": critic_optimizer.state_dict(),
             "actor_scheduler": actor_scheduler.state_dict(),
             "critic_scheduler": critic_scheduler.state_dict(),
-            "config": asdict(config),
+            "config": without_secrets(asdict(config)),
         },
         temporary,
     )
@@ -735,7 +735,7 @@ def run_learner(
                 project=wandb_project,
                 id=config.run_id,
                 resume="allow",
-                config=asdict(config),
+                config=without_secrets(asdict(config)),
                 tags=["offline-only" if offline_only else "online"],
             )
         except Exception as exc:

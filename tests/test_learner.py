@@ -8,11 +8,16 @@ import sys
 import types
 from pathlib import Path
 from queue import Queue
+from unittest.mock import MagicMock
 
 import torch
 
 from armnet_rlt.artifacts import NormStats
-from armnet_rlt.config import RLTConfig, so101_network_config
+from armnet_rlt.config import (
+    RLTActorLearnerConfig,
+    RLTConfig,
+    so101_network_config,
+)
 from armnet_rlt.jsonl_log import read_jsonl
 from armnet_rlt.learner import (
     _batch_from_transitions,
@@ -68,6 +73,51 @@ def _write_artifacts(root: Path, network) -> tuple[Path, Path]:
     cache = root / "demo.pt"
     torch.save(transitions, cache)
     return assets, cache
+
+
+def test_auth_token_stays_out_of_checkpoints_and_wandb(
+    tmp_path, monkeypatch
+) -> None:
+    logged_configs = []
+
+    def init(**kwargs):
+        logged_configs.append(kwargs["config"])
+        return MagicMock()
+
+    monkeypatch.setitem(
+        sys.modules, "wandb", types.SimpleNamespace(init=init)
+    )
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=2,
+        predicted_action_len=2,
+        ref_action_dropout=0.0,
+    )
+    assets, cache = _write_artifacts(tmp_path, network)
+    config = RLTConfig(
+        network=network,
+        assets_dir=assets,
+        demo_cache_path=cache,
+        output_dir=tmp_path / "runs",
+        run_id="token",
+        actions_to_execute=2,
+        use_subsampling=False,
+        num_critics=2,
+        utd_ratio=1,
+        batch_size=2,
+        max_demo_pretrain_steps=1,
+        online_steps=1,
+        device="cpu",
+        save_freq=0,
+        actor_learner=RLTActorLearnerConfig(auth_token="learner-secret"),
+    )
+
+    summary = run_learner(config, wandb_project="test-project")
+
+    checkpoint = Path(summary["checkpoint_path"])
+    assert b"learner-secret" not in checkpoint.read_bytes()
+    assert logged_configs[0]["actor_learner"]["auth_token"] == ""
+    assert config.actor_learner.auth_token == "learner-secret"
 
 
 def test_offline_smoke_finishes_without_lerobot(tmp_path) -> None:
