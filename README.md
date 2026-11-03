@@ -234,6 +234,62 @@ uv run --env-file .env rlt-submit-eval \
 Frozen evaluation disables exploration and weight updates. Base and RLT run on
 matched seeded scenes with counterbalanced order.
 
+Useful evaluation options:
+
+- `--no-include-base` runs frozen RLT only, without the paired base rollouts.
+- `--armnet.require-cell <cell>` dispatches the job to one cell.
+- `--armnet.variation-seed` and `--armnet.variation-episode-offset` select the
+  scenes.
+- `--[no-]armnet.variation-rail`, `-cameras` and `-lighting` override
+  `--armnet.variation` for one axis. For example, add `--no-armnet.variation-rail`
+  to keep the rail at its default position.
+
+## Residual actor
+
+By default the actor outputs the action chunk directly. These learner flags
+switch to a residual structure:
+
+- `--residual-actor` outputs `reference + residual_scale * tanh(head)` with the
+  head initialised to zero, so training starts exactly at the VLA chunk.
+  `--residual-scale` defaults to 0.25. Reference dropout is disabled in this mode.
+- `--critic-action-residual` gives the critic `critic_action_gain * (action -
+  reference)` instead of the raw action. `--critic-action-gain` defaults to 10.
+
+Start the learner with both flags, and pass them again with `--resume`:
+
+```bash
+uv run --env-file .env modal run --detach \
+  src/armnet_rlt/modal_app.py::main \
+  --config-name "$RLT_CONFIG" \
+  --run-id "$RLT_RUN_ID" \
+  --embodiment so101 \
+  --wandb-project armnet-rlt \
+  --residual-actor \
+  --critic-action-residual
+```
+
+Residual mode travels with the policy weights and frozen checkpoints, so only
+the learner needs these flags. This actor command trained on one cell with
+camera variation off:
+
+```bash
+uv run --env-file .env rlt-submit-actor \
+  --task push_green_button \
+  --config-name "$RLT_CONFIG" \
+  --hf-checkpoint-repo \
+    AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax \
+  --language-instruction "push the green button" \
+  --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
+  --num-rollouts 300 \
+  --timeout-seconds 9000 \
+  --exploration-scale 1.0 \
+  --armnet.variation \
+  --variation-curriculum \
+  --no-armnet.variation-cameras \
+  --robot-telemetry-strict \
+  --armnet.require-cell cell-01
+```
+
 ## Development
 
 ```bash
