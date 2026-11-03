@@ -304,6 +304,8 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
         exploration_correlation=float(
             args.get("exploration_correlation", 0.85)
         ),
+        action_noise_std=args.get("action_noise_std"),
+        action_noise_seed=int(args.get("action_noise_seed", 0)),
         episodes_per_round=str(args.get("episodes_per_round", "0")),
         steps_per_round=int(args.get("steps_per_round", 0)),
         round_wait_timeout_s=float(args.get("round_wait_timeout_s", 600.0)),
@@ -482,6 +484,8 @@ def run(ctx: Context) -> dict[str, Any]:
             args.get("exploration_correlation", 0.85)
         ),
         exploration_scale=float(args.get("exploration_scale", 1.0)),
+        action_noise_std=args.get("action_noise_std"),
+        action_noise_seed=int(args.get("action_noise_seed", 0)),
         frozen_eval=frozen_artifact is not None,
         eval_include_base=_as_bool(args.get("eval_include_base"), False),
         collect=_as_bool(args.get("collect"), False),

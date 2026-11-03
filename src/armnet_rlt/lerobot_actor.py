@@ -30,7 +30,9 @@ from armnet_rlt.so101_actor import (
     _shape_button_reward,
     finish_rollout_recording,
     make_so101_robot,
+    add_action_noise,
     open_rollout_recording,
+    parse_action_noise_std,
     record_rollout_frame,
     robot_action,
 )
@@ -359,6 +361,10 @@ def run_lerobot_actor(
     exploration_scale = float(_field(cfg, "exploration_scale", 0.0))
     if not math.isfinite(exploration_scale) or exploration_scale < 0:
         raise ValueError("exploration_scale must be finite and nonnegative")
+    action_noise_std = parse_action_noise_std(_field(cfg, "action_noise_std", None))
+    action_noise_rng = np.random.default_rng(int(_field(cfg, "action_noise_seed", 0)))
+    if action_noise_std is not None:
+        print(f"[act] action noise std {action_noise_std.tolist()}", flush=True)
     if exploration_scale > 0 and not chunked:
         raise ValueError(
             f"exploration_scale needs an ACT policy without temporal ensembling, not {policy_type}"
@@ -645,6 +651,10 @@ def run_lerobot_actor(
                 current_policy_step = remote.policy_step
 
             requested_action = robot_action(chunk[chunk_index])
+            if action_noise_std is not None:
+                requested_action = add_action_noise(
+                    requested_action, action_noise_std, action_noise_rng
+                )
             action_started = time.perf_counter()
             sent_action = robot.send_action(requested_action)
             action_write_s = time.perf_counter() - action_started

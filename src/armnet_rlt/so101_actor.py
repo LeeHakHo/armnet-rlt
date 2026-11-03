@@ -147,6 +147,40 @@ def robot_action(action: np.ndarray) -> dict[str, float]:
     return {f"{name}.pos": float(vector[i]) for i, name in enumerate(MOTOR_NAMES)}
 
 
+def parse_action_noise_std(value: Any) -> np.ndarray | None:
+    """Per-joint action noise std from one value or one per joint; None when zero."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        parts = [float(part) for part in value.split(",") if part.strip()]
+    elif isinstance(value, (int, float)):
+        parts = [float(value)]
+    else:
+        parts = [float(part) for part in value]
+    if len(parts) == 1:
+        parts = parts * len(MOTOR_NAMES)
+    if len(parts) != len(MOTOR_NAMES):
+        raise ValueError(
+            f"action_noise_std needs 1 or {len(MOTOR_NAMES)} values, got {len(parts)}"
+        )
+    std = np.asarray(parts, dtype=np.float64)
+    if not np.all(np.isfinite(std)) or np.any(std < 0):
+        raise ValueError("action_noise_std must be finite and nonnegative")
+    return std if np.any(std > 0) else None
+
+
+def add_action_noise(
+    action: dict[str, float], std: np.ndarray, rng: np.random.Generator
+) -> dict[str, float]:
+    """``action`` with Gaussian noise of ``std`` added to each joint target."""
+    noise = rng.normal(0.0, std)
+    noisy = dict(action)
+    for index, name in enumerate(MOTOR_NAMES):
+        key = f"{name}.pos"
+        noisy[key] = float(noisy[key] + noise[index])
+    return noisy
+
+
 @dataclass
 class _ChunkTransition:
     rl_token: torch.Tensor
@@ -994,6 +1028,10 @@ def run_actor(
         raise ValueError("exploration_scale must be finite and nonnegative")
     frozen_eval = bool(_field(cfg, "frozen_eval", False))
     include_base = bool(_field(cfg, "eval_include_base", False))
+    action_noise_std = parse_action_noise_std(_field(cfg, "action_noise_std", None))
+    action_noise_rng = np.random.default_rng(int(_field(cfg, "action_noise_seed", 0)))
+    if action_noise_std is not None:
+        print(f"[RLT] action noise std {action_noise_std.tolist()}", flush=True)
     collect = bool(_field(cfg, "collect", False))
     if frozen_eval and not collect and exploration_scale != 0:
         raise ValueError("frozen RLT evaluation requires exploration_scale=0")
@@ -1485,6 +1523,10 @@ def run_actor(
                 state_machine.episode_ctx.total_chunk_count += 1
 
             requested_action = robot_action(chunk[chunk_index].cpu().numpy())
+            if action_noise_std is not None:
+                requested_action = add_action_noise(
+                    requested_action, action_noise_std, action_noise_rng
+                )
             action_started = time.perf_counter()
             try:
                 sent_action = robot.send_action(requested_action)

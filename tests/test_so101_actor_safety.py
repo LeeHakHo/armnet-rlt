@@ -308,3 +308,30 @@ def test_round_wait_stops_when_the_learner_connection_is_lost() -> None:
         _await_learner_round(
             _Transport(), torch.nn.Linear(1, 1), 0, steps_per_round=1, timeout_s=5.0
         )
+
+
+def test_parse_action_noise_std_broadcasts_and_rejects_bad_values() -> None:
+    from armnet_rlt.so101_actor import parse_action_noise_std
+
+    assert parse_action_noise_std("") is None
+    assert parse_action_noise_std("0") is None
+    assert parse_action_noise_std("2").tolist() == [2.0] * 6
+    assert parse_action_noise_std("1,2,3,4,5,6").tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    with pytest.raises(ValueError):
+        parse_action_noise_std("1,2")
+    with pytest.raises(ValueError):
+        parse_action_noise_std("-1")
+
+
+def test_add_action_noise_perturbs_each_joint_by_its_std() -> None:
+    import numpy as np
+
+    from armnet_rlt.so101_actor import add_action_noise, parse_action_noise_std
+
+    action = {f"{name}.pos": 10.0 for name in MOTOR_NAMES}
+    std = parse_action_noise_std("0,0,0,0,0,1")
+    noisy = [add_action_noise(action, std, np.random.default_rng(seed)) for seed in range(200)]
+    assert all(sample["shoulder_pan.pos"] == 10.0 for sample in noisy)
+    gripper = np.array([sample["gripper.pos"] for sample in noisy])
+    assert 0.7 < gripper.std() < 1.3
+    assert action["gripper.pos"] == 10.0

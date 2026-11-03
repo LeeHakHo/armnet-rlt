@@ -120,6 +120,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Multiplier for RLT exploration noise; use 0 for deterministic validation",
     )
     parser.add_argument(
+        "--action-noise-std",
+        default="",
+        help="Gaussian noise std added to each executed joint target, one value or one per joint",
+    )
+    parser.add_argument("--action-noise-seed", type=int, default=0)
+    parser.add_argument(
         "--armnet.require-cell",
         dest="require_cell",
         default="",
@@ -411,6 +417,9 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         job_args["hf_checkpoint_revision"] = args.hf_checkpoint_revision
     if args.num_rollouts > 0:
         job_args["num_rollouts"] = args.num_rollouts
+    if str(getattr(args, "action_noise_std", "") or "").strip():
+        job_args["action_noise_std"] = str(args.action_noise_std)
+        job_args["action_noise_seed"] = int(getattr(args, "action_noise_seed", 0))
     curriculum_enabled = bool(
         getattr(args, "variation_curriculum", False)
     )

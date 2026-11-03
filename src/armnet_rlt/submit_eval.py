@@ -62,6 +62,12 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--action-noise-std",
+        default="",
+        help="Gaussian noise std added to each executed joint target, one value or one per joint",
+    )
+    parser.add_argument("--action-noise-seed", type=int, default=0)
+    parser.add_argument(
         "--base-only",
         action="store_true",
         help="Run every rollout with the base policy instead of pairing it "
@@ -262,6 +268,9 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "lightbox_brightness", None),
         )
     )
+    if str(getattr(args, "action_noise_std", "") or "").strip():
+        job_args["action_noise_std"] = str(args.action_noise_std)
+        job_args["action_noise_seed"] = int(getattr(args, "action_noise_seed", 0))
     if args.variation_episode_offset:
         job_args["variation_episode_offset"] = int(
             args.variation_episode_offset
