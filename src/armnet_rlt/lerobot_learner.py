@@ -202,7 +202,6 @@ def _base_loader(
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
         pin_memory=True,
-        # Forked workers break the live gRPC server's connections to the actor.
         multiprocessing_context="spawn" if num_workers > 0 else None,
     )
     print(
@@ -435,9 +434,8 @@ def run_lerobot_streaming_bc(
             episodes_since_round += len(labels)
             pending_labels.extend(labels)
 
-            # Pair success records with their frames in arrival order. A record
-            # whose frames never arrive (the actor died mid-send) is dropped so
-            # it cannot hold up the rounds behind it.
+            # Pair success records with their frames in arrival order; drop a
+            # record whose frames never arrive.
             while pending_labels:
                 record = pending_labels[0]
                 if record.num_transitions == 0:
@@ -594,8 +592,6 @@ def run_lerobot_streaming_bc(
                         step=completed_steps,
                     )
             if completed_steps % save_freq == 0:
-                # Checkpoint and push every save_freq steps, even when later
-                # rounds are already queued behind the current one.
                 served.eval()
                 checkpoint = _save(served, preprocessor, postprocessor, run_dir, completed_steps)
                 weights.mark_checkpoint()

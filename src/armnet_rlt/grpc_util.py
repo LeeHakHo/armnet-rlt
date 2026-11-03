@@ -64,9 +64,8 @@ def grpc_channel_options(
     max_message_bytes: int, *, retries: bool = True, keepalive: bool = False
 ) -> list[tuple[str, Any]]:
     """Channel options with a message size cap. ``retries`` applies
-    GRPC_RETRY_SERVICE_CONFIG (a retried client stream is replayed from the
-    start, so episode streams must not retry); ``keepalive`` pings the peer
-    every 30 s and gives up after 10 s more."""
+    GRPC_RETRY_SERVICE_CONFIG; ``keepalive`` pings the peer every 30 s and
+    gives up after 10 s more."""
     options: list[tuple[str, Any]] = [
         ("grpc.max_receive_message_length", max_message_bytes),
         ("grpc.max_send_message_length", max_message_bytes),

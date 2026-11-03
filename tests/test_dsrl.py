@@ -93,7 +93,7 @@ def test_rlt_config_still_ties_execution_to_the_predicted_chunk() -> None:
         RLTConfig(network=_network(), actions_to_execute=2, use_subsampling=False)
 
 
-def test_networks_follow_the_official_layout() -> None:
+def test_network_layout() -> None:
     actor = DSRLActor(_network(hidden_dims=(16, 8)), noise_bound=2.5)
     assert actor.noise_dim == 6 and actor.noise_len == 3
     # Actor: Dense, ReLU per layer, no normalization; heads with a 1e-2 gain.
@@ -203,7 +203,7 @@ def test_critic_target_has_no_entropy_term_and_bootstraps_through_truncation() -
     assert torch.allclose(hot, expected)
 
 
-def test_actor_loss_and_temperature_match_the_official_sac() -> None:
+def test_actor_loss_and_temperature() -> None:
     torch.manual_seed(0)
     token, proprio = torch.randn(8, 2048), torch.randn(8, 6)
     policy = DSRLPolicy(_config(dsrl_alpha_init=0.5, dsrl_target_entropy=1.0))
@@ -285,7 +285,7 @@ def test_actor_starts_with_unit_pre_tanh_std_and_scales_it() -> None:
         actor.sample(token[:1], proprio[:1], std_scale=0.0)
 
 
-def test_relabel_episode_uses_the_official_reward_and_truncation() -> None:
+def test_relabel_episode_reward_and_truncation() -> None:
     def episode(final_reward: float) -> list[dict[str, torch.Tensor]]:
         return [
             {"reward": torch.tensor(0.0), "done": torch.tensor(0.0)},
@@ -413,7 +413,7 @@ def test_sampled_noise_from_the_payload_actor_matches_the_learner_actor() -> Non
     assert np.abs(draws.mean(axis=0) - exact).max() < 0.5
 
 
-def test_learner_config_applies_the_official_dsrl_settings(tmp_path) -> None:
+def test_learner_config_applies_the_dsrl_settings(tmp_path) -> None:
     from armnet_rlt.learner_config import learner_config
 
     config = learner_config(

@@ -164,7 +164,7 @@ uv run --env-file .env rlt-submit-actor \
   --checkpoint-dir volume://openpi/checkpoints/<checkpoint-name> \
   --language-instruction "push the green button" \
   --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
-  --num-rollouts 100 --episode-timeout-s 45 \
+  --num-rollouts 100 --episode-timeout-s 30 \
   --armnet.require-cell cell-03 --armnet.rail 0.7 --armnet.lightbox-brightness 30 \
   --image-ref <actor-image-ref>
 ```
@@ -252,7 +252,7 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | `RLT_HF_SECRET` | Name of the Armnet secret holding the Hugging Face token |
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `armnet-rlt-auth` secret |
 | `RLT_DATA_ROOT` | Local learner data root (default `./experiment-data`) |
-| `RLT_CELL_CAMERA_AIM` | Camera aim per cell, `cell-03=top.tilt=0.1661;cell-01=...` |
+| `RLT_CELL_CAMERA_AIM` | Camera aim per cell, `cell-01=top.tilt=0.5;cell-02=...` |
 | `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET` | Modal resource names |
 | `OPENPI_REPO`, `OPENPI_REVISION` | OpenPI fork with the `pi0_rl` model |
 

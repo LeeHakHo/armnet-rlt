@@ -27,8 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel uv
 
-# Headless cell containers never use Linux keyboard devices. Keep LeRobot's
-# optional input dependencies out rather than compiling/starting X11 packages.
+# Exclude LeRobot's optional input dependencies.
 RUN printf '%s\n' \
       'pynput>=0.0.0; sys_platform == "never"' \
       'evdev>=0.0.0; sys_platform == "never"' \
@@ -46,10 +45,7 @@ RUN printf '%s\n' \
       'av>=18,<19' \
       > /tmp/overrides.txt
 
-# OpenPI/JAX and actor support packages. Torch is intentionally absent here and
-# installed last so no transitive dependency can replace it with a CPU wheel.
-# PyAV 19 returns frame rates as AVRational, which LeRobot's int(base_rate)
-# cannot convert, so the first saved episode fails. Stay on 14–18.
+# OpenPI/JAX and actor support packages.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \
@@ -73,8 +69,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --override /tmp/overrides.txt \
         /app/lerobot
 
-# Armnet is consumed exactly like an external customer project: published
-# wheels, never workspace source.
+# Armnet from published wheels.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --override /tmp/overrides.txt \
@@ -92,7 +87,7 @@ COPY pyproject.toml README.md /app/rlt/
 COPY src /app/rlt/src
 RUN python -m pip install --no-deps /app/rlt
 
-# Torch last, with the CUDA index, is an invariant of Armnet GPU images.
+# Torch last, with the CUDA index.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --upgrade \
         --override /tmp/overrides.txt \

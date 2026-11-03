@@ -138,7 +138,7 @@ def _tls_root_cert_file(args: dict[str, Any]) -> tuple[str, str | None]:
 
 
 def _construct(cls: type, **values: Any) -> Any:
-    """Construct evolving migration dataclasses from their supported fields."""
+    """Construct a dataclass from its supported fields."""
 
     parameters = inspect.signature(cls).parameters
     if any(
@@ -417,8 +417,7 @@ def run(ctx: Context) -> dict[str, Any]:
             )
         )
         algorithm = str(args.get("algorithm", "rlt"))
-        # DSRL's actor outputs noise for the whole base chunk and executes a
-        # prefix; its network is the learner's 1024x3 MLP (learner_config).
+        # DSRL's actor outputs noise for the whole base chunk and executes a prefix.
         dsrl = algorithm == "dsrl"
         network = so101_network_config(
             reference_action_len=reference_len,

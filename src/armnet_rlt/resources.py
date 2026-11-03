@@ -128,7 +128,7 @@ def cell_camera_aim() -> dict[str, str]:
     """Per-cell camera aim applied when --armnet.camera-aim is not given.
 
     Read from ``RLT_CELL_CAMERA_AIM`` as ``<cell>=<aim>[;<cell>=<aim>...]``,
-    e.g. ``cell-03=top.tilt=0.1661``.
+    e.g. ``cell-01=top.tilt=0.5``.
     """
     aims: dict[str, str] = {}
     for entry in os.environ.get("RLT_CELL_CAMERA_AIM", "").split(";"):

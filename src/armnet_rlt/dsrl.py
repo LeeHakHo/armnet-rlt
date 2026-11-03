@@ -3,8 +3,7 @@
 The actor maps the RL token and proprioception to the initial noise of the
 base policy's flow; the base policy turns that noise into the executed chunk.
 Transitions carry the chunk noise as ``action`` and the resulting chunk as
-``reference_action``. The learner follows the soft actor-critic of the
-official pi0 DSRL implementation (nakamotoo/dsrl_pi0).
+``reference_action``. The learner is soft actor-critic.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ LOG_STD_MIN = -20.0
 LOG_STD_MAX = 2.0
 # Orthogonal gain of the mean and log-std heads.
 HEAD_INIT_SCALE = 1e-2
-# Flax LayerNorm epsilon.
 LAYER_NORM_EPS = 1e-6
 
 

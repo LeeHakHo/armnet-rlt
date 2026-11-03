@@ -259,8 +259,7 @@ class LearnerTransport:
 
     @property
     def failed(self) -> bool:
-        """A stream to the learner ended with an error; nothing sent since
-        then reaches it, so the actor should stop rather than roll out blind."""
+        """Whether a stream to the learner ended with an error."""
         return self._shutdown.is_set()
 
     def wait_for_initial_parameters(self, timeout_s: float = 120.0) -> bytes:

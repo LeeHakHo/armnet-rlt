@@ -119,7 +119,7 @@ def build_policy_observation(
 def _build_policy_obs(
     raw_obs: dict[str, Any], task: str | None
 ) -> dict[str, Any]:
-    """Compatibility helper returning the plain OpenPI dictionary."""
+    """The plain OpenPI observation dictionary."""
 
     return build_policy_observation(raw_obs, task).as_openpi_dict()
 
@@ -156,11 +156,7 @@ def load_norm_stats(checkpoint_dir: str | Path, data_config: Any = None) -> dict
 
 
 def uses_delta_actions(config: Any, data_config: Any) -> bool:
-    """Read delta semantics from the data-config factory that defines them.
-
-    OpenPI's concrete ``DataConfig`` contains the resulting transforms but does
-    not retain factory-only fields such as ``use_delta_actions``.
-    """
+    """Read delta semantics from the data-config factory that defines them."""
 
     factory = getattr(config, "data", None)
     if hasattr(factory, "use_delta_actions"):
@@ -314,11 +310,7 @@ class OpenPIRLTPolicy:
     def to_model_observation(
         self, observations: list[PolicyObservation | dict[str, Any]]
     ) -> Any:
-        """Batch observations into the openpi ``Observation`` the model expects.
-
-        Shares the transform path with ``infer_batch`` so a cache built from these
-        embeddings matches what inference would have produced.
-        """
+        """Batch observations into the openpi ``Observation`` the model expects."""
         from openpi.models import model as model_module
 
         return model_module.Observation.from_dict(self._transform_batch(observations))
@@ -482,7 +474,7 @@ class OpenPIRLTPolicy:
     def predict_with_rl_token(
         self, observation: PolicyObservation | dict[str, Any]
     ) -> tuple[PolicyOutput, np.ndarray]:
-        """Compatibility form used by older actor call sites."""
+        """``infer``'s output and its RL token."""
 
         result = self.infer(observation)
         return result, result.rl_token

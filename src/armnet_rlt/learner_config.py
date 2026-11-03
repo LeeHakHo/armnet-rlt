@@ -72,7 +72,7 @@ def learner_config(
     network, jerk = network_for(embodiment, reference_action_len=30)
     dsrl_kwargs: dict[str, object] = {}
     if algorithm == "dsrl":
-        # Defaults of the official pi0 DSRL agent (nakamotoo/dsrl_pi0).
+        # DSRL agent defaults.
         network, jerk = network_for(
             embodiment, reference_action_len=30, predicted_action_len=30
         )
