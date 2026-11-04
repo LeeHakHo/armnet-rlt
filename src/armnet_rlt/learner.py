@@ -6,7 +6,7 @@ import random
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
@@ -25,6 +25,7 @@ from armnet_rlt.artifacts import (
 )
 from armnet_rlt.config import (
     RLTConfig,
+    RLTNetworkConfig,
     episodes_for_round,
     parse_round_schedule,
     without_secrets,
@@ -328,6 +329,31 @@ def _restore_replay_buffer(
     return transitions
 
 
+_RESIDUAL_NETWORK_FIELDS = (
+    "residual_actor",
+    "residual_scale",
+    "critic_action_residual",
+    "critic_action_gain",
+)
+
+
+def _check_resumed_network(saved: Any, config: RLTConfig, path: Path) -> None:
+    """Raise when the residual settings differ from the checkpoint's."""
+    network = (saved or {}).get("network") or {}
+    defaults = {field.name: field.default for field in fields(RLTNetworkConfig)}
+    mismatched = [
+        f"{name}={network.get(name, defaults[name])!r} in the checkpoint, "
+        f"{getattr(config.network, name)!r} now"
+        for name in _RESIDUAL_NETWORK_FIELDS
+        if network.get(name, defaults[name]) != getattr(config.network, name)
+    ]
+    if mismatched:
+        raise ValueError(
+            f"resume from {path} needs the same residual flags: "
+            + "; ".join(mismatched)
+        )
+
+
 def _restore_checkpoint(
     config: RLTConfig,
     policy: RLTPolicy,
@@ -342,6 +368,7 @@ def _restore_checkpoint(
     if path is None:
         return 0
     payload = torch.load(path, map_location=device, weights_only=False)
+    _check_resumed_network(payload.get("config"), config, path)
     policy.load_state_dict(payload["policy_state_dict"])
     actor_optimizer.load_state_dict(payload["actor_optimizer"])
     critic_optimizer.load_state_dict(payload["critic_optimizer"])

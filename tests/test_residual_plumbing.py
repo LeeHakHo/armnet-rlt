@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from armnet_rlt.learner_config import learner_config
 
 
@@ -73,3 +75,28 @@ def test_modal_learner_forwards_the_flags() -> None:
     ):
         # serve_learner -> _config and main -> serve_learner.remote.
         assert source.count(f"{name}={name},") == 2
+
+
+def test_resume_rejects_residual_flags_that_differ_from_the_checkpoint(tmp_path) -> None:
+    from dataclasses import asdict, replace
+
+    from armnet_rlt.config import RLTConfig, so101_network_config
+    from armnet_rlt.learner import _check_resumed_network
+
+    plain = RLTConfig(network=so101_network_config(hidden_dims=(8,)))
+    residual = replace(
+        plain,
+        network=replace(plain.network, residual_actor=True, critic_action_residual=True),
+    )
+    path = tmp_path / "step_000010.pt"
+
+    _check_resumed_network(asdict(residual), residual, path)
+    _check_resumed_network(asdict(plain), plain, path)
+    older = asdict(plain)
+    for name in ("residual_actor", "residual_scale", "critic_action_residual", "critic_action_gain"):
+        older["network"].pop(name)
+    _check_resumed_network(older, plain, path)
+    with pytest.raises(ValueError, match="critic_action_residual=True in the checkpoint"):
+        _check_resumed_network(asdict(residual), plain, path)
+    with pytest.raises(ValueError, match="residual_actor=False in the checkpoint"):
+        _check_resumed_network(older, residual, path)

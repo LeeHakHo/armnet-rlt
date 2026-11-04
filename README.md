@@ -114,7 +114,8 @@ envs/venv-learner/bin/rlt-local online --gpu 0 --run-id "$RLT_RUN_ID" \
 ```
 
 `--residual-scale` and `--critic-action-gain` change the two factors. Pass the
-same flags with `--resume`. They apply to `--algorithm rlt` only. The actor needs
+same flags with `--resume`; a resume with different residual flags stops with an
+error. They apply to `--algorithm rlt` only. The actor needs
 no flag: residual mode travels with the policy weights and frozen checkpoints.
 
 DSRL (SAC over π0.5 noise), online only. The policy server installs the
