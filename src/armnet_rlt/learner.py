@@ -109,8 +109,16 @@ def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
         normalized = policy.actor.normalize_action(
             batch["action"], state["proprioception"]
         ).clamp(-1.0, 1.0)
+        reference_chunk = (
+            policy.actor.normalize_action(
+                state["reference_action"][:, : policy.predicted_action_dim],
+                state["proprioception"],
+            ).clamp(-1.0, 1.0)
+            if policy.critic_ensemble.action_residual
+            else None
+        )
         q = policy.critic_ensemble(
-            state["rl_token"], state["proprioception"], normalized
+            state["rl_token"], state["proprioception"], normalized, reference_chunk
         ).min(dim=0).values.reshape(-1)
     reward = batch["reward"].reshape(-1)
     stats = {
@@ -149,6 +157,7 @@ def _train_step(
             next_state["proprioception"],
             next_state["reference_action"],
             batch["done"],
+            reference_action=state["reference_action"],
         )
         critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()

@@ -145,6 +145,40 @@ def test_auth_token_stays_out_of_wandb(tmp_path, monkeypatch, start) -> None:
     assert config.actor_learner.auth_token == "learner-secret"
 
 
+def test_offline_smoke_trains_the_residual_structure(tmp_path) -> None:
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=2,
+        predicted_action_len=2,
+        residual_actor=True,
+        critic_action_residual=True,
+    )
+    assets, cache = _write_artifacts(tmp_path, network)
+    config = RLTConfig(
+        network=network,
+        assets_dir=assets,
+        demo_cache_path=cache,
+        output_dir=tmp_path / "runs",
+        run_id="residual",
+        actions_to_execute=2,
+        use_subsampling=False,
+        num_critics=2,
+        utd_ratio=1,
+        batch_size=2,
+        max_demo_pretrain_steps=1,
+        online_steps=1,
+        device="cpu",
+        save_freq=0,
+    )
+
+    summary = run_learner(config, offline_only=True)
+
+    assert math.isfinite(summary["final_actor_loss"])
+    assert math.isfinite(summary["final_critic_loss"])
+    checkpoint = torch.load(summary["checkpoint_path"], weights_only=False)
+    assert bool(checkpoint["policy_state_dict"]["actor.residual_mode"])
+
+
 def test_offline_smoke_finishes_without_lerobot(tmp_path) -> None:
     network = so101_network_config(
         hidden_dims=(8,),

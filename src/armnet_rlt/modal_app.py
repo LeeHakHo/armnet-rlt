@@ -98,6 +98,10 @@ def serve_learner(
     q_loss_normalization: bool = False,
     discount: float = 0.0,
     num_critics: int = 0,
+    residual_actor: bool = False,
+    residual_scale: float = 0.25,
+    critic_action_residual: bool = False,
+    critic_action_gain: float = 10.0,
 ) -> dict:
     """Train and serve an online learner through Modal's HTTP/2 TLS tunnel."""
     from armnet_rlt.learner import run_learner
@@ -110,6 +114,10 @@ def serve_learner(
         q_loss_normalization=q_loss_normalization,
         discount=discount or None,
         num_critics=num_critics or None,
+        residual_actor=residual_actor,
+        residual_scale=residual_scale,
+        critic_action_residual=critic_action_residual,
+        critic_action_gain=critic_action_gain,
     )
     cfg.actor_learner.server_bind_host = "0.0.0.0"
     cfg.actor_learner.learner_port = LEARNER_PORT
@@ -453,6 +461,10 @@ def main(
     q_loss_normalization: bool = False,
     discount: float = 0.0,
     num_critics: int = 0,
+    residual_actor: bool = False,
+    residual_scale: float = 0.25,
+    critic_action_residual: bool = False,
+    critic_action_gain: float = 10.0,
 ) -> None:
     """Start the online learner. Use `modal run --detach` for long runs."""
     run_id = run_id or dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
@@ -468,6 +480,10 @@ def main(
         q_loss_normalization=q_loss_normalization,
         discount=discount,
         num_critics=num_critics,
+        residual_actor=residual_actor,
+        residual_scale=residual_scale,
+        critic_action_residual=critic_action_residual,
+        critic_action_gain=critic_action_gain,
     )
 
 

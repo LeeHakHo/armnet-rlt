@@ -103,6 +103,20 @@ Without a demo cache, pass `--pretrain-steps 0 --online-batch-fraction 1.0`
 and start the actor with `--bc-warmup-episodes N` so the first episodes come
 from π0.5 itself.
 
+Residual RLT outputs `reference + 0.25 * tanh(head)` with the head initialised
+to zero, so training starts exactly at the π0.5 chunk, and its critic sees
+`10 * (action - reference)`:
+
+```bash
+envs/venv-learner/bin/rlt-local online --gpu 0 --run-id "$RLT_RUN_ID" \
+  --online-steps 30000 --tunnel ngrok-tcp \
+  --residual-actor --critic-action-residual
+```
+
+`--residual-scale` and `--critic-action-gain` change the two factors. Pass the
+same flags with `--resume`. They apply to `--algorithm rlt` only. The actor needs
+no flag: residual mode travels with the policy weights and frozen checkpoints.
+
 DSRL (SAC over π0.5 noise), online only. The policy server installs the
 actor straight from the learner's parameter stream:
 
@@ -275,7 +289,7 @@ uv run modal secret create armnet-rlt-auth RLT_LEARNER_AUTH_TOKEN="$TOKEN"
 uv run modal secret create huggingface-secret HF_TOKEN="$HF_TOKEN"
 uv run --env-file .env modal run src/armnet_rlt/modal_cache.py::build_multitask_cache
 uv run --env-file .env modal run --detach src/armnet_rlt/modal_app.py::main \
-  --config-name "$RLT_CONFIG" --run-id "$RLT_RUN_ID" --embodiment so101   # add --resume to continue
+  --config-name "$RLT_CONFIG" --run-id "$RLT_RUN_ID" --embodiment so101   # add --resume to continue; --residual-actor --critic-action-residual for residual RLT
 uv run --env-file .env modal run --detach src/armnet_rlt/modal_app.py::streaming_bc \
   --config-name "$RLT_CONFIG" --run-id "$RLT_RUN_ID"
 uv run modal app stop -y <app-id>
