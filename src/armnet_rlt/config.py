@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Mapping
 
 
 SO101_JERK_JOINT_WEIGHTS: tuple[float, ...] = (1.0, 1.0, 1.0, 0.2, 0.1, 0.1)
@@ -373,3 +374,12 @@ class RLTConfig:
     @property
     def checkpoint_dir(self) -> Path:
         return Path(self.output_dir) / self.run_id
+
+
+def without_secrets(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy of a config dict that is safe to save or log."""
+    values = dict(config)
+    transport = values.get("actor_learner")
+    if isinstance(transport, Mapping):
+        values["actor_learner"] = {**transport, "auth_token": ""}
+    return values

@@ -98,6 +98,16 @@ def test_frozen_dsrl_checkpoint_restores_its_noise_actor(tmp_path) -> None:
     assert float(actor.noise_bound) == 1.5
 
 
+def test_freeze_blanks_the_auth_token_of_older_checkpoints() -> None:
+    checkpoint = _learner_checkpoint()
+    checkpoint["config"]["actor_learner"]["auth_token"] = "learner-secret"
+
+    artifact = freeze_learner_checkpoint(checkpoint)
+
+    assert artifact["config"]["actor_learner"]["auth_token"] == ""
+    assert checkpoint["config"]["actor_learner"]["auth_token"] == "learner-secret"
+
+
 def test_freeze_rejects_missing_actor_state() -> None:
     checkpoint = _learner_checkpoint()
     checkpoint["policy_state_dict"] = {"critic.weight": torch.ones(1)}

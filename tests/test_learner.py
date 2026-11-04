@@ -9,9 +9,14 @@ import types
 from pathlib import Path
 from queue import Queue
 
+import pytest
 import torch
 
-from armnet_rlt.config import RLTConfig, so101_network_config
+from armnet_rlt.config import (
+    RLTActorLearnerConfig,
+    RLTConfig,
+    so101_network_config,
+)
 from armnet_rlt.jsonl_log import read_jsonl
 from armnet_rlt.learner import (
     _batch_from_transitions,
@@ -21,7 +26,9 @@ from armnet_rlt.learner import (
     _restore_replay_buffer,
     _save_replay_buffer,
     _schedule_online_updates,
+    run_bc_training,
     run_learner,
+    run_streaming_bc,
 )
 from armnet_rlt.metrics import RollingMetrics
 
@@ -66,6 +73,76 @@ def _write_artifacts(root: Path, network) -> tuple[Path, Path]:
     cache = root / "demo.pt"
     torch.save(transitions, cache)
     return assets, cache
+
+
+def _config_with_auth_token(tmp_path: Path) -> RLTConfig:
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=2,
+        predicted_action_len=2,
+        ref_action_dropout=0.0,
+    )
+    assets, cache = _write_artifacts(tmp_path, network)
+    return RLTConfig(
+        network=network,
+        assets_dir=assets,
+        demo_cache_path=cache,
+        output_dir=tmp_path / "runs",
+        run_id="token",
+        actions_to_execute=2,
+        use_subsampling=False,
+        num_critics=2,
+        utd_ratio=1,
+        batch_size=2,
+        max_demo_pretrain_steps=1,
+        online_steps=1,
+        device="cpu",
+        save_freq=0,
+        actor_learner=RLTActorLearnerConfig(auth_token="learner-secret"),
+    )
+
+
+def test_auth_token_stays_out_of_checkpoints(tmp_path) -> None:
+    config = _config_with_auth_token(tmp_path)
+
+    summary = run_learner(config, offline_only=True)
+
+    checkpoint = Path(summary["checkpoint_path"])
+    assert b"learner-secret" not in checkpoint.read_bytes()
+    assert config.actor_learner.auth_token == "learner-secret"
+
+
+class _StopAtWandb(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        lambda config: run_learner(config, wandb_project="test"),
+        lambda config: run_bc_training(config, steps=1, wandb_project="test"),
+        lambda config: run_streaming_bc(config, wandb_project="test"),
+    ],
+    ids=["online", "bc", "streaming-bc"],
+)
+def test_auth_token_stays_out_of_wandb(tmp_path, monkeypatch, start) -> None:
+    logged_configs = []
+
+    def init(**kwargs):
+        logged_configs.append(kwargs["config"])
+        raise _StopAtWandb
+
+    monkeypatch.setitem(
+        sys.modules, "wandb", types.SimpleNamespace(init=init)
+    )
+    config = _config_with_auth_token(tmp_path)
+
+    # run_learner reports a failed wandb.init as a RuntimeError.
+    with pytest.raises((_StopAtWandb, RuntimeError)):
+        start(config)
+
+    assert logged_configs[0]["actor_learner"]["auth_token"] == ""
+    assert config.actor_learner.auth_token == "learner-secret"
 
 
 def test_offline_smoke_finishes_without_lerobot(tmp_path) -> None:
