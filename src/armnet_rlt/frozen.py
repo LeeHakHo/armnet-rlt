@@ -12,6 +12,7 @@ from armnet_rlt.config import (
     RLTConfig,
     SO101_JERK_JOINT_WEIGHTS,
     network_config_from_dict,
+    without_secrets,
 )
 
 
@@ -44,7 +45,7 @@ def freeze_learner_checkpoint(
         "schema_version": FROZEN_SCHEMA_VERSION,
         "learner_step": step,
         "actor_state_dict": actor_state,
-        "config": dict(config),
+        "config": without_secrets(config),
         "source": dict(source or {}),
     }
 

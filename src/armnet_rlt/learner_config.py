@@ -67,6 +67,10 @@ def learner_config(
     dsrl_target_entropy: float = 0.0,
     dsrl_alpha_init: float = 1.0,
     actions_to_execute: int = 10,
+    residual_actor: bool = False,
+    residual_scale: float = 0.25,
+    critic_action_residual: bool = False,
+    critic_action_gain: float = 10.0,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
@@ -92,6 +96,14 @@ def learner_config(
             "online_step_before_learning": 1,
             "online_buffer_capacity": max(1, 2 * online_steps // utd_ratio),
         }
+    elif residual_actor or critic_action_residual:
+        network = replace(
+            network,
+            residual_actor=residual_actor,
+            residual_scale=residual_scale,
+            critic_action_residual=critic_action_residual,
+            critic_action_gain=critic_action_gain,
+        )
     kwargs = {
         "algorithm": algorithm,
         "dsrl_noise_bound": dsrl_noise_bound,

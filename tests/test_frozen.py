@@ -111,6 +111,39 @@ def test_frozen_config_accepts_a_mean_head_and_rejects_others(tmp_path) -> None:
         config_from_frozen_checkpoint(artifact)
 
 
+def test_freeze_blanks_the_auth_token_of_older_checkpoints() -> None:
+    checkpoint = _learner_checkpoint()
+    checkpoint["config"]["actor_learner"]["auth_token"] = "learner-secret"
+
+    artifact = freeze_learner_checkpoint(checkpoint)
+
+    assert artifact["config"]["actor_learner"]["auth_token"] == ""
+    assert checkpoint["config"]["actor_learner"]["auth_token"] == "learner-secret"
+
+
+def test_residual_mode_survives_freezing() -> None:
+    checkpoint = _learner_checkpoint()
+    network = so101_network_config(
+        hidden_dims=(8,),
+        reference_action_len=3,
+        predicted_action_len=3,
+        residual_actor=True,
+        residual_scale=0.5,
+    )
+    config = RLTConfig(
+        network=network, actions_to_execute=3, use_subsampling=False
+    )
+    checkpoint["config"] = asdict(config)
+    checkpoint["policy_state_dict"] = RLTPolicy(config).state_dict()
+
+    artifact = freeze_learner_checkpoint(checkpoint)
+    rebuilt = config_from_frozen_checkpoint(artifact)
+
+    assert rebuilt.network.residual_actor is True
+    assert rebuilt.network.residual_scale == 0.5
+    assert bool(artifact["actor_state_dict"]["residual_mode"])
+
+
 def test_freeze_rejects_missing_actor_state() -> None:
     checkpoint = _learner_checkpoint()
     checkpoint["policy_state_dict"] = {"critic.weight": torch.ones(1)}

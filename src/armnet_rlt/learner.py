@@ -27,6 +27,7 @@ from armnet_rlt.config import (
     RLTConfig,
     episodes_for_round,
     parse_round_schedule,
+    without_secrets,
 )
 from armnet_rlt.jsonl_log import append_jsonl, read_jsonl
 from armnet_rlt.metrics import EpisodeRecord, RollingMetrics, episode_metrics
@@ -108,8 +109,16 @@ def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
         normalized = policy.actor.normalize_action(
             batch["action"], state["proprioception"]
         ).clamp(-1.0, 1.0)
+        reference_chunk = (
+            policy.actor.normalize_action(
+                state["reference_action"][:, : policy.predicted_action_dim],
+                state["proprioception"],
+            ).clamp(-1.0, 1.0)
+            if policy.critic_ensemble.action_residual
+            else None
+        )
         q = policy.critic_ensemble(
-            state["rl_token"], state["proprioception"], normalized
+            state["rl_token"], state["proprioception"], normalized, reference_chunk
         ).min(dim=0).values.reshape(-1)
     reward = batch["reward"].reshape(-1)
     stats = {
@@ -148,6 +157,7 @@ def _train_step(
             next_state["proprioception"],
             next_state["reference_action"],
             batch["done"],
+            reference_action=state["reference_action"],
         )
         critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
@@ -241,7 +251,7 @@ def _save_checkpoint(
         "critic_optimizer": critic_optimizer.state_dict(),
         "actor_scheduler": actor_scheduler.state_dict(),
         "critic_scheduler": critic_scheduler.state_dict(),
-        "config": asdict(config),
+        "config": without_secrets(asdict(config)),
     }
     if temperature_optimizer is not None:
         payload["temperature_optimizer"] = temperature_optimizer.state_dict()
@@ -841,7 +851,7 @@ def run_bc_training(
             project=wandb_project,
             id=config.run_id,
             resume="allow",
-            config=asdict(config),
+            config=without_secrets(asdict(config)),
             tags=["bc"],
         )
 
@@ -1098,7 +1108,7 @@ def run_streaming_bc(
             project=wandb_project,
             id=config.run_id,
             resume="allow",
-            config=asdict(config),
+            config=without_secrets(asdict(config)),
             tags=["streaming-bc"],
         )
         print(f"[RLT] WandB run: {wandb_run.url}", flush=True)
@@ -1572,7 +1582,7 @@ def run_learner(
                 project=wandb_project,
                 id=config.run_id,
                 resume="allow",
-                config=asdict(config),
+                config=without_secrets(asdict(config)),
                 tags=["offline-only" if offline_only else "online"],
             )
         except Exception as exc:
