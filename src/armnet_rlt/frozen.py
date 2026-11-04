@@ -10,8 +10,8 @@ from torch import Tensor
 
 from armnet_rlt.config import (
     RLTConfig,
-    RLTNetworkConfig,
     SO101_JERK_JOINT_WEIGHTS,
+    network_config_from_dict,
 )
 
 
@@ -92,11 +92,7 @@ def config_from_frozen_checkpoint(artifact: Mapping[str, Any]) -> RLTConfig:
     raw_network = raw.get("network")
     if not isinstance(raw_network, Mapping):
         raise ValueError("frozen RLT config lacks network")
-    network_values = dict(raw_network)
-    for name in ("hidden_dims", "delta_action_mask"):
-        if name in network_values:
-            network_values[name] = tuple(network_values[name])
-    network = RLTNetworkConfig(**network_values)
+    network = network_config_from_dict(raw_network)
     jerk = tuple(
         raw.get("jerk_joint_weights", SO101_JERK_JOINT_WEIGHTS)
     )

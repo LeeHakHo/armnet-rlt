@@ -20,7 +20,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from armnet_rlt.artifacts import NormStats
-from armnet_rlt.config import RLTConfig, RLTNetworkConfig
+from armnet_rlt.config import RLTConfig, RLTNetworkConfig, network_config_from_dict
 from armnet_rlt.networks import _norm, _register_norm_buffers, _set_state_buffers
 
 STEERING_SCHEMA_VERSION = 3
@@ -470,12 +470,8 @@ def actor_from_steering_payload(payload: Mapping[str, Any]) -> tuple[DSRLActor, 
     meta = json.loads(str(payload["meta"]))
     if meta.get("schema_version") != STEERING_SCHEMA_VERSION:
         raise ValueError(f"unsupported steering schema {meta.get('schema_version')!r}")
-    values = dict(meta["network"])
-    for name in ("hidden_dims", "delta_action_mask"):
-        if name in values:
-            values[name] = tuple(values[name])
     actor = DSRLActor(
-        RLTNetworkConfig(**values),
+        network_config_from_dict(meta["network"]),
         noise_bound=float(meta["noise_bound"]),
         noise_steps=int(meta["noise_steps"]),
     )

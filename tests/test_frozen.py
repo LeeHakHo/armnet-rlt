@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+import pytest
 import torch
 
 from armnet_rlt.config import RLTConfig, so101_network_config
@@ -96,6 +97,18 @@ def test_frozen_dsrl_checkpoint_restores_its_noise_actor(tmp_path) -> None:
     actor = DSRLActor(restored.network, noise_bound=restored.dsrl_noise_bound)
     actor.load_state_dict(artifact["actor_state_dict"])
     assert float(actor.noise_bound) == 1.5
+
+
+def test_frozen_config_accepts_a_mean_head_and_rejects_others(tmp_path) -> None:
+    checkpoint = _learner_checkpoint()
+    checkpoint["config"]["network"].update(head="mean", num_modes=5, gmm_init_std=0.1)
+    artifact = freeze_learner_checkpoint(checkpoint)
+    restored = config_from_frozen_checkpoint(artifact)
+    assert restored.network.hidden_dims == (8,)
+
+    artifact["config"]["network"]["head"] = "gmm"
+    with pytest.raises(ValueError, match="head"):
+        config_from_frozen_checkpoint(artifact)
 
 
 def test_freeze_rejects_missing_actor_state() -> None:

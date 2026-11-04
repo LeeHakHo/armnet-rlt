@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Mapping
 
 
 SO101_JERK_JOINT_WEIGHTS: tuple[float, ...] = (1.0, 1.0, 1.0, 0.2, 0.1, 0.1)
@@ -94,6 +95,25 @@ class RLTNetworkConfig:
     @property
     def reference_action_dim(self) -> int:
         return self.reference_action_len * self.action_dim
+
+
+# Fields that configs from the mixture-of-Gaussians branch carry; unused with head "mean".
+_GMM_NETWORK_FIELDS = ("num_modes", "gmm_init_std", "gmm_min_log_std", "gmm_max_log_std")
+
+
+def network_config_from_dict(raw: Mapping[str, Any]) -> RLTNetworkConfig:
+    """RLTNetworkConfig from a saved network dict. Drops the mixture-of-Gaussians
+    fields when ``head`` is "mean" and rejects any other head."""
+    values = dict(raw)
+    head = values.pop("head", "mean")
+    if head != "mean":
+        raise ValueError(f"actor head {head!r} is not supported; only 'mean'")
+    for name in _GMM_NETWORK_FIELDS:
+        values.pop(name, None)
+    for name in ("hidden_dims", "delta_action_mask"):
+        if name in values:
+            values[name] = tuple(values[name])
+    return RLTNetworkConfig(**values)
 
 
 def so101_network_config(**overrides: object) -> RLTNetworkConfig:
