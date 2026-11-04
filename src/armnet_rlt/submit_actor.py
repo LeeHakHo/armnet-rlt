@@ -19,12 +19,14 @@ from armnet_rlt.rerun_view import (
 from armnet_rlt.resources import (
     RENDEZVOUS_DICT,
     add_remote_policy_arguments,
+    add_variation_curriculum_arguments,
     camera_aim_args,
     device_override_args,
     local_rendezvous_path,
     preflight_device_overrides,
     read_local_rendezvous,
     remote_policy_job_args,
+    variation_curriculum_job_args,
     report_job_outcome,
     scheduled_cell,
 )
@@ -103,13 +105,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dsrl-noise-bound",
         type=float,
-        default=2.5,
+        default=1.5,
         help="DSRL noise is clipped to [-bound, bound]; must match the learner",
     )
     parser.add_argument(
         "--dsrl-noise-steps",
         type=int,
-        default=1,
+        default=5,
         help="Rows of noise the DSRL actor outputs, repeated over the chunk; "
         "must match the learner",
     )
@@ -166,15 +168,15 @@ def _parser() -> argparse.ArgumentParser:
         "--armnet.rail",
         dest="rail",
         type=float,
-        default=None,
-        help="Rail position for the job as 0-1 of the usable rail; omit to leave the rail as the cell has it",
+        default=0.7,
+        help="Rail position for the job as 0-1 of the usable rail",
     )
     parser.add_argument(
         "--armnet.lightbox-brightness",
         dest="lightbox_brightness",
         type=int,
-        default=None,
-        help="Lightbox brightness for the job, percent 0-100; omit to leave the lightbox as the cell has it",
+        default=30,
+        help="Lightbox brightness for the job, percent 0-100",
     )
     parser.add_argument(
         "--armnet.camera-aim",
@@ -252,26 +254,7 @@ def _parser() -> argparse.ArgumentParser:
         default=1,
         help="Queue each failed scene for at most this many retries",
     )
-    parser.add_argument(
-        "--variation-curriculum",
-        action="store_true",
-        help="Adapt scene-variation scale from rolling rollout success",
-    )
-    parser.add_argument("--variation-scale-start", type=float, default=0.25)
-    parser.add_argument("--variation-scale-min", type=float, default=0.1)
-    parser.add_argument("--variation-scale-max", type=float, default=1.0)
-    parser.add_argument("--variation-scale-step-up", type=float, default=0.05)
-    parser.add_argument("--variation-scale-step-down", type=float, default=0.1)
-    parser.add_argument("--variation-window", type=int, default=20)
-    parser.add_argument(
-        "--variation-promote-threshold", type=float, default=0.8
-    )
-    parser.add_argument(
-        "--variation-demote-threshold", type=float, default=0.55
-    )
-    parser.add_argument(
-        "--variation-frontier-fraction", type=float, default=0.2
-    )
+    add_variation_curriculum_arguments(parser)
     parser.add_argument(
         "--record-dataset",
         action=argparse.BooleanOptionalAction,
@@ -299,7 +282,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--episode-timeout-s",
         type=float,
-        default=0.0,
+        default=30.0,
         help="Seconds a rollout may run before it is scored a timeout",
     )
     parser.add_argument("--timeout-seconds", type=int, default=3600)
@@ -466,31 +449,7 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         raise ValueError("variation_episode_offset must be nonnegative")
     if variation_offset:
         job_args["variation_episode_offset"] = variation_offset
-    if curriculum_enabled:
-        job_args.update(
-            {
-                "variation_curriculum": True,
-                "variation_scale_start": float(args.variation_scale_start),
-                "variation_scale_min": float(args.variation_scale_min),
-                "variation_scale_max": float(args.variation_scale_max),
-                "variation_scale_step_up": float(
-                    args.variation_scale_step_up
-                ),
-                "variation_scale_step_down": float(
-                    args.variation_scale_step_down
-                ),
-                "variation_window": int(args.variation_window),
-                "variation_promote_threshold": float(
-                    args.variation_promote_threshold
-                ),
-                "variation_demote_threshold": float(
-                    args.variation_demote_threshold
-                ),
-                "variation_frontier_fraction": float(
-                    args.variation_frontier_fraction
-                ),
-            }
-        )
+    job_args.update(variation_curriculum_job_args(args))
     if repo_id := getattr(args, "record_dataset_repo_id", None):
         job_args["record_dataset_repo_id"] = repo_id
     if hf_user := getattr(args, "hf_user", None):

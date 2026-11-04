@@ -11,12 +11,14 @@ from dotenv import load_dotenv
 
 from armnet_rlt.resources import (
     add_remote_policy_arguments,
+    add_variation_curriculum_arguments,
     camera_aim_args,
     device_override_args,
     preflight_device_overrides,
     remote_policy_job_args,
     report_job_outcome,
     scheduled_cell,
+    variation_curriculum_job_args,
 )
 from armnet_client.variation import variation_job_args
 
@@ -132,15 +134,15 @@ def _parser() -> argparse.ArgumentParser:
         "--armnet.rail",
         dest="rail",
         type=float,
-        default=None,
-        help="Rail position for the job as 0-1 of the usable rail; omit to leave the rail as the cell has it",
+        default=0.7,
+        help="Rail position for the job as 0-1 of the usable rail",
     )
     parser.add_argument(
         "--armnet.lightbox-brightness",
         dest="lightbox_brightness",
         type=int,
-        default=None,
-        help="Lightbox brightness for the job, percent 0-100; omit to leave the lightbox as the cell has it",
+        default=30,
+        help="Lightbox brightness for the job, percent 0-100",
     )
     parser.add_argument(
         "--armnet.camera-aim",
@@ -187,11 +189,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--episode-timeout-s",
         type=float,
-        default=0.0,
+        default=30.0,
         help="Seconds a rollout may run before it is scored a timeout",
     )
     parser.add_argument("--timeout-seconds", type=int, default=10800)
     add_remote_policy_arguments(parser)
+    add_variation_curriculum_arguments(parser)
     parser.add_argument(
         "--auth-secret",
         default="armnet-rlt-auth",
@@ -248,7 +251,7 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
     }
     job_args.update(
         variation_job_args(
-            bool(args.variation),
+            bool(args.variation) or bool(args.variation_curriculum),
             int(args.variation_seed),
             rail=getattr(args, "variation_rail", None),
             cameras=getattr(args, "variation_cameras", None),
@@ -268,6 +271,7 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "lightbox_brightness", None),
         )
     )
+    job_args.update(variation_curriculum_job_args(args))
     if str(getattr(args, "action_noise_std", "") or "").strip():
         job_args["action_noise_std"] = str(args.action_noise_std)
         job_args["action_noise_seed"] = int(getattr(args, "action_noise_seed", 0))

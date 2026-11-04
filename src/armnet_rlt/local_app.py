@@ -745,20 +745,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue the run of --run-id from its newest checkpoint and saved successes",
     )
-    lerobot_sbc.add_argument("--episodes-per-round", default="30,30,10")
-    lerobot_sbc.add_argument("--steps-per-round", type=int, default=500)
+    lerobot_sbc.add_argument("--episodes-per-round", default="30,30,20")
+    lerobot_sbc.add_argument("--steps-per-round", type=int, default=300)
     lerobot_sbc.add_argument(
-        "--save-freq", type=int, default=500, help="Learner steps between checkpoints and weight pushes"
+        "--save-freq", type=int, default=300, help="Learner steps between checkpoints and weight pushes"
     )
     lerobot_sbc.add_argument("--batch-size", type=int, default=32)
-    lerobot_sbc.add_argument("--online-steps", type=int, default=30_000)
+    lerobot_sbc.add_argument("--online-steps", type=int, default=1800)
     lerobot_sbc.add_argument(
         "--lr", type=float, default=0.0, help="0 keeps the policy's optimizer_lr"
     )
     lerobot_sbc.add_argument(
         "--ema-decay",
         type=float,
-        default=0.0,
+        default=0.998,
         help="Checkpoint and push a moving average of the weights; 0 turns it off",
     )
     lerobot_sbc.add_argument(
@@ -830,13 +830,13 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument(
         "--dsrl-noise-bound",
         type=float,
-        default=2.5,
+        default=1.5,
         help="DSRL noise actions are clipped to [-bound, bound]",
     )
     online.add_argument(
         "--dsrl-noise-steps",
         type=int,
-        default=1,
+        default=5,
         help="Rows of noise the DSRL actor outputs; the last row is repeated "
         "over the rest of the chunk",
     )

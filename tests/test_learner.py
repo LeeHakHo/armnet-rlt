@@ -119,6 +119,7 @@ def test_dsrl_learner_needs_no_demonstration_cache(tmp_path) -> None:
         assets_dir=assets,
         output_dir=tmp_path / "runs",
         run_id="dsrl-smoke",
+        dsrl_noise_steps=1,
         actions_to_execute=1,
         use_subsampling=False,
         num_critics=2,

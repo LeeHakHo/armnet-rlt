@@ -207,8 +207,8 @@ class RLTConfig:
     algorithm: str = "rlt"
     # DSRL noise lives in [-dsrl_noise_bound, dsrl_noise_bound]; the actor
     # outputs dsrl_noise_steps rows of it, repeated over the chunk.
-    dsrl_noise_bound: float = 2.5
-    dsrl_noise_steps: int = 1
+    dsrl_noise_bound: float = 1.5
+    dsrl_noise_steps: int = 5
     # DSRL temperature: target entropy, initial value, learning rate; and the
     # gradient steps taken after the first episode.
     dsrl_target_entropy: float = 0.0

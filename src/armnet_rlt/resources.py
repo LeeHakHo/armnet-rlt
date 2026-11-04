@@ -210,3 +210,45 @@ def report_job_outcome(result: Any, *, prefix: str) -> None:
             f"[{prefix}] job is not finished (status {result.status}); "
             "nothing ran yet, so do not read this as a completed run"
         )
+
+
+def add_variation_curriculum_arguments(parser: Any) -> None:
+    """Flags that scale scene variation with rolling rollout success."""
+    parser.add_argument(
+        "--variation-curriculum",
+        action="store_true",
+        help="Adapt scene-variation scale from rolling rollout success",
+    )
+    parser.add_argument("--variation-scale-start", type=float, default=0.25)
+    parser.add_argument("--variation-scale-min", type=float, default=0.1)
+    parser.add_argument("--variation-scale-max", type=float, default=1.0)
+    parser.add_argument("--variation-scale-step-up", type=float, default=0.05)
+    parser.add_argument("--variation-scale-step-down", type=float, default=0.1)
+    parser.add_argument("--variation-window", type=int, default=20)
+    parser.add_argument(
+        "--variation-promote-threshold", type=float, default=0.8
+    )
+    parser.add_argument(
+        "--variation-demote-threshold", type=float, default=0.55
+    )
+    parser.add_argument(
+        "--variation-frontier-fraction", type=float, default=0.2
+    )
+
+
+def variation_curriculum_job_args(args: Any) -> dict[str, Any]:
+    """Job args for the variation curriculum; empty when it is off."""
+    if not bool(getattr(args, "variation_curriculum", False)):
+        return {}
+    return {
+        "variation_curriculum": True,
+        "variation_scale_start": float(args.variation_scale_start),
+        "variation_scale_min": float(args.variation_scale_min),
+        "variation_scale_max": float(args.variation_scale_max),
+        "variation_scale_step_up": float(args.variation_scale_step_up),
+        "variation_scale_step_down": float(args.variation_scale_step_down),
+        "variation_window": int(args.variation_window),
+        "variation_promote_threshold": float(args.variation_promote_threshold),
+        "variation_demote_threshold": float(args.variation_demote_threshold),
+        "variation_frontier_fraction": float(args.variation_frontier_fraction),
+    }

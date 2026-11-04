@@ -27,8 +27,10 @@ build), an Armnet API key, a Hugging Face token.
 ```bash
 cp .env.example .env            # fill in ARMNET_API_KEY, HF_TOKEN, RLT_HF_SECRET
 uv sync --locked                # rlt-submit-actor, rlt-submit-eval, rlt-freeze-checkpoint
-scripts/setup_local.sh learner  # envs/venv-learner: rlt-local bc, streaming-bc, online, checkpoint-eval
-scripts/setup_local.sh openpi   # envs/venv-openpi: rlt-local cache, bc-cache, policy-server
+scripts/setup_local.sh learner  # envs/venv-learner: rlt-local bc, streaming-bc, online
+scripts/setup_local.sh openpi   # envs/venv-openpi: rlt-local cache, bc-cache, policy-server (π0.5)
+scripts/setup_local.sh lerobot  # envs/venv-lerobot: lerobot-train, lerobot-streaming-bc,
+                                #   checkpoint-eval, policy-server --policy-type lerobot
 ```
 
 LeRobot is installed from `third_party/lerobot` (upstream 0.5.2). OpenPI with
@@ -65,10 +67,17 @@ Pass the printed ref as `--image-ref` to every submit command below.
 
 ```bash
 export RLT_CONFIG=pi05_rlt_busybox_multitask_singlearm_minmax
+uv run hf download AutoRLBench/pi05_busybox_minmax_step5k_rltoken \
+  --local-dir checkpoints/pi05_rltoken                                  # π0.5 with the RL token
 envs/venv-learner/bin/rlt-local assets --config-name "$RLT_CONFIG"      # normalization stats
 envs/venv-openpi/bin/rlt-local cache --preset multitask                 # demo cache (RLT pretraining)
 envs/venv-openpi/bin/rlt-local bc-cache --manifest manifest.json        # cache from recorded rollouts
 ```
+
+`checkpoints/pi05_rltoken` is the base policy of RLT and DSRL: π0.5 trained
+on the busybox tasks (step 5000) with an RL-token encoder and decoder.
+The LeRobot demo dataset is `AutoRLBench/busybox_push_green_button_426x240`
+(39 teleoperated demos at 426x240).
 
 Learner data lives under `RLT_DATA_ROOT` (default `./experiment-data`):
 `tasks/<config>/demo`, `tasks/<config>/rlt_checkpoints/<run-id>`,
@@ -78,8 +87,8 @@ Learner data lives under `RLT_DATA_ROOT` (default `./experiment-data`):
 
 Every learner publishes its endpoint in `experiment-data/rendezvous/` and the
 submitter resolves `--learner-key <config>:<run-id>` from it. How the cell
-reaches the machine is chosen with `--tunnel ngrok|ngrok-tcp|none`; with
-`none`, pass `--public-endpoint <host>:<port>` and optionally
+reaches the machine is chosen with `--tunnel ngrok|ngrok-tcp|none` (default
+`ngrok`); with `none`, pass `--public-endpoint <host>:<port>` and optionally
 `--tls-cert/--tls-key` for your own ingress.
 
 RLT (TD3), demo pretraining then online updates:
@@ -87,7 +96,7 @@ RLT (TD3), demo pretraining then online updates:
 ```bash
 export RLT_RUN_ID="rlt-$(date -u +%Y%m%d-%H%M%S)"
 envs/venv-learner/bin/rlt-local online --gpu 0 --run-id "$RLT_RUN_ID" \
-  --algorithm rlt --pretrain-steps 5000 --online-steps 30000 --tunnel ngrok-tcp
+  --online-steps 30000 --tunnel ngrok-tcp
 ```
 
 Without a demo cache, pass `--pretrain-steps 0 --online-batch-fraction 1.0`
@@ -100,43 +109,41 @@ actor straight from the learner's parameter stream:
 ```bash
 export RLT_RUN_ID="dsrl-$(date -u +%Y%m%d-%H%M%S)"
 envs/venv-learner/bin/rlt-local online --gpu 0 --run-id "$RLT_RUN_ID" \
-  --algorithm dsrl --pretrain-steps 0 --online-steps 500000 \
-  --dsrl-noise-bound 2.5 --dsrl-noise-steps 1 --tunnel ngrok-tcp
-envs/venv-openpi/bin/rlt-local policy-server --gpu 0 --config-name "$RLT_CONFIG" \
-  --checkpoint <openpi-checkpoint-dir> --steering-from-learner 127.0.0.1:50051
+  --algorithm dsrl --pretrain-steps 0 --online-steps 500000 --tunnel ngrok-tcp
+envs/venv-openpi/bin/rlt-local policy-server --gpu 0 \
+  --checkpoint checkpoints/pi05_rltoken --steering-from-learner 127.0.0.1:50051
 ```
 
-`--dsrl-noise-steps 1` repeats one row of noise over the 30-step chunk;
-`30` draws every step independently. Steps are gradient steps (30 per
-transition).
+Defaults: `--dsrl-noise-steps 5` (five noise rows, the last repeated over
+the 30-step chunk), `--dsrl-noise-bound 1.5`. Steps are gradient steps (30
+per transition).
 
 Streaming BC and offline BC:
 
 ```bash
 envs/venv-learner/bin/rlt-local streaming-bc --gpu 0 --run-id "$RLT_RUN_ID" \
   --episodes-per-round 30,30,10 --steps-per-round 500 --online-steps 30000
-envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID" --steps 5000
+envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID"
 ```
 
 `--resume` continues a run from its newest checkpoint and replay snapshot.
 
-Streaming BC for a LeRobot policy (Diffusion, DiT, ACT, ...) works the same
-way: the learner fine-tunes the checkpoint on the successful episodes the
-actor streams, and every `--save-freq` learner steps (default 500) saves a
-`pretrained_model` checkpoint and pushes the weights to the policy server:
+Iterative BC of a multi-task DiT runs end to end from one script:
 
 ```bash
-envs/venv-learner/bin/rlt-local lerobot-streaming-bc --gpu 0 --run-id sbc-dit \
-  --policy-path <pretrained_model dir> --task "push the green button" \
-  --episodes-per-round 30,30,10 --steps-per-round 500 --online-steps 20000 \
-  --base-dataset <repo_id> --base-batch-fraction 0.5 --tunnel ngrok-tcp
-envs/venv-learner/bin/rlt-local policy-server --gpu 0 --config-name eval \
-  --policy-type lerobot --checkpoint <pretrained_model dir> \
-  --steering-from-learner 127.0.0.1:50051 --tunnel ngrok
+IMAGE_REF=<actor-image-ref> ACTOR_ARGS="--armnet.require-cell cell-03" \
+  scripts/run_iterative_dit.sh
 ```
 
-The actor is submitted with `--policy-type lerobot --config-name eval`
-(see Evaluation).
+It trains the starting policy on the demo dataset (300 `lerobot-train`
+steps; reused once it exists), starts the LeRobot policy server and the
+learner, and submits the actor until the learner finishes. The learner
+fine-tunes on the successful episodes the actor streams: each round is 30, 30,
+then 20 rollouts (the last entry repeats) followed by 300 learner steps, half
+of every batch from the demo dataset; every round saves a `pretrained_model`
+checkpoint of the EMA weights (decay 0.998) and pushes it to the policy
+server. A run ends at 1800 steps. Logs go to `experiment-data/logs/<run-id>`.
+`ACTOR_ARGS` takes extra actor flags, e.g. the ID settings below.
 
 ## Policy server
 
@@ -144,42 +151,46 @@ The policy server registers itself under `--config-name`; every actor and
 evaluation submitted for that config sends observations to it.
 
 ```bash
-envs/venv-openpi/bin/rlt-local policy-server --gpu 0 --config-name "$RLT_CONFIG" \
-  --checkpoint <openpi-checkpoint-dir> --tunnel ngrok            # π0.5 for RLT and DSRL
-envs/venv-learner/bin/rlt-local policy-server --gpu 0 --config-name eval \
+envs/venv-openpi/bin/rlt-local policy-server --gpu 0 \
+  --checkpoint checkpoints/pi05_rltoken                          # π0.5 for RLT and DSRL
+envs/venv-lerobot/bin/rlt-local policy-server --gpu 0 --config-name eval \
   --policy-type lerobot --checkpoint <pretrained_model dir> \
-  --steering-from-learner 127.0.0.1:50051 --tunnel ngrok           # a LeRobot policy
+  --steering-from-learner 127.0.0.1:50051                          # a LeRobot policy
 ```
 
 With `--steering-from-learner` the server takes the DSRL actor, or the
 checkpoint-eval weight diffs, from the learner on this machine, so nothing
 large crosses to the cell. `--tunnel none --public-endpoint <host>:<port>`
-with `--tls-cert/--tls-key` uses your own ingress.
+with `--tls-cert/--tls-key` uses your own ingress. Run one policy server per
+port: gRPC binds with `SO_REUSEPORT`, so a second server on the same port
+starts without error and silently takes part of the traffic.
 
 ## Actor
 
 ```bash
 uv run --env-file .env rlt-submit-actor \
   --task push_green_button --config-name "$RLT_CONFIG" \
-  --checkpoint-dir volume://openpi/checkpoints/<checkpoint-name> \
+  --checkpoint-dir volume://openpi/checkpoints/pi05_rltoken \
+  --upload-checkpoint checkpoints/pi05_rltoken \
   --language-instruction "push the green button" \
   --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
-  --num-rollouts 100 --episode-timeout-s 30 \
-  --armnet.require-cell cell-03 --armnet.rail 0.7 --armnet.lightbox-brightness 30 \
+  --num-rollouts 100 --armnet.require-cell cell-03 \
   --image-ref <actor-image-ref>
 ```
 
-For DSRL add `--algorithm dsrl --dsrl-noise-bound 2.5 --dsrl-noise-steps 1
---exploration-scale 1.0` (`--exploration-scale` scales the actor's sampling
-std, 0 is deterministic). The checkpoint is still named so the cell can fall
-back to it with `--no-remote-policy`.
-For RLT, `--exploration-scale` scales the fixed exploration noise and
+`--upload-checkpoint` copies the base checkpoint to the Armnet volume once;
+later jobs read the volume copy (the cell loads it with `--no-remote-policy`).
+For DSRL add `--algorithm dsrl` (`--exploration-scale`, default 0.5, scales
+the actor's sampling std; 0 is deterministic). For RLT, `--exploration-scale`
+scales the fixed exploration noise and
 `--bc-warmup-episodes N` rolls out π0.5 with noise before the head takes over.
 
 `--armnet.variation` samples rail, camera and lighting variation per rollout
 (`--armnet.variation-seed` makes it reproducible); `--armnet.rail`,
 `--armnet.lightbox-brightness` and `--armnet.camera-aim` set them by hand.
-`--record-dataset` uploads every rollout as a LeRobot dataset to the Hub.
+Defaults: rail 0.7, brightness 30, 30 s episodes, every rollout uploaded as
+a LeRobot dataset to the Hub (`--no-record-dataset` turns it off).
+`--use-rerun` opens a live Rerun viewer.
 
 ## Evaluation
 
@@ -188,14 +199,14 @@ against unsteered π0.5 (`--include-base`):
 
 ```bash
 uv run --env-file .env rlt-freeze-checkpoint --local --config-name "$RLT_CONFIG" \
-  --run-id "$RLT_RUN_ID" --step latest \
+  --run-id "$RLT_RUN_ID" \
   --armnet-volume-path "rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt"
 uv run --env-file .env rlt-submit-eval \
   --task push_green_button --config-name "$RLT_CONFIG" \
-  --checkpoint-dir volume://openpi/checkpoints/<checkpoint-name> \
+  --checkpoint-dir volume://openpi/checkpoints/pi05_rltoken \
   --frozen-rlt-checkpoint "volume://rlt/frozen/${RLT_CONFIG}/${RLT_RUN_ID}/frozen_actor.pt" \
   --language-instruction "push the green button" --num-rollouts 10 \
-  --exploration-scale 0 --image-ref <actor-image-ref>
+  --image-ref <actor-image-ref>
 ```
 
 The frozen file records the algorithm, so a DSRL run evaluates the same way.
@@ -205,12 +216,12 @@ checkpoint. The learner pushes each checkpoint's weight diff to the policy
 server; the actor rolls it out and reports success:
 
 ```bash
-envs/venv-learner/bin/rlt-local checkpoint-eval --run-id eval-dit \
+envs/venv-lerobot/bin/rlt-local checkpoint-eval --run-id eval-dit \
   --train-dir <lerobot-train output_dir> --base-checkpoint <pretrained_model dir> \
-  --final-step 30000 --rollouts-per-checkpoint 10 --tunnel ngrok-tcp
-envs/venv-learner/bin/rlt-local policy-server --gpu 0 --config-name eval \
+  --final-step 30000 --tunnel ngrok-tcp
+envs/venv-lerobot/bin/rlt-local policy-server --gpu 0 --config-name eval \
   --policy-type lerobot --checkpoint <pretrained_model dir> \
-  --steering-from-learner 127.0.0.1:50051 --tunnel ngrok
+  --steering-from-learner 127.0.0.1:50051
 uv run --env-file .env rlt-submit-actor --policy-type lerobot \
   --task push_green_button --config-name eval \
   --language-instruction "push the green button" --learner-key eval:eval-dit \
@@ -224,6 +235,31 @@ Results go to `experiment-data/checkpoint-eval/<run-id>/checkpoint_success.jsonl
 `--checkpoint <pretrained_model dir>` (repeatable) evaluates those directories
 instead of a training run; with one checkpoint whose copy the cell loads as
 `--checkpoint-dir`, nothing has to be pushed.
+
+### ID / OOD settings
+
+In-distribution training and evaluation vary only the rail, over 0.65-0.75:
+
+```bash
+--armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras \
+--variation-curriculum --variation-scale-start 0.2 --variation-scale-min 0.2 \
+--variation-scale-max 0.2 --variation-frontier-fraction 0 --armnet.variation-seed 1042
+```
+
+Out-of-distribution scenes change one axis from the default scene (rail
+0.7, brightness 30). Both sets of flags go to `rlt-submit-actor` (LeRobot
+policies, `ACTOR_ARGS`) and `rlt-submit-eval` (frozen RLT and DSRL actors):
+
+| Axis | Flag | Levels |
+|---|---|---|
+| Rail | `--armnet.rail` | 0.625, 0.775 |
+| Brightness | `--armnet.lightbox-brightness` | 15, 5 |
+| Top camera tilt | `--armnet.camera-aim top.tilt=` | 0.2567, 0.3472 |
+| Action noise | `--action-noise-std` | k = 0.05, 0.15 |
+
+Action noise std is k times the per-joint std of the demo actions, one value
+per joint (k = 0.15: `1.71,7.19,6.14,0.79,3.82,1.55`); `--action-noise-seed`
+fixes the draws.
 
 ## Modal learner
 
@@ -265,5 +301,5 @@ are checked against the cell's published envelope before a job is queued.
 
 ```bash
 uv run pytest
-RLT_CHECKPOINT=<openpi-checkpoint-dir> envs/venv-openpi/bin/python scripts/dsrl_gpu_check.py
+RLT_CHECKPOINT=checkpoints/pi05_rltoken envs/venv-openpi/bin/python scripts/dsrl_gpu_check.py
 ```

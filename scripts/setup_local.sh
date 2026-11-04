@@ -2,6 +2,8 @@
 # Build the `rlt-local` environments under envs/.
 #   scripts/setup_local.sh learner   torch + LeRobot transport (bc, streaming-bc, online, checkpoint-eval)
 #   scripts/setup_local.sh openpi    OpenPI/JAX (cache, bc-cache, policy-server)
+#   scripts/setup_local.sh lerobot   full LeRobot for its policies (lerobot-train, lerobot-streaming-bc,
+#                                     checkpoint-eval, policy-server --policy-type lerobot)
 # OPENPI_REPO and OPENPI_REVISION select the OpenPI fork with the pi0_rl model.
 set -euo pipefail
 
@@ -88,8 +90,28 @@ setup_openpi() {
     "$venv/bin/python" -c "from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); from openpi.training.config import get_config; get_config('${RLT_CONFIG:-pi05_rlt_busybox_multitask_singlearm_minmax}'); from lerobot.datasets.lerobot_dataset import LeRobotDataset; print('RLT cache env OK')"
 }
 
+setup_lerobot() {
+    local venv="$ENVS/venv-lerobot" overrides="$ENVS/lerobot-overrides.txt"
+    uv venv --python 3.12 --allow-existing "$venv"
+    printf '%s\n' \
+        'pynput>=0.0.0; sys_platform == "never"' \
+        'evdev>=0.0.0; sys_platform == "never"' \
+        'torch==2.8.0' \
+        'torchvision==0.23.0' \
+        > "$overrides"
+    uv pip install --python "$venv" --override "$overrides" \
+        --extra-index-url "$TORCH_INDEX" \
+        --index-strategy unsafe-best-match \
+        -e "$LEROBOT[multi_task_dit,smolvla]" torchcodec==0.7.0 \
+        grpcio==1.73.1 'protobuf>=6.31.1,<6.32.0' 'wandb>=0.24,<0.25' python-dotenv \
+        torch==2.8.0 torchvision==0.23.0
+    uv pip install --python "$venv" --no-deps -e "$ROOT"
+    "$venv/bin/python" -c "import torch, torchcodec; from lerobot.policies.multi_task_dit.modeling_multi_task_dit import MultiTaskDiTPolicy; from armnet_rlt.lerobot_learner import run_lerobot_streaming_bc; print('LeRobot env OK', torch.__version__)"
+}
+
 case "${1:-}" in
     learner) setup_learner ;;
     openpi) setup_openpi ;;
-    *) echo "usage: $0 learner|openpi" >&2; exit 2 ;;
+    lerobot) setup_lerobot ;;
+    *) echo "usage: $0 learner|openpi|lerobot" >&2; exit 2 ;;
 esac

@@ -66,3 +66,24 @@ def test_remote_policy_is_the_default_for_evaluation() -> None:
 
     parser = _parser()
     assert parser.get_default("remote_policy") is True
+
+
+def test_frozen_eval_carries_the_variation_curriculum() -> None:
+    from armnet_rlt.submit_eval import _parser
+
+    argv = [
+        "--task", "push_green_button", "--config-name", "cfg",
+        "--checkpoint-dir", "volume://openpi/base",
+        "--frozen-rlt-checkpoint", "volume://rlt/frozen.pt",
+        "--language-instruction", "push", "--no-remote-policy",
+        "--armnet.variation-rail", "--variation-curriculum",
+        "--variation-scale-start", "0.2", "--variation-scale-min", "0.2",
+        "--variation-scale-max", "0.2", "--variation-frontier-fraction", "0",
+    ]
+    job_args = build_job_args(_parser().parse_args(argv))
+    assert job_args["variation"] is True and job_args["variation_seed"] == 1042
+    assert job_args["variation_curriculum"] is True
+    assert job_args["variation_scale_start"] == job_args["variation_scale_max"] == 0.2
+    assert job_args["variation_frontier_fraction"] == 0.0
+    plain = build_job_args(_parser().parse_args(argv[:11]))
+    assert "variation_curriculum" not in plain

@@ -47,7 +47,7 @@ def add_rerun_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--use-rerun",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
             "Open a live Rerun viewer and record each rollout separately. "
             "Ignored with --detach, because the viewer has to stay connected."

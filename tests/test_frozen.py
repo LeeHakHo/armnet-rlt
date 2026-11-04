@@ -74,6 +74,7 @@ def test_frozen_dsrl_checkpoint_restores_its_noise_actor(tmp_path) -> None:
         network=network,
         algorithm="dsrl",
         dsrl_noise_bound=1.5,
+        dsrl_noise_steps=1,
         actions_to_execute=2,
         use_subsampling=False,
         max_demo_pretrain_steps=0,

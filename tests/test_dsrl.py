@@ -46,6 +46,7 @@ def _config(**overrides) -> RLTConfig:
         "max_demo_pretrain_steps": 0,
         "online_batch_fraction": 1.0,
         "dsrl_noise_bound": 2.0,
+        "dsrl_noise_steps": 1,
     }
     values.update(overrides)
     return RLTConfig(**values)
@@ -59,6 +60,7 @@ def _norm_stats() -> dict[str, NormStats]:
 
 
 def test_dsrl_config_requires_full_chunk_noise_and_no_demos() -> None:
+    assert RLTConfig.dsrl_noise_steps == 5
     config = _config()
     assert config.dsrl_noise_steps == 1
     _config(dsrl_noise_steps=3)
@@ -426,7 +428,7 @@ def test_learner_config_applies_the_dsrl_settings(tmp_path) -> None:
     )
     assert config.network.hidden_dims == (1024, 1024, 1024)
     assert config.network.predicted_action_len == 30
-    assert config.dsrl_noise_steps == 1 and config.dsrl_noise_bound == 2.5
+    assert config.dsrl_noise_steps == 5 and config.dsrl_noise_bound == 1.5
     assert config.dsrl_alpha_init == 1.0 and config.dsrl_target_entropy == 0.0
     assert config.dsrl_temperature_lr == 3e-4 and config.dsrl_initial_steps == 5000
     assert config.num_critics == 2 and config.utd_ratio == 30

@@ -213,8 +213,8 @@ def test_job_args_carry_the_algorithm_to_the_cell() -> None:
     assert result["dsrl_noise_steps"] == 2
     parser = _parser()
     assert parser.get_default("algorithm") == "rlt"
-    assert parser.get_default("dsrl_noise_bound") == 2.5
-    assert parser.get_default("dsrl_noise_steps") == 1
+    assert parser.get_default("dsrl_noise_bound") == 1.5
+    assert parser.get_default("dsrl_noise_steps") == 5
 
 
 def test_remote_policy_is_the_default_and_can_be_switched_off() -> None:
