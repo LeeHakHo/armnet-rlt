@@ -87,3 +87,9 @@ def test_frozen_eval_carries_the_variation_curriculum() -> None:
     assert job_args["variation_frontier_fraction"] == 0.0
     plain = build_job_args(_parser().parse_args(argv[:11]))
     assert "variation_curriculum" not in plain
+    ranged = build_job_args(_parser().parse_args(argv + ["--variation-rail-range", "0.6,0.65"]))
+    assert ranged["variation_rail_range"] == [0.6, 0.65]
+    with pytest.raises(ValueError):
+        build_job_args(_parser().parse_args(argv + ["--variation-rail-range", "0.65,0.6"]))
+    with pytest.raises(ValueError):
+        build_job_args(_parser().parse_args(argv[:11] + ["--variation-rail-range", "0.6,0.65"]))

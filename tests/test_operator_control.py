@@ -163,6 +163,57 @@ def test_curriculum_scales_variation_around_calibrated_default(
     assert cell.applied.settings[0].value == pytest.approx(0.6)
 
 
+def test_rail_range_draws_seeded_rails_inside_the_range(monkeypatch) -> None:
+    armnet_core = types.ModuleType("armnet_core")
+    armnet_core.VARIATION_CLIP_SIGMA = 2.5
+    variation = types.ModuleType("armnet_runtime.variation")
+    variation.variation_request = lambda args: (True, int(args["seed"]))
+    variation.sample_scenario = lambda _cell, *, seed, episode: _Scenario(
+        seed=seed,
+        episode=episode,
+        cell_id="cell-01",
+        settings=(
+            _Setting(name="rail", kind="rail", target=None, value=0.72, default=0.7),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "armnet_core", armnet_core)
+    monkeypatch.setitem(sys.modules, "armnet_runtime.variation", variation)
+    axis = SimpleNamespace(default=0.7, std=0.1, minimum=0.45, maximum=0.95)
+    cell = SimpleNamespace(
+        device_config=SimpleNamespace(
+            rails=[SimpleNamespace(arm=None, position=axis)],
+            camera_mounts={},
+            lightbox_brightness=None,
+        )
+    )
+    curriculum = VariationCurriculum(
+        VariationCurriculumConfig(
+            enabled=True,
+            start_scale=0.2,
+            min_scale=0.2,
+            max_scale=0.2,
+            frontier_fraction=0.0,
+        )
+    )
+
+    def rails(seed: int) -> list[float]:
+        ctx = SimpleNamespace(
+            args={"seed": seed, "variation_rail": True, "variation_rail_range": [0.6, 0.65]},
+            cell=cell,
+            report_progress=lambda _message: None,
+        )
+        return [
+            _apply_curriculum_variation(ctx, episode, curriculum)["values"]["rail"]
+            for episode in range(10)
+        ]
+
+    first = rails(1042)
+    assert all(0.6 <= value <= 0.65 for value in first)
+    assert len(set(first)) == len(first)
+    assert rails(1042) == first
+    assert rails(2042) != first
+
+
 @pytest.mark.parametrize(
     "updates",
     [

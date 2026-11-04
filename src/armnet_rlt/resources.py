@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -234,13 +235,33 @@ def add_variation_curriculum_arguments(parser: Any) -> None:
     parser.add_argument(
         "--variation-frontier-fraction", type=float, default=0.2
     )
+    parser.add_argument(
+        "--variation-rail-range",
+        default="",
+        help="LOW,HIGH: draw each episode's rail position uniformly from this "
+        "range (seeded by the variation seed and episode); needs "
+        "--variation-curriculum and rail variation",
+    )
+
+
+def _rail_range(value: str) -> list[float]:
+    parts = [part.strip() for part in str(value).split(",")]
+    if len(parts) != 2:
+        raise ValueError("--variation-rail-range takes LOW,HIGH")
+    low, high = float(parts[0]), float(parts[1])
+    if not (math.isfinite(low) and math.isfinite(high) and low < high):
+        raise ValueError("--variation-rail-range needs finite LOW < HIGH")
+    return [low, high]
 
 
 def variation_curriculum_job_args(args: Any) -> dict[str, Any]:
     """Job args for the variation curriculum; empty when it is off."""
+    rail_range = str(getattr(args, "variation_rail_range", "") or "").strip()
     if not bool(getattr(args, "variation_curriculum", False)):
+        if rail_range:
+            raise ValueError("--variation-rail-range needs --variation-curriculum")
         return {}
-    return {
+    job_args = {
         "variation_curriculum": True,
         "variation_scale_start": float(args.variation_scale_start),
         "variation_scale_min": float(args.variation_scale_min),
@@ -252,3 +273,6 @@ def variation_curriculum_job_args(args: Any) -> dict[str, Any]:
         "variation_demote_threshold": float(args.variation_demote_threshold),
         "variation_frontier_fraction": float(args.variation_frontier_fraction),
     }
+    if rail_range:
+        job_args["variation_rail_range"] = _rail_range(rail_range)
+    return job_args

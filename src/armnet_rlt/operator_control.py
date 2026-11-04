@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any
@@ -194,6 +195,10 @@ def _apply_curriculum_variation(
             clamped = value != raw
         else:
             value = raw
+        if setting.name.startswith("rail") and ctx.args.get("variation_rail_range"):
+            low, high = (float(v) for v in ctx.args["variation_rail_range"])
+            value = random.Random(f"{seed}:{episode}:{setting.name}").uniform(low, high)
+            clamped = False
         scaled_settings.append(
             replace(setting, value=value, clamped=clamped)
         )

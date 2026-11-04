@@ -243,23 +243,29 @@ In-distribution training and evaluation vary only the rail, over 0.65-0.75:
 ```bash
 --armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras \
 --variation-curriculum --variation-scale-start 0.2 --variation-scale-min 0.2 \
---variation-scale-max 0.2 --variation-frontier-fraction 0 --armnet.variation-seed 1042
+--variation-scale-max 0.2 --variation-frontier-fraction 0
 ```
 
-Out-of-distribution scenes change one axis from the default scene (rail
-0.7, brightness 30). Both sets of flags go to `rlt-submit-actor` (LeRobot
-policies, `ACTOR_ARGS`) and `rlt-submit-eval` (frozen RLT and DSRL actors):
+Each out-of-distribution condition adds one change to the ID flags, so the
+rail is still drawn per episode from the variation seed. The flags go to
+`rlt-submit-actor` (LeRobot policies, `ACTOR_ARGS`) and `rlt-submit-eval`
+(frozen RLT and DSRL actors):
 
 | Axis | Flag | Levels |
 |---|---|---|
-| Rail | `--armnet.rail` | 0.625, 0.775 |
+| Rail | `--variation-rail-range` | `0.60,0.65`, `0.75,0.80` |
 | Brightness | `--armnet.lightbox-brightness` | 15, 5 |
 | Top camera tilt | `--armnet.camera-aim top.tilt=` | 0.2567, 0.3472 |
 | Action noise | `--action-noise-std` | k = 0.05, 0.15 |
 
+`--variation-rail-range` draws each episode's rail uniformly from the range.
 Action noise std is k times the per-joint std of the demo actions, one value
-per joint (k = 0.15: `1.71,7.19,6.14,0.79,3.82,1.55`); `--action-noise-seed`
-fixes the draws.
+per joint (k = 0.05: `0.57,2.40,2.05,0.26,1.27,0.52`; k = 0.15:
+`1.71,7.19,6.14,0.79,3.82,1.55`).
+
+Evaluation runs every condition with seeds 1042, 2042 and 3042
+(`--armnet.variation-seed S --action-noise-seed S`), 10 deterministic
+rollouts per seed, for every policy.
 
 ## Modal learner
 
