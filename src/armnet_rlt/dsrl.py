@@ -411,21 +411,24 @@ class DSRLPolicy(nn.Module):
         }
 
 
-def safety_trip_reward(chunk_discount: float) -> float:
+def safety_trip_reward(chunk_discount: float, penalty: float | None = None) -> float:
     """Terminal reward of an episode the safety gate stopped: the discounted
-    return of failing forever."""
-    if not 0.0 <= chunk_discount < 1.0:
-        return -1.0
-    return -1.0 / (1.0 - chunk_discount)
+    return of failing forever, lowered by ``penalty`` times that return (the
+    gap between success and failure)."""
+    gap = 1.0 / (1.0 - chunk_discount) if 0.0 <= chunk_discount < 1.0 else 1.0
+    return -gap * (1.0 + (penalty or 0.0))
 
 
 def relabel_episode(
-    transitions: list[dict[str, Tensor]], *, chunk_discount: float = 0.0
+    transitions: list[dict[str, Tensor]],
+    *,
+    chunk_discount: float = 0.0,
+    safety_trip_penalty: float | None = None,
 ) -> None:
     """Rewrite one episode's transitions in place to the DSRL reward: -1 per
     decision step, 0 with ``done`` at a success, -1 without ``done`` at the end
     of a failure. A last transition flagged ``safety_trip`` is terminal with
-    ``safety_trip_reward(chunk_discount)``."""
+    ``safety_trip_reward(chunk_discount, safety_trip_penalty)``."""
     if not transitions:
         return
     tripped = bool(float(transitions[-1].get("safety_trip", 0.0)))
@@ -437,7 +440,8 @@ def relabel_episode(
         fields["done"] = torch.tensor(1.0 if success else 0.0, dtype=torch.float32)
     if tripped:
         transitions[-1]["reward"] = torch.tensor(
-            safety_trip_reward(chunk_discount), dtype=torch.float32
+            safety_trip_reward(chunk_discount, safety_trip_penalty),
+            dtype=torch.float32,
         )
         transitions[-1]["done"] = torch.tensor(1.0, dtype=torch.float32)
 

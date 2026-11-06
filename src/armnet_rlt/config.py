@@ -249,6 +249,10 @@ class RLTConfig:
     dsrl_alpha_init: float = 1.0
     dsrl_temperature_lr: float = 3e-4
     dsrl_initial_steps: int = 5000
+    # Terminal reward of a safety-tripped episode, set below a failure by this
+    # many success-failure reward gaps. None: DSRL treats it as failing
+    # forever, RLT keeps the actor's -1.
+    safety_trip_penalty: float | None = None
     device: str = "cuda"
     storage_device: str = "cpu"
     log_freq: int = 10
@@ -349,6 +353,11 @@ class RLTConfig:
             raise ValueError("q_loss_alpha must be finite and positive")
         if not 0.0 < self.discount <= 1.0:
             raise ValueError("discount must be in (0, 1]")
+        if self.safety_trip_penalty is not None and (
+            not math.isfinite(self.safety_trip_penalty)
+            or self.safety_trip_penalty < 0
+        ):
+            raise ValueError("safety_trip_penalty must be finite and nonnegative")
         if not 0.0 < self.critic_target_update_weight <= 1.0:
             raise ValueError("critic_target_update_weight must be in (0, 1]")
         for name in (

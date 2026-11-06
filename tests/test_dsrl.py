@@ -329,6 +329,18 @@ def test_relabel_episode_makes_a_safety_trip_terminal_at_the_fail_forever_return
     assert float(odd[0]["reward"]) < -1.0 and float(odd[0]["done"]) == 1.0
 
 
+def test_relabel_episode_lowers_a_safety_trip_by_the_penalty() -> None:
+    gamma = 0.99**10
+    gap = 1.0 / (1.0 - gamma)
+    tripped = [
+        {"reward": torch.tensor(0.0), "done": torch.tensor(0.0), "safety_trip": torch.tensor(0.0)},
+        {"reward": torch.tensor(-1.0), "done": torch.tensor(1.0), "safety_trip": torch.tensor(1.0)},
+    ]
+    relabel_episode(tripped, chunk_discount=gamma, safety_trip_penalty=2.0)
+    assert float(tripped[-1]["reward"]) == pytest.approx(-3.0 * gap)
+    assert safety_trip_reward(gamma, 0.0) == pytest.approx(safety_trip_reward(gamma))
+
+
 def test_steering_payload_round_trips_through_numpy_arrays() -> None:
     actor = DSRLActor(_network(), noise_bound=1.5, noise_steps=2)
     actor.set_norm_stats(_norm_stats(), use_quantiles=True)

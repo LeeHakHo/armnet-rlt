@@ -71,6 +71,7 @@ def learner_config(
     residual_scale: float = 0.25,
     critic_action_residual: bool = False,
     critic_action_gain: float = 10.0,
+    safety_trip_penalty: float | None = None,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
@@ -128,6 +129,7 @@ def learner_config(
         "q_loss_normalization": q_loss_normalization,
         "bc_deviation_max": bc_deviation_max,
         "bc_deviation_weight": bc_deviation_weight,
+        "safety_trip_penalty": safety_trip_penalty,
     }
     if discount is not None:
         kwargs["discount"] = discount

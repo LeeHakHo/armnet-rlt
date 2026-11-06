@@ -586,6 +586,15 @@ def _transition_fields(transition: dict[str, Any]) -> dict[str, Tensor]:
     }
 
 
+def relabel_rlt_safety_trip(
+    transitions: list[dict[str, Tensor]], penalty: float
+) -> None:
+    """Set the terminal reward of a safety-tripped RLT episode to ``-penalty``
+    (success 1, failure 0)."""
+    if transitions and bool(float(transitions[-1].get("safety_trip", 0.0))):
+        transitions[-1]["reward"] = torch.tensor(-float(penalty), dtype=torch.float32)
+
+
 def _replayed(payload: bytes, seen: set[bytes] | None) -> bool:
     """Whether ``payload`` was already received this session, by its digest;
     ``seen`` collects the digests and is extended here."""
@@ -1742,11 +1751,21 @@ def run_learner(
                     relabel=(
                         (
                             lambda episode: relabel_episode(
-                                episode, chunk_discount=policy.chunk_discount
+                                episode,
+                                chunk_discount=policy.chunk_discount,
+                                safety_trip_penalty=config.safety_trip_penalty,
                             )
                         )
                         if dsrl
-                        else None
+                        else (
+                            (
+                                lambda episode: relabel_rlt_safety_trip(
+                                    episode, config.safety_trip_penalty
+                                )
+                            )
+                            if config.safety_trip_penalty is not None
+                            else None
+                        )
                     ),
                     seen=seen_transitions,
                 )

@@ -616,3 +616,27 @@ def test_learner_accepts_actor_keepalive_pings_on_an_idle_stream() -> None:
     source = inspect.getsource(learner._start_online_transport)
     assert '"grpc.http2.min_ping_interval_without_data_ms", 20_000' in source
     assert '"grpc.http2.max_ping_strikes", 0' in source
+
+
+def test_relabel_rlt_safety_trip_sets_the_terminal_reward_to_minus_the_penalty() -> None:
+    from armnet_rlt.learner import relabel_rlt_safety_trip
+
+    def episode(trip: float) -> list[dict[str, torch.Tensor]]:
+        return [
+            {"reward": torch.tensor(0.0), "safety_trip": torch.tensor(trip)},
+            {"reward": torch.tensor(-1.0), "safety_trip": torch.tensor(trip)},
+        ]
+
+    tripped = episode(1.0)
+    relabel_rlt_safety_trip(tripped, 2.0)
+    assert [float(t["reward"]) for t in tripped] == [0.0, -2.0]
+    clean = episode(0.0)
+    relabel_rlt_safety_trip(clean, 2.0)
+    assert [float(t["reward"]) for t in clean] == [0.0, -1.0]
+
+
+def test_safety_trip_penalty_must_be_nonnegative() -> None:
+    from armnet_rlt.config import RLTConfig
+
+    with pytest.raises(ValueError, match="safety_trip_penalty"):
+        RLTConfig(safety_trip_penalty=-1.0)

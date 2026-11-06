@@ -581,6 +581,7 @@ def cmd_online(args: argparse.Namespace) -> None:
         residual_scale=args.residual_scale,
         critic_action_residual=args.critic_action_residual,
         critic_action_gain=args.critic_action_gain,
+        safety_trip_penalty=args.safety_trip_penalty,
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -867,6 +868,13 @@ def _parser() -> argparse.ArgumentParser:
         "--critic-action-residual",
         action="store_true",
         help="rlt only: critic sees critic_action_gain * (action - reference chunk)",
+    )
+    online.add_argument(
+        "--safety-trip-penalty",
+        type=float,
+        default=None,
+        help="terminal reward of a safety-tripped episode is this many "
+        "success-failure reward gaps below a failure (dsrl and rlt)",
     )
     online.add_argument("--critic-action-gain", type=float, default=10.0)
     add_transport(online, "Seconds between weight pushes")
