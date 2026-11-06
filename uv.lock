@@ -90,7 +90,7 @@ wheels = [
 
 [[package]]
 name = "armnet-client"
-version = "0.3.6"
+version = "0.3.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "armnet-core" },
@@ -103,9 +103,8 @@ dependencies = [
     { name = "tqdm" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/b5/aa4bab8752542cc9d17b53659ed295af22584b43f4c592a3e18e5444d1f4/armnet_client-0.3.6.tar.gz", hash = "sha256:97b720cbc979f75e3865f2d3f9973f43af61d06da103482e1059613c58f5a054", size = 272047, upload-time = "2026-10-27T14:42:21.247Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/6c/4fa47ac8fef167742d7aac96332432a239d406151b917d3111d1e84aceb9/armnet_client-0.3.6-py3-none-any.whl", hash = "sha256:3416c3d8676c8bf76920cd0cbc4cb8ce98d9945eabe74e14ff660ec675b910ea", size = 231961, upload-time = "2026-10-27T14:42:20.071Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/93/d50b87e8cb73ce29d95cc0ca3d5b90b36d6bb198529b6e549995688c2733/armnet_client-0.3.7-1-py3-none-any.whl", hash = "sha256:d810c25a4c3589194e895161624209741aa4a3ee5745fc887de20b55ffca7043", size = 215138, upload-time = "2026-10-28T18:12:24.114Z" },
 ]
 
 [package.optional-dependencies]
@@ -160,7 +159,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
 submit = [
-    { name = "armnet-client", extras = ["local", "viz"], specifier = "==0.3.6" },
+    { name = "armnet-client", extras = ["local", "viz"], specifier = "==0.3.7" },
     { name = "modal", specifier = ">=1.5.4" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]
