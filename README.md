@@ -33,6 +33,14 @@ scripts/setup_local.sh lerobot  # envs/venv-lerobot: lerobot-train, lerobot-stre
                                 #   checkpoint-eval, policy-server --policy-type lerobot
 ```
 
+With conda instead of `uv sync`:
+
+```bash
+conda create -n armnet-rlt python=3.12 -y && conda activate armnet-rlt
+pip install uv && UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --locked
+set -a; source .env; set +a     # then drop `uv run` / `uv run --env-file .env` below
+```
+
 LeRobot is installed from `third_party/lerobot` (upstream 0.5.2). OpenPI with
 the RL-token model comes from `OPENPI_REPO` at `OPENPI_REVISION`
 (`scripts/setup_local.sh`, `Dockerfile.actor`).
