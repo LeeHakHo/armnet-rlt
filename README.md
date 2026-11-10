@@ -19,6 +19,55 @@ Policy inference runs on your GPU by default: `rlt-local policy-server`
 serves π0.5 or a LeRobot policy and the cell only streams observations to it
 (`--no-remote-policy` loads the policy on the cell instead).
 
+## Quickstart
+
+```bash
+scripts/setup.sh                                # once: environments, .env, secrets, base model, actor image
+CELL=<cell-id> scripts/run.sh dsrl              # train: rlt, dsrl or dit
+CELL=<cell-id> scripts/eval.sh <run-id>         # evaluate: 7 conditions x 3 seeds x 5 rollouts
+```
+
+`setup.sh` asks for an Armnet API key and a Hugging Face token with read access
+to the AutoRLBench models, and writes everything else to `.env` itself. It needs
+a GPU for the RLT demo cache (`--skip-cache` skips it) and Docker for the actor
+image; without Docker it prints the command to build the image on another machine. The cell reaches your machine through ngrok by default: install
+it and run `ngrok config add-authtoken <token>` once, or set `PUBLIC_HOST`,
+`TLS_CERT` and `TLS_KEY` in `.env` for your own TLS ingress.
+
+`run.sh` starts the policy server and the learner on this machine's GPU (`GPU=<index>`
+picks one), submits the actor to `CELL`, resubmits it after a cell or safety stop, and
+stops everything on Ctrl-C. Logs go to `experiment-data/logs/<run-id>/`.
+
+| Option | Meaning |
+|---|---|
+| `--model <dir or HF repo>` | Starting policy: an OpenPI π0.5 checkpoint for `rlt`/`dsrl`, a LeRobot `pretrained_model` for `dit` |
+| `--policy-type <type>` | `dit` without `--model`: LeRobot policy trained on the demos first (`multi_task_dit`, `diffusion`, `smolvla`, ...) |
+| `--steps N` | Learner steps (`rlt` 30000, `dsrl` 400000, `dit` 1800) |
+| `--std X`, `--trip-penalty X` | Exploration std (0.5) and safety-trip reward (`rlt` 5, `dsrl` 2) |
+| `--resume <run-id>` | Continue a run from its newest checkpoint |
+| `--learner-args "..."`, `--actor-args "..."` | Extra flags for the learner or `rlt-submit-actor` |
+
+`eval.sh` takes an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
+`pretrained_model` directory, and prints success and safety trips per condition.
+`--conditions`, `--seeds` and `--rollouts` narrow it. Results go to
+`experiment-data/eval/<label>-<condition>/results.jsonl`; a rerun skips seeds already
+there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
+
+### Changing the models
+
+| What | Where |
+|---|---|
+| RLT actor and critic (TD3 head, residual, layer sizes) | `src/armnet_rlt/networks.py`; sizes and defaults in `RLTNetworkConfig`, `src/armnet_rlt/config.py` |
+| DSRL noise actor and critics (SAC) | `src/armnet_rlt/dsrl.py`; layer sizes in `DSRL_HIDDEN_DIMS`, `src/armnet_rlt/config.py` |
+| Learner hyperparameters (learning rates, UTD, batch size) | RLT defaults in `RLTConfig`, `src/armnet_rlt/config.py`; DSRL overrides in `src/armnet_rlt/learner_config.py` |
+| DiT or another LeRobot policy | its config in `third_party/lerobot/src/lerobot/policies/<type>/configuration_*.py`, or `--policy-type` |
+| The base VLA | `--model` with another OpenPI checkpoint that has the RL-token head |
+
+The actor image contains `src/armnet_rlt`, so run `scripts/setup.sh` again after
+changing it; it rebuilds the image only when the code changed.
+
+The sections below describe the individual commands the scripts run.
+
 ## Install
 
 Requirements: Python 3.12, [`uv`](https://docs.astral.sh/uv/), Docker (image
@@ -154,8 +203,7 @@ envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID"
 Iterative BC of a multi-task DiT runs end to end from one script:
 
 ```bash
-IMAGE_REF=<actor-image-ref> ACTOR_ARGS="--armnet.require-cell <cell-id>" \
-  scripts/run_iterative_dit.sh
+CELL=<cell-id> scripts/run.sh dit
 ```
 
 It trains the starting policy on the demo dataset (300 `lerobot-train`
@@ -166,7 +214,7 @@ then 20 rollouts (the last entry repeats) followed by 300 learner steps, half
 of every batch from the demo dataset; every round saves a `pretrained_model`
 checkpoint of the EMA weights (decay 0.998) and pushes it to the policy
 server. A run ends at 1800 steps. Logs go to `experiment-data/logs/<run-id>`.
-`ACTOR_ARGS` takes extra actor flags, e.g. the ID settings below.
+`--actor-args` takes extra actor flags.
 
 ## Policy server
 
@@ -276,7 +324,7 @@ In-distribution training and evaluation vary only the rail, over 0.65-0.75:
 
 Each out-of-distribution condition adds one change to the ID flags, so the
 rail is still drawn per episode from the variation seed. The flags go to
-`rlt-submit-actor` (LeRobot policies, `ACTOR_ARGS`) and `rlt-submit-eval`
+`rlt-submit-actor` (LeRobot policies) and `rlt-submit-eval`
 (frozen RLT and DSRL actors):
 
 | Axis | Flag | Levels |
@@ -318,9 +366,14 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | Variable | Meaning |
 |---|---|
 | `ARMNET_API_KEY` | Armnet API key for submitting jobs and building images |
-| `HF_TOKEN` | Hugging Face token (secret creation only) |
+| `HF_TOKEN` | Hugging Face token: model downloads and the Armnet secret |
 | `RLT_HF_SECRET` | Name of the Armnet secret holding the Hugging Face token |
-| `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `armnet-rlt-auth` secret |
+| `RLT_AUTH_SECRET` | Name of the Armnet secret holding `RLT_LEARNER_AUTH_TOKEN` (default `armnet-rlt-auth`) |
+| `IMAGE_REF` | Actor image the scripts submit (written by `scripts/setup.sh`) |
+| `CELL`, `GPU` | Cell and local GPU index for `scripts/run.sh` and `scripts/eval.sh` |
+| `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of ngrok; ports in `scripts/lib.sh` |
+| `WANDB_PROJECT` | Weights & Biases project for the learners (optional) |
+| `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `RLT_AUTH_SECRET` secret |
 | `RLT_DATA_ROOT` | Local learner data root (default `./experiment-data`) |
 | `RLT_CELL_CAMERA_AIM` | Camera aim per cell, `cell-01=top.tilt=0.5;cell-02=...` |
 | `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET` | Modal resource names |
