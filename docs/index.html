@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Train and evaluate robot learning methods on real SO-101 arms over the internet.">
+<title>Armnet-Remote-Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap">
+<style>
+/* Layout: one column (~960px); diagrams and charts carry the explanation, text stays to captions. */
+:root {
+  --bg: #fbfcfb; --surface: #ffffff; --fg: #1d2a23; --muted: #5a6a61; --line: #d5ddd6; --grid: #e6ece6; --box: #eaf0ea;
+  --dit: #c8414f; --rlt: #b07800; --dsrl: #1d5fc4;
+  --heat: 29, 95, 196;
+  --display: "Newsreader", Georgia, "Times New Roman", serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px }
+.wrap { max-width: 960px; margin: 0 auto; display: grid; gap: 52px }
+h1, h2 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; line-height: 1.15 }
+h1 { font-size: clamp(30px, 5vw, 42px) }
+h2 { font-size: 25px }
+p { margin: 0 }
+a { color: var(--dsrl) }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--dsrl); outline-offset: 2px }
+section { display: grid; gap: 16px }
+.lede { font-size: 17px; color: var(--muted); text-wrap: pretty }
+.muted { color: var(--muted) }
+.small { font-size: 13px }
+.cap { font-size: 13px; color: var(--muted); text-wrap: pretty }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 0; background: var(--c) }
+.c-dit { --c: var(--dit) } .c-rlt { --c: var(--rlt) } .c-dsrl { --c: var(--dsrl) }
+
+.repo { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; font-size: 14px }
+.repo code { font: 500 14px var(--mono); background: var(--box); padding: 3px 8px; border-radius: 4px; overflow-wrap: anywhere }
+
+.score { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
+.score > div { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; display: grid; gap: 4px; min-width: 0 }
+.score .big { font: 500 clamp(28px, 6vw, 40px)/1 var(--mono); color: var(--c); font-variant-numeric: tabular-nums }
+.score .big small { font-size: 15px; color: var(--muted) }
+.bar { height: 6px; background: var(--grid); border-radius: 3px; overflow: hidden }
+.bar i { display: block; height: 100%; background: var(--c) }
+
+figure { margin: 0; display: grid; gap: 10px; min-width: 0 }
+.fig { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px; overflow-x: auto }
+.fig svg { width: 100%; min-width: 620px; height: auto; display: block; color: var(--fg) }
+figcaption { font-size: 13px; color: var(--muted); text-wrap: pretty }
+svg .bx { fill: var(--box); stroke: var(--line); stroke-width: 1.2 }
+svg .grp { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4 }
+svg .ln { stroke: currentColor; stroke-width: 1.4; fill: none }
+svg .t { fill: var(--fg); font: 600 13px var(--body) }
+svg .s { fill: var(--muted); font: 11.5px var(--mono) }
+svg .g { fill: var(--muted); font: 600 11px var(--body); letter-spacing: .06em; text-transform: uppercase }
+svg .lbl { fill: var(--fg); font: 11.5px var(--mono) }
+svg .hot-dit { fill: color-mix(in srgb, var(--dit) 14%, transparent); stroke: var(--dit); stroke-width: 2 }
+svg .hot-rlt { fill: color-mix(in srgb, var(--rlt) 14%, transparent); stroke: var(--rlt); stroke-width: 2 }
+svg .hot-dsrl { fill: color-mix(in srgb, var(--dsrl) 14%, transparent); stroke: var(--dsrl); stroke-width: 2 }
+svg .k-dit { fill: var(--dit) } svg .k-rlt { fill: var(--rlt) } svg .k-dsrl { fill: var(--dsrl) }
+svg .tun { fill: var(--grid) }
+svg .hot-you { fill: none; stroke: var(--fg); stroke-width: 2; stroke-dasharray: 6 4 }
+svg .k-you { fill: var(--fg) }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px }
+.chips span { font: 12.5px var(--mono); border: 1px solid var(--line); border-radius: 4px; padding: 4px 9px; background: var(--surface) }
+.chips span b { font-weight: 500 }
+.chips span i { font-style: normal; color: var(--muted) }
+
+#curve text { fill: var(--muted); font: 11px var(--mono) }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden }
+.seg button { font: 500 12px var(--body); background: transparent; color: var(--muted); border: 0; padding: 6px 12px; cursor: pointer }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg) }
+.figtop { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; margin-bottom: 8px }
+#curve { min-width: 0 !important }
+
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface) }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px }
+th, td { padding: 8px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--grid) }
+th:first-child, td:first-child { text-align: left }
+thead th { font-weight: 600; font-size: 12.5px; color: var(--muted); vertical-align: bottom }
+tbody tr:last-child td { border-bottom: 0 }
+tr.total td { font-weight: 600; border-top: 1px solid var(--line) }
+tr.grp td { font: 600 11px var(--body); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); text-align: left; padding-top: 14px }
+tr.sub td { font-weight: 500; border-top: 1px solid var(--line) }
+td.h { font-family: var(--mono); font-variant-numeric: tabular-nums }
+.tag { font: 500 11px var(--mono); color: var(--muted); display: block }
+@media (max-width: 720px) { .score { grid-template-columns: 1fr } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+.steps { margin: 0; padding-left: 22px; display: grid; gap: 14px }
+.steps li { padding-left: 4px; min-width: 0 }
+.steps b { font-weight: 600 }
+pre { margin: 6px 0 0; font: 12.5px/1.55 var(--mono); background: var(--box); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre }
+
+/* standalone page */
+html { -webkit-text-size-adjust: 100% }
+body { margin: 0 }
+img, video { max-width: 100% }
+.top { display: flex; gap: 24px; align-items: flex-start; justify-content: space-between }
+.top .hd { display: grid; gap: 14px; min-width: 0 }
+.qr { flex: none; display: grid; gap: 6px; justify-items: center; text-decoration: none; color: var(--muted); font: 11px var(--mono) }
+.qr svg { width: 104px; height: 104px; display: block; border: 1px solid var(--line); border-radius: 6px; background: #fff }
+@media (max-width: 560px) { .qr { display: none } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="hd">
+    <h1>Armnet Remote Platform</h1>
+    <p class="lede">Train and evaluate robot learning methods on real SO-101 arms over the internet.<br>Your GPU runs the policy and the learner; a remote cell runs the episodes, resets the scene and scores each one.</p>
+    <div class="repo"><span class="muted">Code</span><a href="https://github.com/LeeHakHo/armnet-rlt"><code>github.com/LeeHakHo/armnet-rlt</code></a></div>
+    </div>
+    <a class="qr" href="https://leehakho.github.io/armnet-rlt/" aria-label="QR code for this page"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 33 33" class="qr-svg"><path fill="#fff" d="M0 0h33v33h-33z"/><path class="qrline" stroke="#1d2a23" d="M2 2.5h7m1 0h2m3 0h1m3 0h2m3 0h7m-29 1h1m5 0h1m2 0h1m1 0h1m2 0h1m2 0h1m2 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m1 0h1m1 0h3m1 0h3m2 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m4 0h1m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h2m2 0h1m3 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h7m2 0h2m3 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-20 1h1m1 0h2m1 0h2m-16 1h1m1 0h1m3 0h2m5 0h3m4 0h1m2 0h1m2 0h1m1 0h1m-29 1h2m2 0h1m2 0h1m1 0h4m2 0h3m1 0h2m1 0h2m3 0h2m-29 1h2m4 0h1m1 0h1m3 0h4m1 0h10m1 0h1m-28 1h2m4 0h2m1 0h2m4 0h1m1 0h1m1 0h2m2 0h2m-25 1h3m1 0h2m2 0h6m1 0h1m2 0h1m2 0h2m4 0h1m-28 1h1m3 0h1m2 0h1m2 0h3m1 0h1m1 0h1m1 0h2m1 0h2m3 0h2m-28 1h2m3 0h2m3 0h2m2 0h2m2 0h1m1 0h1m2 0h1m3 0h1m-28 1h4m2 0h2m3 0h2m2 0h1m1 0h1m2 0h3m-24 1h2m1 0h2m1 0h1m4 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h2m4 0h1m-26 1h1m1 0h1m1 0h2m1 0h2m3 0h3m1 0h2m1 0h2m2 0h3m-29 1h3m1 0h3m2 0h2m2 0h3m3 0h1m1 0h1m2 0h2m2 0h1m-26 1h3m1 0h2m3 0h1m1 0h1m1 0h1m1 0h3m2 0h1m-24 1h2m3 0h2m1 0h1m1 0h1m1 0h5m2 0h7m1 0h1m-20 1h3m2 0h4m3 0h1m3 0h3m1 0h1m-29 1h7m1 0h2m2 0h1m2 0h4m1 0h1m1 0h1m1 0h1m3 0h1m-29 1h1m5 0h1m2 0h1m1 0h1m1 0h1m1 0h2m1 0h3m3 0h1m3 0h1m-29 1h1m1 0h3m1 0h1m4 0h3m2 0h1m2 0h7m2 0h1m-29 1h1m1 0h3m1 0h1m4 0h1m3 0h2m1 0h1m1 0h2m2 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m1 0h1m1 0h2m1 0h3m2 0h1m2 0h1m2 0h1m2 0h2m-29 1h1m5 0h1m4 0h1m2 0h1m1 0h1m3 0h3m2 0h1m-26 1h7m1 0h2m1 0h1m2 0h1m1 0h1m2 0h2m4 0h1m2 0h1"/></svg><span>scan to open</span></a>
+  </header>
+
+  <figure>
+    <video src="demo-cell03.mp4" poster="demo-cell03.jpg" autoplay muted loop playsinline controls aria-label="The arm presses the green button on cell-03, seen from the top, front and wrist cameras" style="width:100%;height:auto;border-radius:6px;background:var(--box);display:block"></video>
+    <figcaption>Example episode on cell-03, a second cell with the same setup. Real time; top, front and wrist cameras.</figcaption>
+  </figure>
+
+  <section>
+    <h2>How the system runs</h2>
+    <figure>
+      <div class="fig">
+        <svg viewBox="0 0 900 350" role="img" aria-label="The robot cell runs the actor. It sends frames to the policy server on the GPU machine and gets action chunks back; finished episodes go to the learner, which sends new weights to the policy server.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+          </defs>
+          <rect class="tun" x="320" y="60" width="260" height="240" rx="6"/>
+          <text class="g" x="450" y="338" text-anchor="middle">gRPC over one TLS tunnel</text>
+
+          <rect class="grp" x="20" y="20" width="280" height="300" rx="8"/>
+          <text class="g" x="36" y="44">SO-101 robot cell</text>
+          <rect class="bx" x="40" y="60" width="240" height="140" rx="5"/>
+          <text class="t" x="56" y="88">Actor</text>
+          <text class="s" x="56" y="112">runs 30 s episodes</text>
+          <text class="s" x="56" y="132">resets the scene</text>
+          <text class="s" x="56" y="152">stops on a current trip</text>
+          <rect class="bx" x="40" y="240" width="240" height="60" rx="5"/>
+          <text class="t" x="56" y="264">Arm + 3 cameras</text>
+          <text class="s" x="56" y="284">top · front · wrist</text>
+          <line class="ln" x1="120" y1="200" x2="120" y2="238" marker-end="url(#ah)"/>
+          <text class="lbl" x="112" y="224" text-anchor="end">commands</text>
+          <line class="ln" x1="200" y1="240" x2="200" y2="202" marker-end="url(#ah)"/>
+          <text class="lbl" x="208" y="224">frames</text>
+
+          <rect class="grp" x="600" y="20" width="280" height="300" rx="8"/>
+          <text class="g" x="616" y="44">GPU machine · 1 × A6000</text>
+          <rect class="bx" x="620" y="60" width="240" height="140" rx="5"/>
+          <text class="t" x="636" y="88">Policy server</text>
+          <text class="s" x="636" y="112">π0.5 + RL head, or DiT</text>
+          <text class="s" x="636" y="132">runs inference</text>
+          <rect class="bx" x="620" y="240" width="240" height="60" rx="5"/>
+          <text class="t" x="636" y="264">Learner</text>
+          <text class="s" x="636" y="284">TD3 · SAC · BC</text>
+          <line class="ln" x1="740" y1="240" x2="740" y2="202" marker-end="url(#ah)"/>
+          <text class="lbl" x="750" y="224">④ new weights</text>
+
+          <line class="ln" x1="280" y1="100" x2="618" y2="100" marker-end="url(#ah)"/>
+          <text class="lbl" x="450" y="92" text-anchor="middle">① camera frames + joint state</text>
+          <line class="ln" x1="620" y1="140" x2="282" y2="140" marker-end="url(#ah)"/>
+          <text class="lbl" x="450" y="132" text-anchor="middle">② action chunk (30 steps)</text>
+          <polyline class="ln" points="280,180 340,180 340,270 618,270" marker-end="url(#ah)"/>
+          <text class="lbl" x="450" y="262" text-anchor="middle">③ episodes + reward</text>
+        </svg>
+      </div>
+      <figcaption>The cell only runs the actor; inference and training run on our GPU. ① frames go out, ② an action chunk comes back, ③ finished episodes go to the learner, ④ which pushes new weights to the policy server.<br>Jobs reach the cell through the Armnet queue.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>How to use</h2>
+    <ol class="steps">
+      <li><b>Install</b><pre>uv sync --locked
+scripts/setup_local.sh learner</pre></li>
+      <li><b>Start your policy server and learner on your GPU</b><pre>rlt-local policy-server --checkpoint &lt;your checkpoint&gt;
+rlt-local online --algorithm dsrl --run-id my-run</pre></li>
+      <li><b>Send an actor to a cell</b><pre>rlt-submit-actor --task push_green_button --learner-key &lt;config&gt;:my-run --num-rollouts 100</pre></li>
+      <li><b>Evaluate on ID and OOD scenes</b><pre>rlt-submit-eval --frozen-rlt-checkpoint &lt;frozen actor&gt; --num-rollouts 10</pre></li>
+    </ol>
+    <p class="cap">Every flag is in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
+  </section>
+
+  <section>
+    <h2>Evaluation protocol</h2>
+    <div class="chips">
+      <span><b>ID</b> <i>rail in training range</i></span>
+      <span><b>rail-low</b> <i>below range</i></span>
+      <span><b>rail-high</b> <i>above range</i></span>
+      <span><b>bright15</b> <i>light 30 → 15</i></span>
+      <span><b>bright5</b> <i>light 30 → 5</i></span>
+      <span><b>tilt1550</b> <i>top camera tilted</i></span>
+      <span><b>tilt1750</b> <i>tilted further</i></span>
+    </div>
+    <p class="cap">Each condition: 3 seeds × 5 rollouts, no exploration noise, 30 s limit. A safety trip counts as a failure.<br>The seed fixes the rail positions, so every policy sees the same scenes.</p>
+  </section>
+
+  <section>
+    <h2>Baselines</h2>
+    <figure>
+      <div class="fig">
+        <svg viewBox="0 0 900 455" role="img" aria-label="DSRL trains an actor that picks the sampler noise of a frozen pi0.5; RLT trains a residual on pi0.5's action chunk; iterative DiT retrains the whole policy on its own successes; your method plugs into the same policy server.">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+          </defs>
+          <!-- DSRL -->
+          <circle class="k-dsrl" cx="10" cy="22" r="5"/>
+          <text class="t" x="22" y="27">DSRL</text>
+          <rect class="hot-dsrl" x="150" y="40" width="130" height="44" rx="5"/>
+          <text class="t" x="215" y="60" text-anchor="middle">SAC actor</text>
+          <text class="s" x="215" y="76" text-anchor="middle">3 × 1024</text>
+          <line class="ln" x1="280" y1="62" x2="428" y2="62" marker-end="url(#ah2)"/>
+          <text class="lbl" x="355" y="54" text-anchor="middle">noise z, |z| ≤ 1.5</text>
+          <rect class="bx" x="430" y="40" width="170" height="44" rx="5"/>
+          <text class="t" x="515" y="60" text-anchor="middle">π0.5 sampler</text>
+          <text class="s" x="515" y="76" text-anchor="middle">frozen</text>
+          <line class="ln" x1="600" y1="62" x2="748" y2="62" marker-end="url(#ah2)"/>
+          <text class="lbl" x="675" y="54" text-anchor="middle">action chunk</text>
+          <rect class="bx" x="750" y="40" width="140" height="44" rx="5"/>
+          <text class="t" x="820" y="67" text-anchor="middle">robot</text>
+
+          <!-- RLT -->
+          <circle class="k-rlt" cx="10" cy="122" r="5"/>
+          <text class="t" x="22" y="127">RLT</text>
+          <rect class="bx" x="150" y="140" width="130" height="44" rx="5"/>
+          <text class="t" x="215" y="160" text-anchor="middle">π0.5</text>
+          <text class="s" x="215" y="176" text-anchor="middle">frozen</text>
+          <line class="ln" x1="280" y1="162" x2="428" y2="162" marker-end="url(#ah2)"/>
+          <text class="lbl" x="355" y="154" text-anchor="middle">chunk a, RL token</text>
+          <rect class="hot-rlt" x="430" y="140" width="170" height="44" rx="5"/>
+          <text class="t" x="515" y="160" text-anchor="middle">TD3 residual actor</text>
+          <text class="s" x="515" y="176" text-anchor="middle">4 × 512</text>
+          <line class="ln" x1="600" y1="162" x2="748" y2="162" marker-end="url(#ah2)"/>
+          <text class="lbl" x="675" y="154" text-anchor="middle">a + 0.1·Δ</text>
+          <rect class="bx" x="750" y="140" width="140" height="44" rx="5"/>
+          <text class="t" x="820" y="167" text-anchor="middle">robot</text>
+
+          <!-- DiT -->
+          <circle class="k-dit" cx="10" cy="222" r="5"/>
+          <text class="t" x="22" y="227">Iterative DiT</text>
+          <rect class="hot-dit" x="150" y="240" width="130" height="44" rx="5"/>
+          <text class="t" x="215" y="260" text-anchor="middle">DiT policy</text>
+          <text class="s" x="215" y="276" text-anchor="middle">all weights</text>
+          <line class="ln" x1="280" y1="262" x2="428" y2="262" marker-end="url(#ah2)"/>
+          <text class="lbl" x="355" y="254" text-anchor="middle">rollouts</text>
+          <rect class="bx" x="430" y="240" width="170" height="44" rx="5"/>
+          <text class="t" x="515" y="267" text-anchor="middle">robot</text>
+          <line class="ln" x1="600" y1="262" x2="748" y2="262" marker-end="url(#ah2)"/>
+          <text class="lbl" x="675" y="254" text-anchor="middle">successes only</text>
+          <rect class="bx" x="750" y="240" width="140" height="44" rx="5"/>
+          <text class="t" x="820" y="260" text-anchor="middle">dataset</text>
+          <text class="s" x="820" y="276" text-anchor="middle">+ 39 demos, 50/50</text>
+          <polyline class="ln" points="820,284 820,318 215,318 215,286" marker-end="url(#ah2)"/>
+          <text class="lbl" x="515" y="340" text-anchor="middle">behaviour cloning, 300 steps per round</text>
+
+          <!-- Yours -->
+          <circle class="k-you" cx="10" cy="357" r="5"/>
+          <text class="t" x="22" y="362">Yours</text>
+          <rect class="hot-you" x="150" y="375" width="740" height="64" rx="8"/>
+          <text x="520" y="414" text-anchor="middle" style="fill: var(--fg); font: 600 20px var(--display)">Yours!</text>
+        </svg>
+      </div>
+      <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen.<br>DiT starts from 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Baseline results</h2>
+    <p class="cap">push_green_button on one SO-101 cell. Each baseline trains for up to 6 hours, then runs 105 evaluation rollouts.</p>
+    <div class="score">
+      <div class="c-dit"><span><span class="dot"></span><b>Iterative DiT</b> <span class="muted small">step 1,800 · 2.1 h</span></span><span class="big">35<small> / 105 (33%)</small></span><span class="muted small">ID 10/15 · OOD 25/90</span><div class="bar"><i style="width:33.3%"></i></div></div>
+      <div class="c-rlt"><span><span class="dot"></span><b>RLT</b> <span class="muted small">step 20k · 5.9 h</span></span><span class="big">40<small> / 105 (38%)</small></span><span class="muted small">ID 10/15 · OOD 30/90</span><div class="bar"><i style="width:38.1%"></i></div></div>
+      <div class="c-dsrl"><span><span class="dot"></span><b>DSRL</b> <span class="muted small">step 390k · 5.6 h</span></span><span class="big">63<small> / 105 (60%)</small></span><span class="muted small">ID 9/15 · OOD 54/90</span><div class="bar"><i style="width:60%"></i></div></div>
+    </div>
+    <p class="cap">105 evaluation rollouts per method: 15 in-distribution (ID) + 90 out-of-distribution (OOD, 6 conditions × 15).<br>No safety trips in any evaluation. DSRL's lead comes from the OOD conditions.</p>
+    <div class="tbl"><table id="res"></table></div>
+    <p class="cap">Successes out of 15. Each method uses its latest evaluated checkpoint within 6 hours of training.</p>
+  </section>
+
+  <section>
+    <h2>Baseline learning curves</h2>
+    <div class="fig">
+      <div class="figtop">
+        <div class="legend"><span class="c-dit"><span class="dot"></span>Iterative DiT</span><span class="c-rlt"><span class="dot"></span>RLT</span><span class="c-dsrl"><span class="dot"></span>DSRL</span></div>
+        <div class="seg" role="group" aria-label="Horizontal axis">
+          <button id="x-hours" aria-pressed="true">Hours</button><button id="x-eps" aria-pressed="false">Robot episodes</button>
+        </div>
+      </div>
+      <svg id="curve" viewBox="0 0 900 340" role="img" aria-label="Training success rate over the first 6 hours for three methods"></svg>
+    </div>
+    <p class="cap">Success over the last 30 training rollouts (RLT and DSRL include exploration noise). Rings mark the evaluated checkpoints.</p>
+  </section>
+
+  <section>
+    <h2>Baseline time and compute</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Run</th><th>Learner steps</th><th>Wall clock</th><th>GPU-hours</th><th>Robot episodes</th><th>Robot time</th><th>Training successes</th></tr></thead>
+      <tbody>
+        <tr class="c-dit"><td><span class="dot"></span>DiT → step 1,800</td><td class="h">1,800</td><td class="h">2.1 h</td><td class="h">2.1</td><td class="h">141</td><td class="h">0.9 h</td><td class="h">84 (60%)</td></tr>
+        <tr class="c-rlt"><td><span class="dot"></span>RLT → step 20k</td><td class="h">20,000</td><td class="h">5.9 h</td><td class="h">5.9</td><td class="h">706</td><td class="h">4.1 h</td><td class="h">467 (66%)</td></tr>
+        <tr class="c-dsrl"><td><span class="dot"></span>DSRL → step 390k</td><td class="h">390,000</td><td class="h">5.6 h</td><td class="h">5.6</td><td class="h">624</td><td class="h">3.8 h</td><td class="h">360 (58%)</td></tr>
+      </tbody>
+    </table></div>
+    <p class="cap">One RTX A6000 per run. Robot time is time spent inside episodes; the rest is resets and scene changes. Not counted: π0.5 fine-tuning, DiT pretraining, and evaluation (about 1.5 h of robot time per checkpoint).</p>
+  </section>
+</div>
+
+<script>
+const CURVES = {"dit":[[1,0.0,0,0.0],[2,0.011,0,0.0],[3,0.021,0,0.0],[4,0.032,0,0.0],[5,0.043,0,0.0],[6,0.053,0,0.0],[7,0.064,0,0.0],[8,0.069,0,0.125],[9,0.078,0,0.222],[10,0.089,0,0.2],[11,0.1,0,0.182],[12,0.111,0,0.167],[13,0.117,0,0.231],[14,0.129,0,0.214],[15,0.139,0,0.2],[16,0.149,0,0.25],[17,0.16,0,0.235],[18,0.171,0,0.222],[19,0.182,0,0.211],[20,0.19,0,0.25],[21,0.201,0,0.238],[22,0.21,0,0.273],[23,0.218,0,0.304],[24,0.223,0,0.333],[25,0.228,0,0.36],[26,0.234,0,0.385],[27,0.245,0,0.37],[28,0.256,0,0.357],[29,0.267,0,0.345],[30,0.278,0,0.333],[31,0.427,300,0.333],[32,0.435,300,0.367],[33,0.441,300,0.4],[34,0.452,300,0.4],[35,0.463,300,0.4],[36,0.474,300,0.4],[37,0.482,300,0.433],[38,0.494,300,0.4],[39,0.501,300,0.4],[40,0.509,300,0.433],[41,0.514,300,0.467],[42,0.525,300,0.467],[43,0.536,300,0.433],[44,0.548,300,0.433],[45,0.556,300,0.467],[46,0.567,300,0.467],[47,0.575,300,0.5],[48,0.586,300,0.5],[49,0.597,300,0.5],[50,0.608,300,0.467],[51,0.618,300,0.467],[52,0.627,300,0.467],[53,0.632,300,0.467],[54,0.641,300,0.467],[55,0.652,300,0.433],[56,0.658,300,0.433],[57,0.667,300,0.467],[58,0.673,300,0.5],[59,0.681,300,0.533],[60,0.693,300,0.533],[61,0.837,600,0.567],[62,0.845,600,0.567],[63,0.856,600,0.533],[64,0.861,600,0.567],[65,0.865,600,0.6],[66,0.87,600,0.633],[67,0.879,600,0.633],[68,0.885,600,0.667],[69,0.896,600,0.633],[70,0.902,600,0.633],[71,0.912,600,0.6],[72,0.923,600,0.6],[73,0.93,600,0.633],[74,0.935,600,0.667],[75,0.947,600,0.633],[76,0.956,600,0.633],[77,0.966,600,0.6],[78,0.973,600,0.633],[79,0.984,600,0.633],[80,0.995,600,0.633],[81,1.14,900,0.633],[82,1.151,900,0.6],[83,1.159,900,0.6],[84,1.171,900,0.567],[85,1.175,900,0.6],[86,1.185,900,0.6],[87,1.195,900,0.567],[88,1.206,900,0.533],[89,1.213,900,0.533],[90,1.223,900,0.533],[91,1.23,900,0.533],[92,1.236,900,0.533],[93,1.241,900,0.567],[94,1.248,900,0.567],[95,1.254,900,0.567],[96,1.264,900,0.533],[97,1.271,900,0.533],[98,1.275,900,0.533],[99,1.286,900,0.567],[100,1.293,900,0.567],[101,1.443,1200,0.567],[102,1.454,1200,0.567],[103,1.465,1200,0.533],[104,1.473,1200,0.533],[105,1.483,1200,0.567],[106,1.49,1200,0.567],[107,1.501,1200,0.6],[108,1.507,1200,0.6],[109,1.516,1200,0.633],[110,1.521,1200,0.667],[111,1.532,1200,0.667],[112,1.539,1200,0.7],[113,1.548,1200,0.7],[114,1.556,1200,0.733],[115,1.567,1200,0.7],[116,1.575,1200,0.7],[117,1.582,1200,0.733],[118,1.59,1200,0.767],[119,1.599,1200,0.767],[120,1.609,1200,0.8],[121,1.757,1500,0.8],[122,1.768,1500,0.767],[123,1.779,1500,0.767],[124,1.788,1500,0.767],[125,1.797,1500,0.767],[126,1.805,1500,0.8],[127,1.816,1500,0.8],[128,1.823,1500,0.8],[129,1.829,1500,0.8],[130,1.835,1500,0.8],[131,1.841,1500,0.833],[132,1.85,1500,0.867],[133,1.859,1500,0.9],[134,1.87,1500,0.867],[135,1.878,1500,0.867],[136,1.885,1500,0.867],[137,1.893,1500,0.867],[138,1.902,1500,0.867],[139,1.911,1500,0.867],[140,1.92,1500,0.867],[141,2.071,1800,0.867],[142,2.079,1800,0.867],[143,2.087,1800,0.867],[144,2.096,1800,0.867],[145,2.105,1800,0.9],[146,2.113,1800,0.9],[147,2.124,1800,0.867],[148,2.132,1800,0.867],[149,2.142,1800,0.833],[150,2.153,1800,0.8],[151,2.157,1800,0.8],[152,2.168,1800,0.8],[153,2.175,1800,0.8],[154,2.183,1800,0.8],[155,2.189,1800,0.8],[156,2.2,1800,0.8],[157,2.211,1800,0.767],[158,2.217,1800,0.767],[159,2.227,1800,0.733],[160,2.234,1800,0.733],[161,2.383,2100,0.7],[162,2.393,2100,0.7],[163,2.404,2100,0.667],[164,2.41,2100,0.7],[165,2.418,2100,0.7],[166,2.428,2100,0.667],[167,2.434,2100,0.667],[168,2.443,2100,0.667],[169,2.452,2100,0.667],[170,2.463,2100,0.633],[171,2.468,2100,0.667],[172,2.474,2100,0.667],[173,2.486,2100,0.633],[174,2.493,2100,0.633],[175,2.502,2100,0.633],[176,2.511,2100,0.633],[177,2.521,2100,0.667],[178,2.53,2100,0.667],[179,2.54,2100,0.7],[180,2.548,2100,0.733],[181,2.584,2100,0.733],[182,2.59,2100,0.767],[183,2.6,2100,0.767],[184,2.607,2100,0.767],[185,2.616,2100,0.767],[186,2.627,2100,0.733],[187,2.632,2100,0.767],[188,2.642,2100,0.733],[189,2.649,2100,0.767],[190,2.66,2100,0.733],[191,2.669,2100,0.767],[192,2.676,2100,0.767],[193,2.684,2100,0.8],[194,2.694,2100,0.8],[195,2.702,2100,0.8],[196,2.713,2100,0.8],[197,2.719,2100,0.8],[198,2.727,2100,0.8],[199,2.738,2400,0.767],[200,2.748,2400,0.767],[201,2.755,2400,0.767],[202,2.766,2400,0.767],[203,2.776,2400,0.767],[204,2.788,2400,0.733],[205,2.795,2400,0.733],[206,2.805,2400,0.7],[207,2.813,2400,0.7],[208,2.818,2400,0.7],[209,2.827,2400,0.7],[210,2.834,2400,0.7],[211,2.896,2700,0.7],[212,2.903,2700,0.7],[213,2.908,2700,0.7],[214,2.916,2700,0.7],[215,2.927,2700,0.667],[216,2.937,2700,0.7],[217,2.948,2700,0.7],[218,2.96,2700,0.7],[219,2.967,2700,0.7],[220,2.978,2700,0.7],[221,2.987,2700,0.7],[222,2.994,2700,0.7],[223,3.003,2700,0.7],[224,3.014,2700,0.667],[225,3.026,2700,0.633],[226,3.033,2700,0.667],[227,3.044,2700,0.667],[228,3.056,2700,0.633],[229,3.065,2700,0.667],[230,3.075,2700,0.667],[231,3.086,2700,0.667],[232,3.091,2700,0.667],[233,3.099,2700,0.7],[234,3.107,2700,0.733],[235,3.117,2700,0.733],[236,3.128,2700,0.733],[237,3.136,3000,0.733],[238,3.145,3000,0.733],[239,3.156,3000,0.7],[240,3.167,3000,0.7],[241,3.318,3300,0.667],[242,3.324,3300,0.667],[243,3.335,3300,0.633],[244,3.34,3300,0.633],[245,3.347,3300,0.667],[246,3.358,3300,0.667],[247,3.367,3300,0.667],[248,3.373,3300,0.7],[249,3.383,3300,0.7],[250,3.394,3300,0.7],[251,3.404,3300,0.667],[252,3.409,3300,0.667],[253,3.419,3300,0.667],[254,3.428,3300,0.7],[255,3.44,3300,0.7],[256,3.45,3300,0.7],[257,3.46,3300,0.667],[258,3.467,3300,0.7],[259,3.475,3300,0.7],[260,3.48,3300,0.733],[261,3.629,3600,0.733],[262,3.639,3600,0.7],[263,3.65,3600,0.667],[264,3.662,3600,0.633],[265,3.671,3600,0.633],[266,3.68,3600,0.667],[267,3.688,3600,0.667],[268,3.696,3600,0.667],[269,3.705,3600,0.7],[270,3.715,3600,0.667],[271,3.726,3600,0.7],[272,3.737,3600,0.667],[273,3.746,3600,0.7],[274,3.757,3600,0.667],[275,3.769,3600,0.633],[276,3.774,3600,0.633],[277,3.783,3600,0.633],[278,3.793,3600,0.633],[279,3.804,3600,0.6],[280,3.815,3600,0.633],[281,3.964,3900,0.667],[282,3.97,3900,0.667],[283,3.98,3900,0.667],[284,3.985,3900,0.667],[285,3.996,3900,0.667],[286,4.004,3900,0.667],[287,4.015,3900,0.667],[288,4.026,3900,0.633],[289,4.037,3900,0.6],[290,4.042,3900,0.6],[291,4.052,3900,0.6],[292,4.063,3900,0.6],[293,4.074,3900,0.6],[294,4.084,3900,0.6],[295,4.09,3900,0.6],[296,4.097,3900,0.6],[297,4.107,3900,0.6],[298,4.113,3900,0.6],[299,4.124,3900,0.567],[300,4.135,3900,0.567],[301,4.284,4200,0.567],[302,4.289,4200,0.6],[303,4.3,4200,0.567],[304,4.311,4200,0.567],[305,4.322,4200,0.567],[306,4.333,4200,0.567],[307,4.342,4200,0.567],[308,4.353,4200,0.533],[309,4.363,4200,0.533],[310,4.371,4200,0.533],[311,4.377,4200,0.533],[312,4.389,4200,0.5],[313,4.399,4200,0.467],[314,4.405,4200,0.467],[315,4.417,4200,0.467],[316,4.428,4200,0.433],[317,4.439,4200,0.433],[318,4.449,4200,0.433],[319,4.46,4200,0.433],[320,4.47,4200,0.433],[321,4.618,4500,0.433],[322,4.627,4500,0.467],[323,4.637,4500,0.467],[324,4.647,4500,0.5],[325,4.653,4500,0.5],[326,4.658,4500,0.5],[327,4.664,4500,0.5],[328,4.671,4500,0.5],[329,4.676,4500,0.533],[330,4.684,4500,0.567],[331,4.689,4500,0.567],[332,4.699,4500,0.533],[333,4.709,4500,0.567],[334,4.72,4500,0.6],[335,4.732,4500,0.6],[336,4.738,4500,0.6],[337,4.749,4500,0.567],[338,4.758,4500,0.6],[339,4.768,4500,0.6],[340,4.777,4500,0.6],[341,4.929,4800,0.567],[342,4.939,4800,0.6],[343,4.947,4800,0.633],[344,4.958,4800,0.6],[345,4.969,4800,0.6],[346,4.979,4800,0.633],[347,4.991,4800,0.633],[348,5.002,4800,0.633],[349,5.014,4800,0.633],[350,5.024,4800,0.633],[351,5.032,4800,0.633],[352,5.043,4800,0.633],[353,5.055,4800,0.633],[354,5.062,4800,0.633],[355,5.07,4800,0.633],[356,5.079,4800,0.633],[357,5.089,4800,0.633],[358,5.098,4800,0.633],[359,5.107,4800,0.633],[360,5.116,4800,0.633],[361,5.153,4800,0.633],[362,5.164,4800,0.633],[363,5.175,4800,0.6],[364,5.18,4800,0.6],[365,5.19,4800,0.633],[366,5.198,4800,0.633],[367,5.206,4800,0.667],[368,5.213,4800,0.667],[369,5.225,4800,0.667],[369,5.225,4800,0.667]],"rlt":[[1,0.0,5000,0.0],[5,0.027,5571,0.2],[9,0.064,5663,0.333],[13,0.103,5790,0.385],[17,0.144,5860,0.353],[21,0.181,5972,0.381],[25,0.219,6091,0.44],[29,0.252,6143,0.517],[33,0.288,6244,0.567],[37,0.326,6306,0.633],[41,0.354,6411,0.667],[45,0.395,6512,0.667],[49,0.424,6587,0.767],[53,0.448,6645,0.8],[57,0.476,6704,0.767],[61,0.519,6777,0.633],[65,0.554,6899,0.6],[69,0.582,6978,0.633],[73,0.62,7044,0.6],[77,0.653,7149,0.6],[81,0.686,7253,0.6],[85,0.72,7311,0.567],[89,0.755,7415,0.567],[93,0.797,7498,0.567],[97,0.826,7607,0.6],[101,0.866,7679,0.5],[105,0.909,7803,0.467],[109,0.944,7907,0.467],[113,0.975,7997,0.467],[117,1.018,8110,0.4],[121,1.048,8192,0.433],[125,1.087,8293,0.4],[129,1.123,8382,0.4],[133,1.156,8443,0.5],[137,1.186,8559,0.567],[141,1.215,8598,0.567],[145,1.251,8698,0.6],[149,1.285,8791,0.633],[153,1.315,8850,0.733],[157,1.353,8959,0.767],[161,1.391,9028,0.733],[165,1.433,9162,0.7],[169,1.465,9229,0.733],[173,1.507,9320,0.7],[177,1.551,9431,0.6],[181,1.591,9552,0.533],[185,1.626,9690,0.5],[189,1.651,9742,0.533],[193,1.677,9778,0.6],[197,1.712,9849,0.6],[201,1.744,9944,0.6],[205,1.783,10027,0.667],[209,1.82,10123,0.7],[213,1.862,10235,0.733],[217,1.905,10339,0.633],[221,1.941,10464,0.6],[225,1.976,10535,0.6],[229,2.01,10601,0.567],[233,2.038,10693,0.567],[237,2.067,10729,0.6],[241,2.095,10809,0.667],[245,2.128,10881,0.733],[249,2.161,10938,0.7],[253,2.198,11058,0.7],[257,2.235,11130,0.7],[261,2.265,11204,0.7],[265,2.292,11298,0.733],[269,2.322,11352,0.767],[273,2.353,11428,0.767],[277,2.386,11524,0.7],[281,2.418,11578,0.8],[285,2.453,11651,0.8],[289,2.481,11728,0.767],[293,2.521,11829,0.733],[297,2.564,11942,0.633],[301,2.599,12009,0.633],[305,2.629,12106,0.667],[309,2.654,12161,0.667],[313,2.691,12263,0.633],[317,2.725,12348,0.633],[321,2.757,12431,0.7],[325,2.796,12553,0.633],[329,2.828,12613,0.667],[333,2.859,12705,0.7],[337,2.896,12800,0.667],[341,2.931,12859,0.667],[345,2.961,12941,0.667],[349,2.99,13013,0.667],[353,3.02,13090,0.733],[357,3.056,13149,0.767],[361,3.09,13248,0.733],[365,3.124,13345,0.767],[369,3.159,13439,0.767],[373,3.194,13493,0.833],[377,3.228,13600,0.767],[381,3.265,13673,0.7],[385,3.297,13746,0.7],[389,3.321,13809,0.733],[393,3.348,13857,0.733],[397,3.392,13985,0.667],[401,3.432,14067,0.6],[405,3.46,14150,0.633],[409,3.494,14228,0.6],[413,3.53,14328,0.633],[417,3.575,14408,0.567],[421,3.61,14510,0.5],[425,3.645,14608,0.533],[429,3.677,14673,0.6],[433,3.718,14759,0.6],[437,3.756,14861,0.567],[441,3.791,14938,0.533],[445,3.821,15039,0.533],[449,3.855,15145,0.567],[453,3.885,15189,0.633],[457,3.921,15260,0.567],[461,3.95,15346,0.633],[465,3.983,15393,0.667],[469,4.026,15503,0.567],[473,4.068,15628,0.533],[477,4.096,15712,0.633],[481,4.135,15800,0.567],[485,4.17,15862,0.533],[489,4.211,15978,0.5],[493,4.248,16070,0.433],[497,4.286,16145,0.433],[501,4.318,16270,0.5],[505,4.35,16337,0.533],[509,4.383,16426,0.567],[513,4.423,16497,0.5],[517,4.454,16568,0.533],[521,4.486,16643,0.633],[525,4.527,16759,0.567],[529,4.564,16842,0.6],[533,4.598,16939,0.567],[537,4.626,17001,0.567],[541,4.66,17083,0.533],[545,4.685,17133,0.6],[549,4.726,17214,0.567],[553,4.762,17335,0.6],[557,4.793,17386,0.667],[561,4.822,17444,0.733],[565,4.85,17506,0.767],[569,4.883,17587,0.733],[573,4.918,17663,0.7],[577,4.953,17742,0.7],[581,4.984,17856,0.733],[585,5.013,17914,0.733],[589,5.046,17976,0.733],[593,5.077,18069,0.733],[597,5.108,18131,0.767],[601,5.131,18184,0.833],[605,5.155,18237,0.867],[609,5.189,18322,0.867],[613,5.222,18396,0.867],[617,5.258,18490,0.833],[621,5.306,18575,0.833],[625,5.33,18623,0.833],[629,5.361,18678,0.833],[633,5.393,18776,0.8],[637,5.424,18852,0.833],[641,5.453,18892,0.8],[645,5.481,18967,0.867],[649,5.51,19043,0.867],[653,5.545,19124,0.8],[657,5.573,19197,0.8],[661,5.605,19269,0.8],[665,5.64,19365,0.8],[669,5.665,19414,0.8],[673,5.702,19498,0.8],[677,5.733,19560,0.833],[681,5.76,19644,0.867],[685,5.792,19721,0.867],[689,5.822,19780,0.833],[693,5.849,19830,0.867],[697,5.873,19880,0.9],[701,5.899,19928,0.933],[705,5.934,19991,0.867],[709,5.969,20119,0.833],[713,6.0,20175,0.867]],"dsrl":[[1,0.0,0,0.0],[3,0.018,1432,0.333],[5,0.037,6290,0.4],[7,0.056,7730,0.429],[9,0.077,9230,0.333],[11,0.094,11030,0.364],[13,0.116,12350,0.308],[15,0.137,14120,0.267],[17,0.16,15860,0.235],[19,0.181,17600,0.211],[21,0.205,19558,0.19],[23,0.227,21319,0.174],[25,0.244,22880,0.2],[27,0.266,24218,0.185],[29,0.287,25850,0.172],[31,0.31,27650,0.167],[33,0.331,29360,0.133],[35,0.353,31160,0.1],[37,0.375,32930,0.067],[39,0.395,34730,0.1],[41,0.417,36320,0.067],[43,0.438,38283,0.067],[45,0.46,39920,0.067],[47,0.481,41690,0.067],[49,0.503,43490,0.067],[51,0.526,45294,0.067],[53,0.547,47105,0.067],[55,0.565,48830,0.067],[57,0.586,50221,0.067],[59,0.608,51950,0.067],[61,0.63,53660,0.067],[63,0.651,55400,0.1],[65,0.671,57110,0.133],[67,0.692,58520,0.133],[69,0.713,60350,0.1],[71,0.735,62060,0.1],[73,0.757,63800,0.1],[75,0.779,65570,0.1],[77,0.801,67401,0.133],[79,0.823,69020,0.133],[81,0.845,70820,0.167],[83,0.867,72380,0.167],[85,0.89,74150,0.133],[87,0.912,74780,0.133],[89,0.93,75890,0.2],[91,0.951,77998,0.2],[93,0.972,79070,0.167],[95,0.993,82490,0.133],[97,1.01,84260,0.167],[99,1.031,85490,0.167],[101,1.051,87230,0.2],[103,1.07,88790,0.233],[105,1.089,90239,0.267],[107,1.106,91640,0.267],[109,1.125,92930,0.3],[111,1.142,94352,0.3],[113,1.164,95750,0.3],[115,1.186,97541,0.3],[117,1.207,99350,0.3],[119,1.224,100930,0.267],[121,1.245,102320,0.267],[123,1.262,103714,0.3],[125,1.282,105320,0.333],[127,1.299,107030,0.333],[129,1.319,108470,0.367],[131,1.335,109894,0.4],[133,1.353,111200,0.433],[135,1.372,112400,0.433],[137,1.393,114050,0.433],[139,1.414,115790,0.4],[141,1.434,117530,0.4],[143,1.449,118837,0.433],[145,1.472,120140,0.433],[147,1.494,121880,0.433],[149,1.516,123710,0.4],[151,1.536,125480,0.433],[153,1.552,127010,0.467],[155,1.57,128185,0.467],[157,1.588,129590,0.467],[159,1.599,130130,0.5],[161,1.617,131750,0.467],[163,1.639,133160,0.433],[165,1.656,134900,0.433],[167,1.673,136142,0.467],[169,1.694,137300,0.467],[171,1.712,139010,0.467],[173,1.728,140270,0.467],[175,1.75,141500,0.467],[177,1.767,143231,0.533],[179,1.785,144380,0.567],[181,1.805,145490,0.533],[183,1.827,147081,0.467],[185,1.844,148700,0.467],[187,1.858,149960,0.5],[189,1.875,150950,0.5],[191,1.89,152150,0.533],[193,1.907,153230,0.533],[195,1.927,154489,0.533],[197,1.939,155813,0.533],[199,1.962,156800,0.533],[201,1.982,158510,0.533],[203,2.004,160070,0.5],[205,2.021,161810,0.533],[207,2.038,163249,0.5],[209,2.056,164180,0.533],[211,2.071,165470,0.6],[213,2.084,166460,0.667],[215,2.105,167210,0.667],[217,2.122,168920,0.633],[219,2.137,170180,0.633],[221,2.153,171110,0.6],[223,2.167,172280,0.633],[225,2.19,173480,0.633],[227,2.213,175334,0.567],[229,2.225,176624,0.633],[231,2.246,177320,0.6],[233,2.266,179090,0.633],[235,2.278,180624,0.667],[237,2.289,181430,0.7],[239,2.307,182060,0.667],[241,2.324,183500,0.633],[243,2.338,184336,0.6],[245,2.355,186008,0.633],[247,2.37,186950,0.667],[249,2.386,187940,0.633],[251,2.403,189050,0.633],[253,2.426,190414,0.6],[255,2.446,192110,0.6],[257,2.463,193700,0.633],[259,2.473,194000,0.567],[261,2.492,195946,0.6],[263,2.514,197162,0.567],[265,2.531,199063,0.533],[267,2.545,199840,0.533],[269,2.562,200570,0.533],[271,2.575,201757,0.567],[273,2.594,202593,0.567],[275,2.611,203934,0.567],[277,2.627,204811,0.533],[279,2.643,206186,0.567],[281,2.657,207260,0.6],[283,2.68,208130,0.567],[285,2.69,209000,0.533],[287,2.703,210217,0.567],[289,2.72,211580,0.6],[291,2.737,213054,0.6],[293,2.751,213950,0.667],[295,2.77,214910,0.667],[297,2.783,216410,0.667],[299,2.793,217130,0.7],[301,2.815,217915,0.633],[303,2.828,219440,0.667],[305,2.84,220130,0.667],[307,2.862,220783,0.633],[309,2.876,222560,0.633],[311,2.893,223520,0.6],[313,2.914,224750,0.633],[315,2.927,226220,0.7],[317,2.942,227030,0.7],[319,2.962,228356,0.7],[321,2.978,229484,0.7],[323,2.995,230800,0.7],[325,3.016,231920,0.7],[327,3.026,233630,0.7],[329,3.04,234080,0.7],[331,3.057,235010,0.733],[333,3.075,236270,0.733],[335,3.086,237590,0.733],[337,3.097,238160,0.8],[339,3.113,238730,0.767],[341,3.129,239468,0.8],[343,3.141,241040,0.833],[345,3.152,241670,0.833],[347,3.164,242270,0.833],[349,3.176,243086,0.867],[351,3.191,243740,0.9],[353,3.202,244640,0.9],[355,3.226,245211,0.867],[357,3.241,247370,0.867],[359,3.26,247940,0.867],[361,3.28,249320,0.867],[363,3.297,250953,0.833],[365,3.313,251990,0.833],[367,3.335,252980,0.767],[369,3.343,254707,0.8],[371,3.357,255129,0.8],[373,3.368,256040,0.8],[375,3.382,256640,0.8],[377,3.397,257630,0.767],[379,3.408,258740,0.767],[381,3.431,259340,0.7],[383,3.443,260805,0.7],[385,3.463,261830,0.733],[387,3.48,263420,0.733],[389,3.502,264650,0.667],[391,3.521,266420,0.7],[393,3.537,267800,0.733],[395,3.549,268760,0.733],[397,3.56,269570,0.8],[399,3.575,270140,0.8],[401,3.584,271190,0.8],[403,3.601,271640,0.767],[405,3.61,272810,0.767],[407,3.622,273372,0.8],[409,3.639,273920,0.767],[411,3.661,275270,0.767],[413,3.679,277185,0.733],[415,3.691,278300,0.767],[417,3.71,279110,0.733],[419,3.729,280333,0.767],[421,3.751,281660,0.7],[423,3.764,283345,0.7],[425,3.782,284240,0.667],[427,3.797,285380,0.633],[429,3.815,286460,0.6],[431,3.828,287900,0.6],[433,3.847,288620,0.6],[435,4.164,290630,0.6],[437,4.179,291140,0.567],[439,4.19,292220,0.6],[441,4.206,292880,0.633],[443,4.223,294170,0.633],[445,4.233,295520,0.633],[447,4.256,296090,0.6],[449,4.276,298097,0.6],[451,4.286,299355,0.667],[453,4.309,299930,0.6],[455,4.321,301700,0.633],[457,4.339,302480,0.633],[459,4.359,303740,0.633],[461,4.378,305300,0.6],[463,4.395,306740,0.633],[465,4.399,307400,0.633],[467,4.421,308280,0.633],[469,4.433,309667,0.633],[471,4.449,310700,0.633],[473,4.459,311929,0.667],[475,4.481,312320,0.6],[477,4.49,314075,0.667],[479,4.502,314570,0.7],[481,4.523,315200,0.633],[483,4.535,316147,0.633],[485,4.548,318034,0.633],[487,4.558,318770,0.667],[489,4.572,319340,0.7],[491,4.59,320120,0.733],[493,4.603,321320,0.733],[495,4.621,322160,0.733],[497,4.638,323563,0.733],[499,4.651,324864,0.733],[501,4.67,325430,0.767],[503,4.68,326437,0.767],[505,4.691,327140,0.833],[507,4.707,327860,0.8],[509,4.725,329030,0.8],[511,4.739,330599,0.867],[513,4.762,331070,0.867],[515,4.769,332243,0.833],[517,4.79,333350,0.8],[519,4.808,335103,0.767],[521,4.822,336410,0.767],[523,4.838,337340,0.733],[525,4.849,338480,0.733],[527,4.862,339142,0.767],[529,4.878,340040,0.733],[531,4.891,341240,0.733],[533,4.903,342140,0.733],[535,4.926,342890,0.667],[537,4.942,344286,0.667],[539,4.961,345830,0.667],[541,4.975,346450,0.633],[543,4.995,348080,0.667],[545,5.005,349538,0.7],[547,5.02,350000,0.733],[549,5.037,351170,0.767],[551,5.047,352310,0.767],[553,5.059,352970,0.8],[555,5.07,353630,0.8],[557,5.091,354260,0.733],[559,5.106,356030,0.733],[561,5.118,357170,0.733],[563,5.135,357950,0.7],[565,5.157,359210,0.7],[567,5.179,361010,0.667],[569,5.189,362548,0.667],[571,5.21,363290,0.667],[573,5.223,364976,0.7],[575,5.242,365720,0.667],[577,5.254,367130,0.667],[579,5.271,367910,0.633],[581,5.286,369080,0.633],[583,5.298,370000,0.633],[585,5.31,370730,0.633],[587,5.326,371480,0.667],[589,5.342,372710,0.667],[591,5.354,373910,0.667],[593,5.367,374780,0.7],[595,5.384,375620,0.733],[597,5.403,376850,0.8],[599,5.416,378200,0.8],[601,5.429,378890,0.833],[603,5.444,379610,0.8],[605,5.455,380747,0.833],[607,5.473,381320,0.8],[609,5.488,382610,0.833],[611,5.498,383685,0.833],[613,5.518,384257,0.8],[615,5.529,385700,0.8],[617,5.55,386330,0.8],[619,5.566,388040,0.833],[621,5.581,389207,0.833],[623,5.598,389750,0.8],[625,5.614,391100,0.833],[627,5.629,392270,0.833],[629,5.645,393350,0.833],[631,5.66,394460,0.8],[633,5.672,395630,0.833],[635,5.685,396380,0.833],[637,5.697,397437,0.867],[639,5.708,397910,0.867],[641,5.719,398450,0.867],[643,5.739,399110,0.867],[643,5.739,399110,0.867]]};
+const CHECKS = { dit: [1800], rlt: [20000], dsrl: [390000] };
+const NAMES = { dit: "Iterative DiT", rlt: "RLT", dsrl: "DSRL" };
+const RESULTS = {
+  cols: [
+    ["dit", "DiT", "1,800", "2.1 h"], ["rlt", "RLT", "20k", "5.9 h"], ["dsrl", "DSRL", "390k", "5.6 h"]
+  ],
+  rows: [
+    ["ID", [10, 10, 9]], ["rail-low", [2, 15, 7]], ["rail-high", [0, 0, 9]],
+    ["bright15", [0, 0, 5]], ["bright5", [1, 0, 6]],
+    ["tilt1550", [11, 7, 14]], ["tilt1750", [11, 8, 13]]
+  ]
+};
+
+function buildResults() {
+  const t = document.getElementById("res");
+  const head = RESULTS.cols.map(([k, n, s, h]) =>
+    `<th class="c-${k}"><span class="tag">${h}</span><span class="dot"></span>${n} ${s}</th>`).join("");
+  const cellsOf = v => v.map(x =>
+    `<td class="h" style="background:rgba(var(--heat),${(x / 15 * 0.38).toFixed(3)})">${x}</td>`).join("");
+  const pct = (x, n) => `${x} <span class="muted">(${Math.round(x / n * 100)}%)</span>`;
+  const grp = label => `<tr class="grp"><td colspan="4">${label}</td></tr>`;
+  const ood = RESULTS.rows.slice(1);
+  const oodTot = RESULTS.cols.map((_, i) => ood.reduce((a, r) => a + r[1][i], 0));
+  const body = grp("In-distribution") + `<tr><td>ID</td>${cellsOf(RESULTS.rows[0][1])}</tr>`
+    + grp("Out-of-distribution") + ood.map(([name, v]) => `<tr><td>${name}</td>${cellsOf(v)}</tr>`).join("")
+    + `<tr class="sub"><td>OOD / 90</td>${oodTot.map(x => `<td class="h">${pct(x, 90)}</td>`).join("")}</tr>`;
+  const tot = RESULTS.cols.map((_, i) => RESULTS.rows.reduce((a, r) => a + r[1][i], 0));
+  t.innerHTML = `<thead><tr><th>Condition</th>${head}</tr></thead><tbody>${body}
+    <tr class="total"><td>Total / 105</td>${tot.map(x => `<td class="h">${x} <span class="muted">(${Math.round(x / 105 * 100)}%)</span></td>`).join("")}</tr></tbody>`;
+}
+
+let mode = "hours";
+function drawCurve() {
+  const svg = document.getElementById("curve");
+  const W = 900, H = 340, L = 46, R = 16, T = 14, B = 40;
+  const xi = mode === "hours" ? 1 : 0;
+  const xmax = Math.max(...Object.values(CURVES).map(c => c[c.length - 1][xi]));
+  const step = mode === "hours" ? 1 : 100;
+  const xMax = mode === "hours" ? 6 : Math.ceil(xmax / step) * step;
+  const X = v => L + (W - L - R) * v / xMax, Y = v => T + (H - T - B) * (1 - v);
+  let s = "";
+  for (let p = 0; p <= 1.0001; p += 0.25)
+    s += `<line x1="${L}" x2="${W - R}" y1="${Y(p)}" y2="${Y(p)}" stroke="var(--grid)" stroke-width="1"/><text x="${L - 8}" y="${Y(p) + 4}" text-anchor="end">${Math.round(p * 100)}%</text>`;
+  for (let v = 0; v <= xMax; v += step)
+    s += `<text x="${X(v)}" y="${H - B + 18}" text-anchor="middle">${v}</text>`;
+  s += `<text x="${(L + W - R) / 2}" y="${H - 4}" text-anchor="middle">${mode === "hours" ? "hours since first rollout" : "robot episodes"}</text>`;
+  for (const k of ["dit", "rlt", "dsrl"]) {
+    const c = CURVES[k];
+    const d = c.map((p, i) => `${i ? "L" : "M"}${X(p[xi]).toFixed(1)},${Y(p[3]).toFixed(1)}`).join("");
+    s += `<path d="${d}" fill="none" stroke="var(--${k})" stroke-width="2" stroke-linejoin="round"/>`;
+    for (const ck of CHECKS[k]) {
+      const p = c.find(q => q[2] >= ck) || c[c.length - 1];
+      s += `<circle cx="${X(p[xi])}" cy="${Y(p[3])}" r="5" fill="var(--surface)" stroke="var(--${k})" stroke-width="2.5"><title>${NAMES[k]} step ${ck.toLocaleString()}: ${Math.round(p[3] * 100)}%</title></circle>`;
+    }
+  }
+  svg.innerHTML = s;
+}
+for (const [id, m] of [["x-hours", "hours"], ["x-eps", "eps"]])
+  document.getElementById(id).addEventListener("click", () => {
+    mode = m;
+    document.getElementById("x-hours").setAttribute("aria-pressed", m === "hours");
+    document.getElementById("x-eps").setAttribute("aria-pressed", m === "eps");
+    drawCurve();
+  });
+buildResults(); drawCurve();
+</script>
+</body>
+</html>
