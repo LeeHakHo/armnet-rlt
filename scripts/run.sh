@@ -4,6 +4,8 @@
 # the learner reaches its last step. Ctrl-C stops everything, the cell job included.
 #
 #   CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit> [options]
+#   dit trains any LeRobot policy by iterative BC: multi-task DiT by default, or
+#   --policy-type, including your own plugin under plugins/ (see the README).
 #
 #   --model <dir|HF repo>  starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl
 #                          (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken), a
@@ -23,7 +25,7 @@
 # rlt_checkpoints/<run id> (rlt, dsrl) or experiment-data/lerobot-sbc/<run id> (dit).
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,24p' "$0"; exit 0 ;;
+case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,25p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY="" RUN="" RESUME=""
 LEARNER_ARGS="" ACTOR_ARGS=""
