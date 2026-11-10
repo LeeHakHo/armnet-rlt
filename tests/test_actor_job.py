@@ -177,8 +177,9 @@ def test_online_dsrl_actor_builds_the_learner_network(
     assert built["predicted_action_len"] == learner.predicted_action_len
 
 
+@pytest.mark.parametrize("remote", [False, True])
 def test_frozen_eval_needs_no_learner_and_pairs_scenes(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, remote: bool
 ) -> None:
     openpi = tmp_path / "openpi"
     (openpi / "params").mkdir(parents=True)
@@ -223,11 +224,12 @@ def test_frozen_eval_needs_no_learner_and_pairs_scenes(
     )
     ctx = SimpleNamespace(
         args={
-            "checkpoint_dir": str(openpi),
+            "checkpoint_dir": str(tmp_path / "missing" if remote else openpi),
             "frozen_rlt_checkpoint": str(frozen),
             "eval_include_base": True,
             "exploration_scale": 0.0,
             "num_rollouts": 3,
+            **({"remote_policy_host": "policy.example"} if remote else {}),
         },
         cell=cell,
         camera_configs={
@@ -245,6 +247,8 @@ def test_frozen_eval_needs_no_learner_and_pairs_scenes(
     assert actor_job.run(ctx) == {"status": "frozen-ok"}
     assert captured["cfg"].frozen_eval is True
     assert captured["cfg"].eval_include_base is True
+    # A remote policy needs no checkpoint on the cell.
+    assert captured["cfg"].checkpoint_dir == ("" if remote else str(openpi))
     operator = captured["kwargs"]["operator"]
     assert operator.rollout_total == 6
     assert operator._variation_repeat == 2
