@@ -154,7 +154,7 @@ envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID"
 Iterative BC of a multi-task DiT runs end to end from one script:
 
 ```bash
-IMAGE_REF=<actor-image-ref> ACTOR_ARGS="--armnet.require-cell cell-03" \
+IMAGE_REF=<actor-image-ref> ACTOR_ARGS="--armnet.require-cell <cell-id>" \
   scripts/run_iterative_dit.sh
 ```
 
@@ -197,9 +197,14 @@ uv run --env-file .env rlt-submit-actor \
   --upload-checkpoint checkpoints/pi05_rltoken \
   --language-instruction "push the green button" \
   --learner-key "${RLT_CONFIG}:${RLT_RUN_ID}" \
-  --num-rollouts 100 --armnet.require-cell cell-03 \
+  --num-rollouts 100 --armnet.require-cell <cell-id> \
   --image-ref <actor-image-ref>
 ```
+
+`--armnet.require-cell <cell-id>` runs the job only on that cell: the job
+waits in the Armnet queue until the cell is free, and the actor stops at
+startup if it lands anywhere else. A comma-separated list accepts any of the
+cells listed. Without the flag the queue picks any free cell.
 
 `--upload-checkpoint` copies the base checkpoint to the Armnet volume once;
 later jobs read the volume copy (the cell loads it with `--no-remote-policy`).
