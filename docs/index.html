@@ -93,6 +93,8 @@ td.h { font-family: var(--mono); font-variant-numeric: tabular-nums }
 .steps { margin: 0; padding-left: 22px; display: grid; gap: 14px }
 .steps li { padding-left: 4px; min-width: 0 }
 .steps b { font-weight: 600 }
+.steps .note { margin-top: 4px; font-size: 12px; color: var(--muted); opacity: .75 }
+.steps .note code { font: 11.5px var(--mono) }
 pre { margin: 6px 0 0; font: 12.5px/1.55 var(--mono); background: var(--box); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre }
 
 /* standalone page */
@@ -178,7 +180,7 @@ img, video { max-width: 100% }
       <li><b>Install</b><pre>uv sync --locked
 scripts/setup_local.sh learner</pre></li>
       <li><b>Start your policy server and learner on your GPU</b><pre>rlt-local policy-server --checkpoint &lt;your checkpoint&gt;
-rlt-local online --algorithm dsrl --run-id my-run</pre></li>
+rlt-local online --algorithm &lt;your model&gt;* --run-id my-run</pre><p class="note">* Baselines: <code>rlt</code>, <code>dsrl</code>, and iterative DiT via <code>scripts/run_iterative_dit.sh</code></p></li>
       <li><b>Send an actor to a cell</b><pre>rlt-submit-actor --task push_green_button --learner-key &lt;config&gt;:my-run --num-rollouts 100</pre></li>
       <li><b>Evaluate on ID and OOD scenes</b><pre>rlt-submit-eval --frozen-rlt-checkpoint &lt;frozen actor&gt; --num-rollouts 10</pre></li>
     </ol>
