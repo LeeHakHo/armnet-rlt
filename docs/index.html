@@ -177,14 +177,12 @@ img, video { max-width: 100% }
   <section>
     <h2>How to use</h2>
     <ol class="steps">
-      <li><b>Install</b><pre>uv sync --locked
-scripts/setup_local.sh learner</pre></li>
-      <li><b>Start your policy server and learner on your GPU</b><pre>rlt-local policy-server --checkpoint &lt;your checkpoint&gt;
-rlt-local online --algorithm &lt;your model&gt;* --run-id my-run</pre><p class="note">* Baselines: <code>rlt</code>, <code>dsrl</code></p></li>
-      <li><b>Send an actor to a cell</b><pre>rlt-submit-actor --task push_green_button --learner-key &lt;config&gt;:my-run --num-rollouts 100</pre></li>
-      <li><b>Evaluate on ID and OOD scenes</b><pre>rlt-submit-eval --frozen-rlt-checkpoint &lt;frozen actor&gt; --num-rollouts 10</pre></li>
+      <li><b>Set up once</b><pre>git clone https://github.com/LeeHakHo/armnet-rlt &amp;&amp; cd armnet-rlt
+scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging Face token, then installs the environments, creates the secrets, downloads the base model and builds the actor image.</p></li>
+      <li><b>Train on a cell</b><pre>CELL=&lt;cell-id&gt; scripts/run.sh &lt;method&gt;*</pre><p class="note">* Baselines: <code>rlt</code>, <code>dsrl</code>, <code>dit</code>. <code>--model &lt;checkpoint&gt;</code> starts from your own model.</p></li>
+      <li><b>Evaluate on ID and OOD scenes</b><pre>CELL=&lt;cell-id&gt; scripts/eval.sh &lt;run-id&gt;</pre></li>
     </ol>
-    <p class="cap">Every flag is in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
+    <p class="cap">Needs a GPU, Docker for the actor image and an ngrok token (or your own TLS ingress). Options and the individual commands are in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
   </section>
 
   <section>
