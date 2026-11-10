@@ -66,6 +66,26 @@ there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login
 The actor image contains `src/armnet_rlt`, so run `scripts/setup.sh` again after
 changing it; it rebuilds the image only when the code changed.
 
+### Adding your own model
+
+A policy that maps the cameras and joint state to actions is a LeRobot policy plugin.
+`plugins/lerobot_policy_my_policy` is a working example (a small CNN and an MLP that
+predict an action chunk) to start from:
+
+1. Copy it to `plugins/lerobot_policy_<name>` and rename `my_policy` / `MyPolicy`
+   inside: the type in `@PreTrainedConfig.register_subclass`, the classes
+   `<Name>Config` and `<Name>Policy`, and `make_<name>_pre_post_processors`.
+2. Write the network in `modeling_<name>.py` (`__init__` and `_predict`), the loss in
+   `forward`, and its settings in `configuration_<name>.py`.
+3. `scripts/setup.sh` installs it. `CELL=<cell-id> scripts/run.sh dit --policy-type <name>`
+   trains it on the demos, then keeps training it on its own successful rollouts;
+   `scripts/eval.sh <run dir>/checkpoints/<step>/pretrained_model` evaluates it.
+   `--model <pretrained_model dir>` starts from a policy trained elsewhere with `lerobot-train`.
+
+The policy runs on your GPU, so the actor image does not change. An RL method on top
+of π0.5, like RLT and DSRL, goes into `src/armnet_rlt` instead: `dsrl.py` is the
+smallest example of an actor, its critics and its update.
+
 The sections below describe the individual commands the scripts run.
 
 ## Install

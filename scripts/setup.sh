@@ -52,6 +52,12 @@ for env in learner openpi lerobot; do
   scripts/setup_local.sh "$env"
 done
 
+# Your LeRobot policies under plugins/ go into the lerobot environment.
+for plugin in plugins/lerobot_policy_*/; do
+  [ -f "$plugin/pyproject.toml" ] || continue
+  uv pip install --quiet --python envs/venv-lerobot --no-deps -e "$plugin"
+done
+
 log "3/5 secrets"
 if [ -z "${RLT_LEARNER_AUTH_TOKEN:-}" ]; then
   TOKEN=$(openssl rand -hex 32)

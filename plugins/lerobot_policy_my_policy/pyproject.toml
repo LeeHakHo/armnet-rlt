@@ -1,0 +1,12 @@
+[project]
+name = "lerobot_policy_my_policy"
+version = "0.1.0"
+description = "Example LeRobot policy plugin for armnet-rlt"
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["setuptools>=71"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["lerobot_policy_my_policy"]

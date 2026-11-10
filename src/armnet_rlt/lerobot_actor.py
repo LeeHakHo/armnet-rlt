@@ -64,7 +64,10 @@ def load_lerobot_policy(path: str | Path, device: str) -> tuple[Any, Any, Any]:
     """Load a LeRobot policy of the type in its config with its pre- and post-processors."""
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+    from lerobot.utils.import_utils import register_third_party_plugins
 
+    # Installed lerobot_policy_* packages register their policy types.
+    register_third_party_plugins()
     policy_dir = resolve_policy_dir(path)
     policy_type = PreTrainedConfig.from_pretrained(str(policy_dir)).type
     policy = get_policy_class(policy_type).from_pretrained(str(policy_dir))
