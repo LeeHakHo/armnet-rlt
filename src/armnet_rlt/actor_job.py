@@ -453,7 +453,8 @@ def run(ctx: Context) -> dict[str, Any]:
             "proprioception_dim=6, rl_token_dim=2048"
         )
 
-    checkpoint = _resolve_checkpoint(ctx)
+    # A remote policy server holds the weights; the cell needs no checkpoint copy.
+    checkpoint = "" if args.get("remote_policy_host") else _resolve_checkpoint(ctx)
     robot_id, calibration_dir = _calibration_lookup(ctx)
     temporary_calibration = (
         calibration_dir if ctx.cell.calibration_file_path else None
