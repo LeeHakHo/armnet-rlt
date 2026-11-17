@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from armnet_rlt import robometer_reward
-from armnet_rlt.episode_frames import pack_episode_frames, unpack_episode_frames
+from armnet_rlt.episode_frames import pack_episode_frames, spread, unpack_episode_frames
 
 
 def test_episode_frames_round_trip_in_order() -> None:
@@ -37,3 +37,10 @@ def test_shape_leaves_rewards_without_frames_or_on_failure(monkeypatch) -> None:
     monkeypatch.setattr(robometer_reward, "progress_curve", fail)
     robometer_reward.shape(episode, {view: [b"a", b"b"] for view in robometer_reward.VIEWS})
     assert float(episode[0]["reward"]) == 0.5
+
+
+def test_spread_keeps_the_ends_and_caps_the_count() -> None:
+    assert spread(list(range(5)), 16) == [0, 1, 2, 3, 4]
+    kept = spread(list(range(60)), 16)
+    assert len(kept) == 16 and kept[0] == 0 and kept[-1] == 59
+    assert kept == sorted(kept)

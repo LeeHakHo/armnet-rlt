@@ -91,7 +91,8 @@ def _parser() -> argparse.ArgumentParser:
         "--episode-frames",
         action="store_true",
         help="RLT/DSRL actor: send each episode's camera frames (one JPEG per view at "
-        "every policy call) with its transitions, for a learner --reward-plugin",
+        "up to 16 evenly spaced policy calls) with its transitions, for a learner "
+        "--reward-plugin",
     )
     parser.add_argument(
         "--eval-only",

@@ -8,6 +8,18 @@ from typing import Any
 import numpy as np
 
 
+# Frames kept per episode: 16 x 3 views of 426x240 JPEG is about 1.2 MB, well under
+# the learner channel's 4 MB message limit (a 30 s episode has about 60 policy calls).
+MAX_EPISODE_FRAMES = 16
+
+
+def spread(frames: list, limit: int = MAX_EPISODE_FRAMES) -> list:
+    """At most ``limit`` items, evenly spaced and including the first and last."""
+    if len(frames) <= limit:
+        return list(frames)
+    return [frames[round(i * (len(frames) - 1) / (limit - 1))] for i in range(limit)]
+
+
 def pack_episode_frames(frames: list[dict[str, np.ndarray]]) -> np.ndarray:
     """Encoded views at each policy call as one flat uint8 array: an
     ``np.savez`` archive with ``<view>_<index>`` entries."""

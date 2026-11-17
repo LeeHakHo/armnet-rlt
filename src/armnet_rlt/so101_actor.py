@@ -235,9 +235,9 @@ def _serialize_episode(
             )
         )
     if frames:
-        from armnet_rlt.episode_frames import pack_episode_frames
+        from armnet_rlt.episode_frames import pack_episode_frames, spread
 
-        labelled[0]["state"]["episode_frames"] = torch.from_numpy(pack_episode_frames(frames))
+        labelled[0]["state"]["episode_frames"] = torch.from_numpy(pack_episode_frames(spread(frames)))
     return transitions_to_bytes(labelled)
 
 

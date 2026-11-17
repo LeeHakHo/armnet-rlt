@@ -1,7 +1,7 @@
 """Robometer progress as a shaping reward, for ``rlt-local online --reward-plugin
 armnet_rlt.robometer_reward:shape`` with an ``--episode-frames`` actor.
 
-Each episode's frames (top, front and wrist at every policy call) go to a Robometer
+Each episode's frames (top, front and wrist at up to 16 policy calls) go to a Robometer
 tiled eval server (``POST /evaluate_videos``), which returns a progress value per
 frame. Transition ``i`` runs from policy call ``i`` to ``i + 1``; its reward gains
 ``ROBOMETER_WEIGHT * (progress[i + 1] - progress[i])`` on top of the algorithm's own

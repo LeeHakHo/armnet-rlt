@@ -100,7 +100,7 @@ The sections below describe the individual commands the scripts run.
 
 `armnet_rlt.robometer_reward` turns a [Robometer](https://github.com/jesbu1/robometer/tree/armnet-tiled)
 tiled reward model into a shaping reward for `rlt`/`dsrl`: the actor sends each episode's
-top/front/wrist frames (one JPEG per view at every policy call), the learner asks the
+top/front/wrist frames (one JPEG per view at up to 16 evenly spaced policy calls), the learner asks the
 Robometer server for the progress curve and adds each chunk's progress gain to its reward.
 
 Serve the busybox checkpoint on a GPU of this machine:
