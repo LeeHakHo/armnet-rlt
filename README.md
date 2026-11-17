@@ -28,7 +28,8 @@ CELL=<cell-id> scripts/eval.sh <run-id>         # evaluate: 7 conditions x 3 see
 ```
 
 `setup.sh` asks for an Armnet API key and a Hugging Face token with read access
-to the AutoRLBench models, and writes everything else to `.env` itself. It needs
+to the AutoRLBench models. The token is not used to upload evaluation datasets.
+The script writes everything else to `.env` itself. It needs
 a GPU for the RLT demo cache (`--skip-cache` skips it) and Docker for the actor
 image; without Docker it prints the command to build the image on another machine. The cell reaches your machine through ngrok by default: install
 it and run `ngrok config add-authtoken <token>` once, or set `PUBLIC_HOST`,
@@ -284,8 +285,7 @@ scales the fixed exploration noise and
 `--armnet.variation` samples rail, camera and lighting variation per rollout
 (`--armnet.variation-seed` makes it reproducible); `--armnet.rail`,
 `--armnet.lightbox-brightness` and `--armnet.camera-aim` set them by hand.
-Defaults: rail 0.7, brightness 30, 30 s episodes, every rollout uploaded as
-a LeRobot dataset to the Hub (`--no-record-dataset` turns it off).
+Defaults: rail 0.7, brightness 30 and 30 s episodes.
 `--use-rerun` opens a live Rerun viewer.
 
 ## Evaluation
@@ -304,6 +304,11 @@ uv run --env-file .env rlt-submit-eval \
   --language-instruction "push the green button" --num-rollouts 10 \
   --image-ref <actor-image-ref>
 ```
+
+Every evaluation is recorded and uploaded to the `AutoRLBench` Hugging Face
+organization by the trusted cell. The evaluation command does not allow
+disabling the upload or changing its destination. Your Hugging Face token only
+needs model-read access and is not used for this upload.
 
 The frozen file records the algorithm, so a DSRL run evaluates the same way.
 
@@ -386,7 +391,7 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | Variable | Meaning |
 |---|---|
 | `ARMNET_API_KEY` | Armnet API key for submitting jobs and building images |
-| `HF_TOKEN` | Hugging Face token: model downloads and the Armnet secret |
+| `HF_TOKEN` | Hugging Face token with model-read access; not used for AutoRLBench dataset uploads |
 | `RLT_HF_SECRET` | Name of the Armnet secret holding the Hugging Face token |
 | `RLT_AUTH_SECRET` | Name of the Armnet secret holding `RLT_LEARNER_AUTH_TOKEN` (default `armnet-rlt-auth`) |
 | `IMAGE_REF` | Actor image the scripts submit (written by `scripts/setup.sh`) |
