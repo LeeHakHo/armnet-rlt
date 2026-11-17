@@ -31,10 +31,18 @@ def test_shape_leaves_rewards_without_frames_or_on_failure(monkeypatch) -> None:
     episode = [{"reward": torch.tensor(0.5)}]
     robometer_reward.shape(episode, None)
 
-    def fail(frames):
+    def reject(frames):
+        raise ValueError("400 Bad Request")
+
+    monkeypatch.setattr(robometer_reward, "progress_curve", reject)
+    robometer_reward.shape(episode, {view: [b"a", b"b"] for view in robometer_reward.VIEWS})
+    assert float(episode[0]["reward"]) == 0.5
+
+    def down(frames):
         raise ConnectionError("down")
 
-    monkeypatch.setattr(robometer_reward, "progress_curve", fail)
+    monkeypatch.setenv("ROBOMETER_WAIT_S", "0")
+    monkeypatch.setattr(robometer_reward, "progress_curve", down)
     robometer_reward.shape(episode, {view: [b"a", b"b"] for view in robometer_reward.VIEWS})
     assert float(episode[0]["reward"]) == 0.5
 
@@ -44,3 +52,19 @@ def test_spread_keeps_the_ends_and_caps_the_count() -> None:
     kept = spread(list(range(60)), 16)
     assert len(kept) == 16 and kept[0] == 0 and kept[-1] == 59
     assert kept == sorted(kept)
+
+
+def test_shape_waits_for_an_unreachable_server(monkeypatch) -> None:
+    calls = []
+
+    def flaky(frames):
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("down")
+        return [0.0, 1.0], {}
+
+    monkeypatch.setattr(robometer_reward, "progress_curve", flaky)
+    monkeypatch.setattr(robometer_reward.time, "sleep", lambda s: None)
+    episode = [{"reward": torch.tensor(0.0)}]
+    robometer_reward.shape(episode, {view: [b"a", b"b"] for view in robometer_reward.VIEWS})
+    assert len(calls) == 3 and float(episode[0]["reward"]) == 1.0

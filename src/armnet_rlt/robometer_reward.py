@@ -16,8 +16,12 @@ Environment:
                     was trained; on 60 labelled cell-03 episodes at the actor's ~2 fps it
                     separates successes from failures with AUC 0.976)
 
-A failed request leaves the episode's rewards unchanged and is reported once per
-episode on stdout.
+  ROBOMETER_WAIT_S  how long to keep retrying while the server is unreachable (3600);
+                    the learner waits meanwhile, so no episode trains unshaped just
+                    because the server restarts
+
+A request the server rejects, or a server still unreachable after ROBOMETER_WAIT_S,
+leaves the episode's rewards unchanged and is reported on stdout.
 """
 
 from __future__ import annotations
@@ -88,12 +92,22 @@ def shape(episode: list[dict[str, torch.Tensor]], frames: dict[str, list[bytes]]
     if not episode or not frames or any(len(frames.get(view, [])) < 2 for view in VIEWS):
         return
     weight = float(os.environ.get("ROBOMETER_WEIGHT", "1.0"))
+    wait_s = float(os.environ.get("ROBOMETER_WAIT_S", "3600"))
     start = time.time()
-    try:
-        curve, result = progress_curve(frames)
-    except Exception as exc:  # the episode keeps the algorithm's reward
-        print(f"[robometer] reward request failed, episode unshaped: {exc}", flush=True)
-        return
+    while True:
+        try:
+            curve, result = progress_curve(frames)
+            break
+        except Exception as exc:
+            # requests' ConnectionError and Timeout: the server is down or restarting.
+            if type(exc).__name__ not in ("ConnectionError", "Timeout", "ConnectTimeout", "ReadTimeout"):
+                print(f"[robometer] reward request failed, episode unshaped: {exc}", flush=True)
+                return
+            if time.time() - start >= wait_s:
+                print(f"[robometer] server unreachable for {wait_s:.0f}s, episode unshaped: {exc}", flush=True)
+                return
+            print("[robometer] server unreachable; retrying in 15 s", flush=True)
+            time.sleep(15)
     points = boundary_progress(curve, len(episode))
     for index, fields in enumerate(episode):
         gain = weight * float(points[index + 1] - points[index])
