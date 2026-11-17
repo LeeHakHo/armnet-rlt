@@ -87,6 +87,12 @@ def _parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Do not send successful LeRobot policy episodes to the learner",
     )
+    parser.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="LeRobot policy: send nothing to the learner, so the rollouts do not "
+        "count toward its training (evaluation during a run)",
+    )
     parser.add_argument("--language-instruction", required=True)
     parser.add_argument(
         "--learner-key",
@@ -389,6 +395,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
             job_args["policy_image_size"] = str(args.policy_image_size)
         if not getattr(args, "stream_episodes", True):
             job_args["stream_episodes"] = False
+        if getattr(args, "eval_only", False):
+            job_args["eval_only"] = True
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell

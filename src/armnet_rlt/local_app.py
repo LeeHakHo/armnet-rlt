@@ -591,6 +591,8 @@ def cmd_online(args: argparse.Namespace) -> None:
             wandb_project=args.wandb_project or None,
             idle_timeout_s=args.idle_timeout_s,
             idle_min_episodes=args.idle_min_episodes,
+            max_episodes=args.max_episodes,
+            checkpoint_every_episodes=args.checkpoint_every_episodes,
         )
 
 
@@ -823,6 +825,18 @@ def _parser() -> argparse.ArgumentParser:
         "--save-freq", type=int, default=None, help="Learner steps between checkpoints (config default 500)"
     )
     online.add_argument("--resume", action="store_true")
+    online.add_argument(
+        "--max-episodes",
+        type=int,
+        default=0,
+        help="Stop after this many actor episodes (0: stop at --online-steps)",
+    )
+    online.add_argument(
+        "--checkpoint-every-episodes",
+        type=int,
+        default=0,
+        help="Also save a checkpoint every this many episodes (episode_checkpoints.jsonl)",
+    )
     online.add_argument("--idle-timeout-s", type=float, default=600.0)
     online.add_argument("--idle-min-episodes", type=int, default=5)
     online.add_argument(

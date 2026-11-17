@@ -640,3 +640,15 @@ def test_safety_trip_penalty_must_be_nonnegative() -> None:
 
     with pytest.raises(ValueError, match="safety_trip_penalty"):
         RLTConfig(safety_trip_penalty=-1.0)
+
+
+def test_episode_mark_is_the_newest_multiple_or_the_budget() -> None:
+    from armnet_rlt.learner import _episode_mark
+
+    assert _episode_mark(0, 100, 400) == 0
+    assert _episode_mark(99, 100, 400) == 0
+    assert _episode_mark(100, 100, 400) == 100
+    assert _episode_mark(250, 100, 400) == 200
+    assert _episode_mark(400, 100, 400) == 400
+    assert _episode_mark(130, 0, 130) == 130
+    assert _episode_mark(130, 0, 0) == 0

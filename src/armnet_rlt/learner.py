@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import random
 import time
@@ -1488,6 +1489,17 @@ def run_streaming_bc(
     return summary
 
 
+def _episode_mark(episode_count: int, every: int, max_episodes: int) -> int:
+    """The newest episode count due a checkpoint: a multiple of ``every`` or
+    ``max_episodes``, whichever ``episode_count`` reached last; 0 if none."""
+    marks = []
+    if every > 0 and episode_count >= every:
+        marks.append(episode_count // every * every)
+    if max_episodes > 0 and episode_count >= max_episodes:
+        marks.append(max_episodes)
+    return max(marks, default=0)
+
+
 def run_learner(
     config: RLTConfig,
     *,
@@ -1496,7 +1508,17 @@ def run_learner(
     wandb_project: str | None = None,
     idle_timeout_s: float = 0.0,
     idle_min_episodes: int = 5,
+    max_episodes: int = 0,
+    checkpoint_every_episodes: int = 0,
 ) -> dict[str, object]:
+    """Pretrain on the demo cache, then learn from actor episodes.
+
+    Training stops at ``config.online_steps`` or, when ``max_episodes`` is set,
+    once that many episodes have arrived and been trained on. With
+    ``checkpoint_every_episodes``, a checkpoint is saved each time the episode
+    count reaches a multiple of it and its updates are done; each one is listed
+    in ``episode_checkpoints.jsonl`` as ``{"episodes": E, "step": S}``.
+    """
     dsrl = config.algorithm == "dsrl"
     if not config.assets_dir:
         raise ValueError("assets_dir is required")
@@ -1519,6 +1541,12 @@ def run_learner(
     run_dir.mkdir(parents=True, exist_ok=True)
     rollout_log = run_dir / "rollout_metrics.jsonl"
     training_log = run_dir / "training_metrics.jsonl"
+    episode_checkpoint_log = run_dir / "episode_checkpoints.jsonl"
+    saved_episode_marks = (
+        {json.loads(line)["episodes"] for line in episode_checkpoint_log.open()}
+        if episode_checkpoint_log.is_file()
+        else set()
+    )
 
     random.seed(config.seed)
     np.random.seed(config.seed)
@@ -1742,6 +1770,39 @@ def run_learner(
                 not shutdown_event.is_set()
                 and completed_steps < config.online_steps
             ):
+                # Episode checkpoints wait until the updates are done and nothing
+                # has arrived for 10 s, so the last episode's transitions are in.
+                if (
+                    (checkpoint_every_episodes or max_episodes)
+                    and pending_updates <= 0
+                    and time.monotonic() - last_arrival >= 10.0
+                ):
+                    mark = _episode_mark(episode_count, checkpoint_every_episodes, max_episodes)
+                    if mark and mark not in saved_episode_marks:
+                        _save_checkpoint(
+                            policy,
+                            actor_optimizer,
+                            critic_optimizer,
+                            actor_scheduler,
+                            critic_scheduler,
+                            step=completed_steps,
+                            config=config,
+                            temperature_optimizer=temperature_optimizer,
+                        )
+                        _save_replay_buffer(config, online_buffer, step=completed_steps)
+                        with episode_checkpoint_log.open("a") as handle:
+                            handle.write(
+                                json.dumps({"episodes": mark, "step": completed_steps}) + "\n"
+                            )
+                        saved_episode_marks.add(mark)
+                        print(
+                            f"[RLT] episode checkpoint: {mark} episodes at step "
+                            f"{completed_steps}",
+                            flush=True,
+                        )
+                    if max_episodes and episode_count >= max_episodes:
+                        print(f"[RLT] reached {max_episodes} episodes; stopping", flush=True)
+                        break
                 was_empty = not online_buffer
                 added = _drain_online_transitions(
                     transition_queue,

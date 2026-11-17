@@ -300,6 +300,7 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
         ),
         image_size=str(args.get("policy_image_size", "") or ""),
         stream_episodes=bool(args.get("stream_episodes", True)),
+        eval_only=bool(args.get("eval_only", False)),
         exploration_scale=float(args.get("exploration_scale", 0.0)),
         exploration_correlation=float(
             args.get("exploration_correlation", 0.85)
