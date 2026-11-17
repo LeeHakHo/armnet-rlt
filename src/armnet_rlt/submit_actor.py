@@ -88,6 +88,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Do not send successful LeRobot policy episodes to the learner",
     )
     parser.add_argument(
+        "--episode-frames",
+        action="store_true",
+        help="RLT/DSRL actor: send each episode's camera frames (one JPEG per view at "
+        "every policy call) with its transitions, for a learner --reward-plugin",
+    )
+    parser.add_argument(
         "--eval-only",
         action="store_true",
         help="LeRobot policy: send nothing to the learner, so the rollouts do not "
@@ -397,6 +403,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
             job_args["stream_episodes"] = False
         if getattr(args, "eval_only", False):
             job_args["eval_only"] = True
+    if getattr(args, "episode_frames", False):
+        job_args["episode_frames"] = True
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell

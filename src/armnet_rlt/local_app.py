@@ -593,7 +593,18 @@ def cmd_online(args: argparse.Namespace) -> None:
             idle_min_episodes=args.idle_min_episodes,
             max_episodes=args.max_episodes,
             checkpoint_every_episodes=args.checkpoint_every_episodes,
+            reward_plugin=_load_callable(args.reward_plugin) if args.reward_plugin else None,
         )
+
+
+def _load_callable(spec: str) -> Any:
+    """The function named by ``module:function``."""
+    import importlib
+
+    module, _, name = spec.partition(":")
+    if not module or not name:
+        raise SystemExit(f"--reward-plugin must be module:function, got {spec!r}")
+    return getattr(importlib.import_module(module), name)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -830,6 +841,13 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Stop after this many actor episodes (0: stop at --online-steps)",
+    )
+    online.add_argument(
+        "--reward-plugin",
+        default="",
+        help="module:function called with each episode's transitions and camera frames "
+        "(from an --episode-frames actor) to rewrite its rewards, e.g. "
+        "armnet_rlt.robometer_reward:shape",
     )
     online.add_argument(
         "--checkpoint-every-episodes",

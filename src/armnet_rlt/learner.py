@@ -616,10 +616,13 @@ def _drain_online_transitions(
     shutdown_event: Event,
     relabel: Callable[[list[dict[str, Tensor]]], None] | None = None,
     seen: set[bytes] | None = None,
+    reward_plugin: Callable[[list[dict[str, Tensor]], dict[str, list[bytes]] | None], None]
+    | None = None,
 ) -> int:
     """Append the queued transitions; each message holds one episode, which
-    ``relabel`` may rewrite before it is stored. Replayed messages (digest in
-    ``seen``) are dropped."""
+    ``relabel`` may rewrite before it is stored, and then ``reward_plugin``
+    with the episode's camera frames (None when the actor sent none).
+    Replayed messages (digest in ``seen``) are dropped."""
     from lerobot.transport.utils import bytes_to_transitions
 
     count = 0
@@ -627,12 +630,15 @@ def _drain_online_transitions(
         payload = queue.get()
         if _replayed(payload, seen):
             continue
-        episode = [
-            _transition_fields(transition)
-            for transition in bytes_to_transitions(payload)
-        ]
+        wire = bytes_to_transitions(payload)
+        packed = wire[0]["state"].get("episode_frames") if wire else None
+        episode = [_transition_fields(transition) for transition in wire]
         if relabel is not None:
             relabel(episode)
+        if reward_plugin is not None:
+            from armnet_rlt.episode_frames import unpack_episode_frames
+
+            reward_plugin(episode, unpack_episode_frames(packed) if packed is not None else None)
         replay_buffer.extend(episode)
         count += len(episode)
     return count
@@ -1510,6 +1516,8 @@ def run_learner(
     idle_min_episodes: int = 5,
     max_episodes: int = 0,
     checkpoint_every_episodes: int = 0,
+    reward_plugin: Callable[[list[dict[str, Tensor]], dict[str, list[bytes]] | None], None]
+    | None = None,
 ) -> dict[str, object]:
     """Pretrain on the demo cache, then learn from actor episodes.
 
@@ -1518,6 +1526,8 @@ def run_learner(
     ``checkpoint_every_episodes``, a checkpoint is saved each time the episode
     count reaches a multiple of it and its updates are done; each one is listed
     in ``episode_checkpoints.jsonl`` as ``{"episodes": E, "step": S}``.
+    ``reward_plugin`` rewrites each episode's rewards after the algorithm's own
+    relabelling, given the camera frames an ``--episode-frames`` actor sent.
     """
     dsrl = config.algorithm == "dsrl"
     if not config.assets_dir:
@@ -1829,6 +1839,7 @@ def run_learner(
                         )
                     ),
                     seen=seen_transitions,
+                    reward_plugin=reward_plugin,
                 )
                 if dsrl and added and was_empty and completed_steps == 0:
                     # DSRL trains dsrl_initial_steps on the first episode.

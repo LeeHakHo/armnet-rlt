@@ -24,6 +24,9 @@
 #   --trip-penalty X       reward of a safety-tripped episode, rlt/dsrl (rlt 5, dsrl 2)
 #   --run-id ID            run name (default <method>-<UTC time>)
 #   --resume ID            continue rlt/dsrl run ID from its newest checkpoint
+#   --reward-plugin M:F    rlt/dsrl: rewrite each episode's rewards with function F of
+#                          module M, given its camera frames (the actor sends them), e.g.
+#                          armnet_rlt.robometer_reward:shape (see that module)
 #   --learner-args "..."   extra learner flags (rlt-local online / lerobot-streaming-bc)
 #   --actor-args "..."     extra rlt-submit-actor flags
 #
@@ -32,10 +35,10 @@
 # Evaluations: experiment-data/eval/<run id>-ep<episodes>/results.jsonl.
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,32p' "$0"; exit 0 ;;
+case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,35p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
-RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS=""
+RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" REWARD_PLUGIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episodes) EPISODES=$2 ;; --eval-every) EVAL_EVERY=$2 ;;
@@ -43,6 +46,7 @@ while [ $# -gt 0 ]; do
     --std) STD=$2 ;; --trip-penalty) PENALTY=$2 ;; --run-id) RUN=$2 ;;
     --resume) RUN=$2; RESUME=--resume ;;
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
+    --reward-plugin) REWARD_PLUGIN=$2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -50,6 +54,7 @@ done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 actor_common
 [ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt and dsrl runs"
+[ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt and dsrl runs"
 RUN=${RUN:-$METHOD-$(date -u +%Y%m%d-%H%M%S)}
 LOGS=$DATA/logs/$RUN
 mkdir -p "$LOGS"
@@ -124,12 +129,14 @@ else
   $LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" $RESUME \
     "${ALGO[@]}" --safety-trip-penalty "$PENALTY" --online-steps "$STEPS" --save-freq 10000 \
     --max-episodes "$EPISODES" --checkpoint-every-episodes "$EVERY" \
+    ${REWARD_PLUGIN:+--reward-plugin $REWARD_PLUGIN} \
     --idle-timeout-s 0 --push-interval-s 5 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS \
     >> "$LOGS/learner.log" 2>&1 &
   LEARNER=$!; PIDS+=($LEARNER)
   wait_for $LEARNER "$LOGS/learner.log" "rendezvous" learner
   SUBMIT=(--config-name "$CONFIG" --checkpoint-dir "$CELL_CHECKPOINT" --learner-key "$CONFIG:$RUN"
     --exploration-scale "$STD" --scene-retry-delay 3 --scene-retry-limit 1 "${ACTOR_ALGO[@]}")
+  [ -z "$REWARD_PLUGIN" ] || SUBMIT+=(--episode-frames)
   OUT=$DATA/tasks/$CONFIG/rlt_checkpoints/$RUN
 fi
 

@@ -1,0 +1,39 @@
+import numpy as np
+import torch
+
+from armnet_rlt import robometer_reward
+from armnet_rlt.episode_frames import pack_episode_frames, unpack_episode_frames
+
+
+def test_episode_frames_round_trip_in_order() -> None:
+    frames = [{"top": np.array([i, 1], dtype=np.uint8), "wrist": np.array([i], dtype=np.uint8)} for i in range(12)]
+    views = unpack_episode_frames(torch.from_numpy(pack_episode_frames(frames)))
+    assert sorted(views) == ["top", "wrist"]
+    assert [v[0] for v in views["top"]] == list(range(12))
+    assert views["wrist"][3] == bytes([3])
+
+
+def test_boundary_progress_spans_the_curve() -> None:
+    points = robometer_reward.boundary_progress([0.0, 0.5, 1.0], 4)
+    assert np.allclose(points, [0.0, 0.25, 0.5, 0.75, 1.0])
+
+
+def test_shape_adds_the_progress_gain_of_each_transition(monkeypatch) -> None:
+    monkeypatch.setenv("ROBOMETER_WEIGHT", "2.0")
+    monkeypatch.setattr(robometer_reward, "progress_curve", lambda frames: ([0.0, 0.2, 0.8], {}))
+    episode = [{"reward": torch.tensor(-1.0)} for _ in range(2)]
+    frames = {view: [b"x", b"y", b"z"] for view in robometer_reward.VIEWS}
+    robometer_reward.shape(episode, frames)
+    assert np.allclose([float(f["reward"]) for f in episode], [-0.6, 0.2])
+
+
+def test_shape_leaves_rewards_without_frames_or_on_failure(monkeypatch) -> None:
+    episode = [{"reward": torch.tensor(0.5)}]
+    robometer_reward.shape(episode, None)
+
+    def fail(frames):
+        raise ConnectionError("down")
+
+    monkeypatch.setattr(robometer_reward, "progress_curve", fail)
+    robometer_reward.shape(episode, {view: [b"a", b"b"] for view in robometer_reward.VIEWS})
+    assert float(episode[0]["reward"]) == 0.5

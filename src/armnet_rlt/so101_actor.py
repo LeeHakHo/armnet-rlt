@@ -198,9 +198,12 @@ def _serialize_episode(
     *,
     reward: float,
     safety_trip: bool = False,
+    frames: list[dict[str, np.ndarray]] | None = None,
 ) -> bytes | None:
     """One message per episode; ``safety_trip`` marks an episode the cell's
-    safety gate stopped, which the learner treats as a terminal failure."""
+    safety gate stopped, which the learner treats as a terminal failure.
+    ``frames`` (JPEG-encoded views at each policy call) ride on the first
+    transition as ``episode_frames``."""
     if not transitions:
         return None
     from lerobot.transport.utils import transitions_to_bytes
@@ -231,7 +234,30 @@ def _serialize_episode(
                 truncated=False,
             )
         )
+    if frames:
+        from armnet_rlt.episode_frames import pack_episode_frames
+
+        labelled[0]["state"]["episode_frames"] = torch.from_numpy(pack_episode_frames(frames))
     return transitions_to_bytes(labelled)
+
+
+def _encode_frame_views(raw_obs: dict[str, Any], width: int = 426, height: int = 240) -> dict[str, np.ndarray]:
+    """The top, front and wrist images of an observation, resized to
+    ``width`` x ``height`` and JPEG-encoded."""
+    import cv2
+
+    from armnet_rlt.remote_policy import encode_image
+
+    views = {}
+    for name in ("top", "front", "wrist"):
+        image = raw_obs.get(name)
+        if image is None:
+            continue
+        image = np.asarray(image, dtype=np.uint8)
+        if image.shape[:2] != (height, width):
+            image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+        views[name] = encode_image(image, "jpeg", jpeg_quality=85)
+    return views
 
 
 def _is_safety_trip(exc: BaseException) -> bool:
@@ -1093,6 +1119,9 @@ def run_actor(
     cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
     transitions: list[_ChunkTransition] = []
+    # JPEG views at each policy call, sent with the episode for a reward plugin.
+    send_frames = bool(_field(cfg, "episode_frames", False))
+    episode_frames: list[dict[str, np.ndarray]] = []
     previous: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None
     chunk: torch.Tensor | None = None
     chunk_index = 0
@@ -1294,7 +1323,10 @@ def run_actor(
                 if safety_trip is not None:
                     reward = -1.0
                 payload = _serialize_episode(
-                    transitions, reward=reward, safety_trip=safety_trip is not None
+                    transitions,
+                    reward=reward,
+                    safety_trip=safety_trip is not None,
+                    frames=episode_frames if send_frames else None,
                 )
                 outcome = state_machine.episode_ctx.outcome
                 mean_by_joint = (
@@ -1392,6 +1424,7 @@ def run_actor(
                     )
                 policy.reset()
                 transitions = []
+                episode_frames = []
                 previous = None
                 chunk = None
                 chunk_index = 0
@@ -1442,6 +1475,8 @@ def run_actor(
                     result = policy.infer(
                         build_policy_observation(raw_obs, instruction)
                     )
+                if send_frames:
+                    episode_frames.append(_encode_frame_views(raw_obs))
                 token = torch.from_numpy(result.rl_token).float().to(device)
                 reference_np = result.action_chunk[:reference_len, :action_dim]
                 if reference_np.shape != (reference_len, action_dim):

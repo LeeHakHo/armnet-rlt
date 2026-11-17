@@ -503,6 +503,7 @@ def run(ctx: Context) -> dict[str, Any]:
         episodes_per_round=str(args.get("episodes_per_round", "0")),
         steps_per_round=int(args.get("steps_per_round", 0)),
         round_wait_timeout_s=float(args.get("round_wait_timeout_s", 120.0)),
+        episode_frames=_as_bool(args.get("episode_frames"), False),
         reward_target_button=str(
             args.get("reward_target_button")
             or ("green_button" if ctx.task == "push_green_button" else "")

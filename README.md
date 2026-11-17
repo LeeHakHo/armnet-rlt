@@ -96,6 +96,34 @@ smallest example of an actor, its critics and its update.
 
 The sections below describe the individual commands the scripts run.
 
+## Robometer reward (this branch)
+
+`armnet_rlt.robometer_reward` turns a [Robometer](https://github.com/jesbu1/robometer/tree/armnet-tiled)
+tiled reward model into a shaping reward for `rlt`/`dsrl`: the actor sends each episode's
+top/front/wrist frames (one JPEG per view at every policy call), the learner asks the
+Robometer server for the progress curve and adds each chunk's progress gain to its reward.
+
+Serve the busybox checkpoint on a GPU of this machine:
+
+```bash
+git clone -b armnet-tiled https://github.com/jesbu1/robometer && cd robometer && uv sync
+uv pip install --python .venv/bin/python transformers==5.3.0     # the version the checkpoint was saved with
+hf download jesbu1/robometer-4b-fft-busybox-tiled --local-dir ckpt
+sed -i 's/^  use_unsloth: true$/  use_unsloth: false/' ckpt/config.yaml   # Unsloth fails with a dtype error
+.venv/bin/python robometer/evals/eval_server.py model_path="'$PWD/ckpt'" \
+  num_gpus=1 batch_size=4 server_url=127.0.0.1 server_port=8010
+```
+
+Then train with it (`ROBOMETER_URL`, `ROBOMETER_WEIGHT`, `ROBOMETER_LOG`: see the module):
+
+```bash
+CELL=<cell-id> scripts/run.sh dsrl --reward-plugin armnet_rlt.robometer_reward:shape
+```
+
+The actor image must contain this branch (`--episode-frames`). On 60 labelled cell-03
+episodes sampled at the actor's ~2 fps, Robometer's final progress separates successes
+from failures with AUC 0.976 using 8 frames per episode (the plugin default).
+
 ## Install
 
 Requirements: Python 3.12, [`uv`](https://docs.astral.sh/uv/), Docker (image
