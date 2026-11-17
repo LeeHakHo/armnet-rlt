@@ -64,14 +64,16 @@ else
 fi
 
 # Common actor flags in ACTOR: fixed scene (rail 0.7, light 30), 30 s episodes,
-# no recording, policy on your GPU.
+# policy on your GPU. Pass "eval" to let the eval command enforce recording.
 actor_common() {
+  local mode=${1:-train}
   : "${IMAGE_REF:?IMAGE_REF is unset; run scripts/setup.sh}"
   ACTOR=(--task "$TASK" --language-instruction "$PROMPT"
     --armnet.rail 0.7 --armnet.lightbox-brightness 30
-    --episode-timeout-s 30 --robot-telemetry full --no-record-dataset --no-use-rerun
+    --episode-timeout-s 30 --robot-telemetry full --no-use-rerun
     --remote-policy --auth-secret "$RLT_AUTH_SECRET" --hf-secret "$RLT_HF_SECRET"
     --image-ref "$IMAGE_REF")
+  [ "$mode" = eval ] || ACTOR+=(--no-record-dataset)
   [ -n "$CELL" ] && ACTOR+=(--armnet.require-cell "$CELL")
   return 0
 }

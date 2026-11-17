@@ -1,4 +1,7 @@
+import os
+import subprocess
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +43,74 @@ def test_frozen_eval_is_paired_deterministic_and_volume_backed() -> None:
     assert result["variation"] is True
     assert result["variation_seed"] == 42
     assert result["use_rerun"] is True
+
+
+def test_frozen_eval_always_records_for_autorlbench() -> None:
+    result = build_job_args(
+        _args(
+            record_dataset=False,
+            record_dataset_repo_id="someone/private-run",
+            hf_user="someone",
+            no_push_to_hub=True,
+        )
+    )
+
+    assert result["record_dataset"] is True
+    assert result["hf_user"] == "AutoRLBench"
+    assert "record_dataset_repo_id" not in result
+    assert "no_push_to_hub" not in result
+
+
+def test_frozen_eval_does_not_expose_dataset_upload_overrides() -> None:
+    from armnet_rlt.submit_eval import _parser
+
+    options = {
+        option
+        for action in _parser()._actions
+        for option in action.option_strings
+    }
+
+    assert {
+        "--record-dataset",
+        "--no-record-dataset",
+        "--record-dataset-repo-id",
+        "--hf-user",
+        "--no-push-to-hub",
+    }.isdisjoint(options)
+
+
+def test_eval_script_records_both_rlt_and_lerobot_evals_to_autorlbench() -> None:
+    root = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "IMAGE_REF": "example.invalid/actor:latest"}
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source scripts/lib.sh; actor_common eval; printf "%s\\n" "${ACTOR[@]}"',
+        ],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--no-record-dataset" not in completed.stdout.splitlines()
+    assert "--hf-user AutoRLBench" in (root / "scripts/eval.sh").read_text()
+
+    training = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source scripts/lib.sh; actor_common; printf "%s\\n" "${ACTOR[@]}"',
+        ],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "--no-record-dataset" in training.stdout.splitlines()
 
 
 def test_frozen_eval_can_skip_base() -> None:

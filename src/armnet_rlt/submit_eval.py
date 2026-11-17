@@ -31,6 +31,7 @@ from armnet_rlt.rerun_view import (
 
 SO101_EMBODIMENT = "lerobot/so-101"
 EVAL_VARIATION_SEED = 1042
+AUTORLBENCH_HF_USER = "AutoRLBench"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -167,14 +168,6 @@ def _parser() -> argparse.ArgumentParser:
         default=0,
     )
     parser.add_argument(
-        "--record-dataset",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    parser.add_argument("--record-dataset-repo-id")
-    parser.add_argument("--hf-user")
-    parser.add_argument("--no-push-to-hub", action="store_true")
-    parser.add_argument(
         "--robot-telemetry",
         choices=("off", "context", "safety", "full"),
         default="full",
@@ -244,7 +237,8 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         "base_exploration_scale": float(
             getattr(args, "base_exploration_scale", 0.0)
         ),
-        "record_dataset": bool(args.record_dataset),
+        "record_dataset": True,
+        "hf_user": AUTORLBENCH_HF_USER,
         "robot_telemetry": str(args.robot_telemetry),
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
         "use_rerun": rerun_job_enabled(args),
@@ -281,12 +275,6 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         )
     if getattr(args, "episode_timeout_s", 0.0) > 0:
         job_args["episode_timeout_s"] = float(args.episode_timeout_s)
-    if args.record_dataset_repo_id:
-        job_args["record_dataset_repo_id"] = args.record_dataset_repo_id
-    if args.hf_user:
-        job_args["hf_user"] = args.hf_user
-    if args.no_push_to_hub:
-        job_args["no_push_to_hub"] = True
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell

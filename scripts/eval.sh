@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-actor_common
+actor_common eval
 CONDITIONS=${CONDITIONS:-$ALL_CONDITIONS}
 MAX_JOBS=4
 case "$TARGET" in /*) ;; *) [ -e "$CALLER_PWD/$TARGET" ] && TARGET=$CALLER_PWD/$TARGET ;; esac
@@ -117,7 +117,8 @@ for C in $CONDITIONS; do
         EVAL_PID=$!; PIDS+=($EVAL_PID)
         wait_for $EVAL_PID "$OUT/logs/s$SEED.learner.log" "\[ckpt eval\] serving" checkpoint-eval
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${SEEDED[@]}" --policy-type lerobot \
-          --config-name eval --learner-key "eval:$KEY" --num-rollouts "$((LEFT + 2))" \
+          --config-name eval --learner-key "eval:$KEY" --hf-user AutoRLBench \
+          --num-rollouts "$((LEFT + 2))" \
           --exploration-scale 0 --timeout-seconds 3600 $(condition_args "$C") > "$JOB_LOG" 2>&1 || true
         kill $EVAL_PID 2>/dev/null || true
       else
