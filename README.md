@@ -23,8 +23,8 @@ serves π0.5 or a LeRobot policy and the cell only streams observations to it
 
 ```bash
 scripts/setup.sh                                # once: environments, .env, secrets, base model, actor image
-CELL=<cell-id> scripts/run.sh dsrl              # train: rlt, dsrl or dit
-CELL=<cell-id> scripts/eval.sh <run-id>         # evaluate: 7 conditions x 3 seeds x 5 rollouts
+CELL=<cell-id> scripts/run.sh dsrl              # train 400 episodes (rlt, dsrl or dit), evaluating every 100
+CELL=<cell-id> scripts/eval.sh <checkpoint>     # evaluate one checkpoint: 30 ID + 30 OOD rollouts
 ```
 
 `setup.sh` asks for an Armnet API key and a Hugging Face token with read access
@@ -35,23 +35,31 @@ it and run `ngrok config add-authtoken <token>` once, or set `PUBLIC_HOST`,
 `TLS_CERT` and `TLS_KEY` in `.env` for your own TLS ingress.
 
 `run.sh` starts the policy server and the learner on this machine's GPU (`GPU=<index>`
-picks one), submits the actor to `CELL`, resubmits it after a cell or safety stop, and
-stops everything on Ctrl-C. Logs go to `experiment-data/logs/<run-id>/`.
+picks one) and trains for a fixed number of robot episodes, the same budget for every
+method. It submits the actor to `CELL` in segments of `--eval-every` episodes
+(resubmitting after a cell or safety stop); after each segment the learner saves a
+checkpoint and the evaluation below runs on it, so a run of 400 episodes is evaluated
+after 100, 200, 300 and 400. Evaluation rollouts are not training episodes. Ctrl-C stops
+everything. Logs go to `experiment-data/logs/<run-id>/`, evaluations to
+`experiment-data/eval/<run-id>-ep<episodes>/results.jsonl`.
 
 | Option | Meaning |
 |---|---|
 | `--model <dir or HF repo>` | Starting policy: an OpenPI π0.5 checkpoint for `rlt`/`dsrl`, a LeRobot `pretrained_model` for `dit` |
 | `--policy-type <type>` | `dit` without `--model`: LeRobot policy trained on the demos first (`multi_task_dit`, `diffusion`, `smolvla`, ...) |
-| `--steps N` | Learner steps (`rlt` 30000, `dsrl` 400000, `dit` 1800) |
+| `--episodes N`, `--eval-every N` | Training episodes (400) and the evaluation interval (100; 0 disables) |
+| `--steps N` | `rlt`/`dsrl` learner step cap, which also sets the learning-rate schedule (30000, 400000) |
 | `--std X`, `--trip-penalty X` | Exploration std (0.5) and safety-trip reward (`rlt` 5, `dsrl` 2) |
-| `--resume <run-id>` | Continue a run from its newest checkpoint |
+| `--resume <run-id>` | Continue an `rlt`/`dsrl` run from its newest checkpoint |
 | `--learner-args "..."`, `--actor-args "..."` | Extra flags for the learner or `rlt-submit-actor` |
 
-`eval.sh` takes an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
-`pretrained_model` directory, and prints success and safety trips per condition.
-`--conditions`, `--seeds` and `--rollouts` narrow it. Results go to
-`experiment-data/eval/<label>-<condition>/results.jsonl`; a rerun skips seeds already
-there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
+Every evaluation is the same: 30 ID rollouts and 30 OOD rollouts (5 in each of the six
+conditions under [ID / OOD settings](#id--ood-settings)), deterministic, with scene seed
+1042 so every policy sees the same scenes; a safety trip counts as a failure.
+`eval.sh` runs it on an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
+`pretrained_model` directory and prints success per condition and the ID and OOD
+totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skips
+conditions already there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
 
 ### Changing the models
 
@@ -144,7 +152,7 @@ Pass the printed ref as `--image-ref` to every submit command below.
 
 ```bash
 export RLT_CONFIG=pi05_rlt_busybox_multitask_singlearm_minmax
-uv run hf download AutoRLBench/pi05_busybox_minmax_step5k_rltoken \
+envs/venv-learner/bin/hf download AutoRLBench/pi05_busybox_minmax_step5k_rltoken \
   --local-dir checkpoints/pi05_rltoken                                  # π0.5 with the RL token
 envs/venv-learner/bin/rlt-local assets --config-name "$RLT_CONFIG"      # normalization stats
 envs/venv-openpi/bin/rlt-local cache --preset multitask                 # demo cache (RLT pretraining)
@@ -228,12 +236,11 @@ CELL=<cell-id> scripts/run.sh dit
 
 It trains the starting policy on the demo dataset (300 `lerobot-train`
 steps; reused once it exists), starts the LeRobot policy server and the
-learner, and submits the actor until the learner finishes. The learner
-fine-tunes on the successful episodes the actor streams: each round is 30, 30,
-then 20 rollouts (the last entry repeats) followed by 300 learner steps, half
-of every batch from the demo dataset; every round saves a `pretrained_model`
-checkpoint of the EMA weights (decay 0.998) and pushes it to the policy
-server. A run ends at 1800 steps. Logs go to `experiment-data/logs/<run-id>`.
+learner, and submits the actor for the episode budget. The learner fine-tunes on
+the successful episodes the actor streams: each round is 20 rollouts followed by
+300 learner steps, half of every batch from the demo dataset; every round saves a
+`pretrained_model` checkpoint of the EMA weights (decay 0.998) and pushes it to the
+policy server. Logs go to `experiment-data/logs/<run-id>`.
 `--actor-args` takes extra actor flags.
 
 ## Policy server
@@ -359,9 +366,10 @@ Action noise std is k times the per-joint std of the demo actions, one value
 per joint (k = 0.05: `0.57,2.40,2.05,0.26,1.27,0.52`; k = 0.15:
 `1.71,7.19,6.14,0.79,3.82,1.55`).
 
-Evaluation runs every condition with seeds 1042, 2042 and 3042
-(`--armnet.variation-seed S --action-noise-seed S`), 10 deterministic
-rollouts per seed, for every policy.
+`scripts/eval.sh` and the evaluations in `scripts/run.sh` use the rail, brightness and
+tilt conditions: 30 ID rollouts and 5 rollouts in each of the six OOD conditions,
+deterministic, with `--armnet.variation-seed 1042 --action-noise-seed 1042`. The action
+noise levels are not part of it.
 
 ## Modal learner
 

@@ -146,6 +146,129 @@ resolve_model() {
   if [ -d "$m" ]; then (cd "$m" && pwd); return; fi
   local dir=$ROOT/checkpoints/$(basename "$m")
   [ "$m" = "$BASE_REPO" ] && dir=$BASE_DIR
-  [ -d "$dir" ] || "${UVRUN[@]}" hf download "$m" --local-dir "$dir" >&2
+  if [ ! -d "$dir" ]; then
+    $LEARNER_BIN/hf download "$m" --local-dir "$dir" >&2 || { rm -rf "$dir"; die "could not download $m"; }
+  fi
   echo "$dir"
+}
+
+# Evaluation protocol: EVAL_ID_ROLLOUTS (30) ID rollouts and EVAL_OOD_ROLLOUTS (5) for each
+# of the six OOD conditions (30 OOD in all), deterministic, all with variation seed
+# EVAL_SEED (1042) so every policy sees the same scenes. A safety trip is a failure.
+EVAL_SEED=${EVAL_SEED:-1042}
+EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-30}
+EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-5}
+EVAL_PIDS=()
+EVAL_JOB_LOG=""
+
+# Freezes step STEP of an rlt/dsrl run, uploads it, and prints its volume path.
+freeze_rlt() {  # <run> <step>
+  local dir; dir=$(printf step_%06d "$2")
+  "${UVRUN[@]}" rlt-freeze-checkpoint --local --config-name "$CONFIG" --run-id "$1" --step "$2" \
+    --output "$DATA/tasks/$CONFIG/frozen/$1/$dir.pt" \
+    --armnet-volume-path "rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt" --overwrite >&2 \
+    && echo "volume://rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt"
+}
+
+# "<rollouts> <successes> <trips>" over the rollout records in a directory's job logs.
+_tally() {  # <logs dir> <cap>
+  cat "$1"/job*.log 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | python3 -c '
+import json, sys
+cap = int(sys.argv[1]); n = s = t = 0
+for line in sys.stdin:
+    tag = next((k for k in ("[rlt rollout]", "[act rollout]") if k in line), None)
+    if tag is None or n >= cap:
+        continue
+    try:
+        r = json.loads(line.split(tag, 1)[1])
+    except ValueError:
+        continue
+    if r.get("policy_variant") == "base":
+        continue
+    n += 1; s += bool(r.get("success")); t += r.get("outcome") == "safety_trip"
+print(n, s, t)' "$2"
+}
+
+# Runs the evaluation protocol on one checkpoint and prints its summary.
+#   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
+#     LeRobot learner), the actor sends it nothing (--eval-only); without, a
+#     checkpoint-eval learner is started for each job.
+#   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
+# Results: experiment-data/eval/<label>/results.jsonl, one row per condition; conditions
+# already there are skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
+eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
+  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server c n done succ trips jobs ps key ev
+  mkdir -p "$out"
+  if [ "$kind" = lerobot ]; then
+    server=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
+      --checkpoint "$ckpt" $POLICY_TUNNEL)
+    [ -z "$extra" ] && server+=($STEERING)
+  else
+    server=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$extra"
+      --prompt "$PROMPT" $POLICY_TUNNEL)
+  fi
+  "${server[@]}" > "$out/policy-server.log" 2>&1 &
+  ps=$!; EVAL_PIDS+=($ps)
+  wait_for $ps "$out/policy-server.log" "policy server" "eval policy server"
+  log "evaluating $ckpt on ${CELL:-any cell} -> $out"
+  for c in $ALL_CONDITIONS; do
+    n=$([ "$c" = id ] && echo "$EVAL_ID_ROLLOUTS" || echo "$EVAL_OOD_ROLLOUTS")
+    grep -q "\"condition\": \"$c\"" "$out/results.jsonl" 2>/dev/null && continue
+    mkdir -p "$out/$c"
+    jobs=0
+    while :; do
+      read -r done succ trips <<<"$(_tally "$out/$c" "$n")"
+      [ "$done" -ge "$n" ] && break
+      [ "$jobs" -ge 4 ] && { log "$c: stopping after $jobs jobs at $done/$n"; break; }
+      jobs=$((jobs + 1))
+      EVAL_JOB_LOG=$out/$c/job$(date +%s).log
+      wait_cell
+      local seeded=(--armnet.variation-seed "$EVAL_SEED" --armnet.variation-episode-offset "$done"
+        --action-noise-seed "$EVAL_SEED" --timeout-seconds 7200 $(condition_args "$c"))
+      if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
+        "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
+          --config-name eval --learner-key "$extra" --num-rollouts "$((n - done))" \
+          --exploration-scale 0 --eval-only > "$EVAL_JOB_LOG" 2>&1 || true
+      elif [ "$kind" = lerobot ]; then
+        key=$label-$c-$(date +%s)
+        $LEROBOT_BIN/rlt-local checkpoint-eval $GPU_ARG --config-name eval --run-id "$key" \
+          --checkpoint "$ckpt" --rollouts-per-checkpoint "$((n - done))" $LEARNER_TUNNEL \
+          > "$out/$c/learner.log" 2>&1 &
+        ev=$!; EVAL_PIDS+=($ev)
+        wait_for $ev "$out/$c/learner.log" "\[ckpt eval\] serving" checkpoint-eval
+        "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
+          --config-name eval --learner-key "eval:$key" --num-rollouts "$((n - done + 2))" \
+          --exploration-scale 0 > "$EVAL_JOB_LOG" 2>&1 || true
+        kill $ev 2>/dev/null || true
+      else
+        "${UVRUN[@]}" rlt-submit-eval "${ACTOR[@]}" "${seeded[@]}" --config-name "$CONFIG" \
+          --checkpoint-dir "$CELL_CHECKPOINT" --frozen-rlt-checkpoint "$ckpt" \
+          --num-rollouts "$((n - done))" --no-include-base > "$EVAL_JOB_LOG" 2>&1 || true
+      fi
+      stop_cell_job "$EVAL_JOB_LOG"; EVAL_JOB_LOG=""
+      sleep 30
+    done
+    read -r done succ trips <<<"$(_tally "$out/$c" "$n")"
+    [ "$done" -ge "$n" ] || { log "$c incomplete ($done/$n); not recorded"; continue; }
+    python3 -c 'import json, sys; print(json.dumps({"checkpoint": sys.argv[1], "condition": sys.argv[2], "seed": int(sys.argv[3]), "rollouts": int(sys.argv[4]), "successes": int(sys.argv[5]), "safety_trips": int(sys.argv[6])}))' \
+      "$ckpt" "$c" "$EVAL_SEED" "$done" "$succ" "$trips" >> "$out/results.jsonl"
+    log "$c: $succ/$done ($trips trips)"
+  done
+  kill $ps 2>/dev/null || true
+  wait $ps 2>/dev/null || true
+  eval_summary "$out"
+}
+
+# ID and OOD totals of a results.jsonl.
+eval_summary() {  # <eval dir>
+  python3 - "$1/results.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])] if __import__("os").path.exists(sys.argv[1]) else []
+def total(rs):
+    return sum(r["successes"] for r in rs), sum(r["rollouts"] for r in rs), sum(r["safety_trips"] for r in rs)
+for r in rows:
+    print(f"  {r['condition']:<10} {r['successes']}/{r['rollouts']}  trips {r['safety_trips']}")
+i = total([r for r in rows if r["condition"] == "id"]); o = total([r for r in rows if r["condition"] != "id"])
+print(f"  ID {i[0]}/{i[1]}  OOD {o[0]}/{o[1]}  trips {i[2] + o[2]}")
+PY
 }
