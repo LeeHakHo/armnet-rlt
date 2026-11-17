@@ -170,14 +170,17 @@ freeze_rlt() {  # <run> <step>
     && echo "volume://rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt"
 }
 
-# "<rollouts> <successes> <trips>" over the rollout records in a directory's job logs.
-_tally() {  # <logs dir> <cap>
+# Rollout counts per condition over the job logs of an evaluation group:
+# "<condition> <rollouts> <successes> <trips>" lines, at most <cap> rollouts in all.
+# A rollout's condition is the one its scene recorded, else <default>.
+_tally() {  # <logs dir> <cap> <default condition>
   cat "$1"/job*.log 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | python3 -c '
-import json, sys
-cap = int(sys.argv[1]); n = s = t = 0
+import collections, json, sys
+cap, default = int(sys.argv[1]), sys.argv[2]
+counts = collections.OrderedDict(); total = 0
 for line in sys.stdin:
     tag = next((k for k in ("[rlt rollout]", "[act rollout]") if k in line), None)
-    if tag is None or n >= cap:
+    if tag is None or total >= cap:
         continue
     try:
         r = json.loads(line.split(tag, 1)[1])
@@ -185,19 +188,28 @@ for line in sys.stdin:
         continue
     if r.get("policy_variant") == "base":
         continue
-    n += 1; s += bool(r.get("success")); t += r.get("outcome") == "safety_trip"
-print(n, s, t)' "$2"
+    c = (r.get("variation") or {}).get("condition") or default
+    n, s, t = counts.get(c, (0, 0, 0))
+    counts[c] = (n + 1, s + bool(r.get("success")), t + (r.get("outcome") == "safety_trip"))
+    total += 1
+print(total)
+for c, (n, s, t) in counts.items():
+    print(c, n, s, t)' "$2" "$3"
 }
 
-# Runs the evaluation protocol on one checkpoint and prints its summary.
+# Runs the evaluation protocol on one checkpoint and prints its summary. It takes three
+# cell jobs: one walks through ID, rail-low, rail-high, bright15 and bright5 (rail and
+# light change per episode via --eval-schedule), and one each for the two camera tilts,
+# which a job sets only at its start.
 #   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
 #     LeRobot learner), the actor sends it nothing (--eval-only); without, a
 #     checkpoint-eval learner is started for each job.
 #   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
-# Results: experiment-data/eval/<label>/results.jsonl, one row per condition; conditions
-# already there are skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
+# Results: experiment-data/eval/<label>/results.jsonl, one row per condition; a group whose
+# conditions are all there is skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
 eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
-  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server c n done succ trips jobs ps key ev
+  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server ps key ev group n conds
+  local id=$EVAL_ID_ROLLOUTS ood=$EVAL_OOD_ROLLOUTS
   mkdir -p "$out"
   if [ "$kind" = lerobot ]; then
     server=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
@@ -211,31 +223,44 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   ps=$!; EVAL_PIDS+=($ps)
   wait_for $ps "$out/policy-server.log" "policy server" "eval policy server"
   log "evaluating $ckpt on ${CELL:-any cell} -> $out"
-  for c in $ALL_CONDITIONS; do
-    n=$([ "$c" = id ] && echo "$EVAL_ID_ROLLOUTS" || echo "$EVAL_OOD_ROLLOUTS")
-    grep -q "\"condition\": \"$c\"" "$out/results.jsonl" 2>/dev/null && continue
-    mkdir -p "$out/$c"
-    jobs=0
+  local schedule="[{\"condition\": \"id\", \"count\": $id, \"brightness\": 30},
+    {\"condition\": \"rail-low\", \"count\": $ood, \"rail_range\": [0.60, 0.65], \"brightness\": 30},
+    {\"condition\": \"rail-high\", \"count\": $ood, \"rail_range\": [0.75, 0.80], \"brightness\": 30},
+    {\"condition\": \"bright15\", \"count\": $ood, \"brightness\": 15},
+    {\"condition\": \"bright5\", \"count\": $ood, \"brightness\": 5}]"
+  for group in scene tilt1550 tilt1750; do
+    if [ "$group" = scene ]; then
+      n=$((id + 4 * ood)); conds="id rail-low rail-high bright15 bright5"
+      local group_args=(--eval-schedule "$(echo $schedule)" $ID_ARGS)
+    else
+      n=$ood; conds=$group
+      local group_args=($(condition_args "$group"))
+    fi
+    local missing=""
+    for c in $conds; do grep -q "\"condition\": \"$c\"" "$out/results.jsonl" 2>/dev/null || missing="$missing $c"; done
+    [ -n "$missing" ] || continue
+    mkdir -p "$out/$group"
+    local jobs=0 done
     while :; do
-      read -r done succ trips <<<"$(_tally "$out/$c" "$n")"
+      done=$(_tally "$out/$group" "$n" "$group" | head -1)
       [ "$done" -ge "$n" ] && break
-      [ "$jobs" -ge 4 ] && { log "$c: stopping after $jobs jobs at $done/$n"; break; }
+      [ "$jobs" -ge 4 ] && { log "$group: stopping after $jobs jobs at $done/$n"; break; }
       jobs=$((jobs + 1))
-      EVAL_JOB_LOG=$out/$c/job$(date +%s).log
+      EVAL_JOB_LOG=$out/$group/job$(date +%s).log
       wait_cell
       local seeded=(--armnet.variation-seed "$EVAL_SEED" --armnet.variation-episode-offset "$done"
-        --action-noise-seed "$EVAL_SEED" --timeout-seconds 7200 $(condition_args "$c"))
+        --action-noise-seed "$EVAL_SEED" --timeout-seconds 7200 "${group_args[@]}")
       if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "$extra" --num-rollouts "$((n - done))" \
           --exploration-scale 0 --eval-only > "$EVAL_JOB_LOG" 2>&1 || true
       elif [ "$kind" = lerobot ]; then
-        key=$label-$c-$(date +%s)
+        key=$label-$group-$(date +%s)
         $LEROBOT_BIN/rlt-local checkpoint-eval $GPU_ARG --config-name eval --run-id "$key" \
           --checkpoint "$ckpt" --rollouts-per-checkpoint "$((n - done))" $LEARNER_TUNNEL \
-          > "$out/$c/learner.log" 2>&1 &
+          > "$out/$group/learner.log" 2>&1 &
         ev=$!; EVAL_PIDS+=($ev)
-        wait_for $ev "$out/$c/learner.log" "\[ckpt eval\] serving" checkpoint-eval
+        wait_for $ev "$out/$group/learner.log" "\[ckpt eval\] serving" checkpoint-eval
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "eval:$key" --num-rollouts "$((n - done + 2))" \
           --exploration-scale 0 > "$EVAL_JOB_LOG" 2>&1 || true
@@ -246,13 +271,15 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
           --num-rollouts "$((n - done))" --no-include-base > "$EVAL_JOB_LOG" 2>&1 || true
       fi
       stop_cell_job "$EVAL_JOB_LOG"; EVAL_JOB_LOG=""
-      sleep 30
+      sleep 5
     done
-    read -r done succ trips <<<"$(_tally "$out/$c" "$n")"
-    [ "$done" -ge "$n" ] || { log "$c incomplete ($done/$n); not recorded"; continue; }
-    python3 -c 'import json, sys; print(json.dumps({"checkpoint": sys.argv[1], "condition": sys.argv[2], "seed": int(sys.argv[3]), "rollouts": int(sys.argv[4]), "successes": int(sys.argv[5]), "safety_trips": int(sys.argv[6])}))' \
-      "$ckpt" "$c" "$EVAL_SEED" "$done" "$succ" "$trips" >> "$out/results.jsonl"
-    log "$c: $succ/$done ($trips trips)"
+    done=$(_tally "$out/$group" "$n" "$group" | head -1)
+    [ "$done" -ge "$n" ] || { log "$group incomplete ($done/$n); not recorded"; continue; }
+    _tally "$out/$group" "$n" "$group" | tail -n +2 | while read -r c rollouts succ trips; do
+      python3 -c 'import json, sys; print(json.dumps({"checkpoint": sys.argv[1], "condition": sys.argv[2], "seed": int(sys.argv[3]), "rollouts": int(sys.argv[4]), "successes": int(sys.argv[5]), "safety_trips": int(sys.argv[6])}))' \
+        "$ckpt" "$c" "$EVAL_SEED" "$rollouts" "$succ" "$trips" >> "$out/results.jsonl"
+      log "$c: $succ/$rollouts ($trips trips)"
+    done
   done
   kill $ps 2>/dev/null || true
   wait $ps 2>/dev/null || true

@@ -141,6 +141,21 @@ def _variation_setting_enabled(name: str, args: dict[str, Any]) -> bool:
     return default
 
 
+def eval_schedule_entry(schedule: Any, episode: int) -> dict[str, Any] | None:
+    """The entry of an evaluation schedule covering ``episode``.
+
+    A schedule is a list of ``{"condition", "count", "rail_range"?, "brightness"?}``
+    entries run back to back from episode 0, so one job can visit several
+    conditions; episodes past its end get None.
+    """
+    start = 0
+    for entry in schedule or ():
+        if start <= episode < start + int(entry["count"]):
+            return entry
+        start += int(entry["count"])
+    return None
+
+
 def _apply_curriculum_variation(
     ctx: Any,
     episode: int,
@@ -170,6 +185,7 @@ def _apply_curriculum_variation(
     )
     if not scenario.settings:
         return None
+    entry = eval_schedule_entry(ctx.args.get("eval_schedule"), episode)
     axes = _variation_axes(ctx.cell)
     frontier_axis = curriculum.frontier_axis(
         [setting.name for setting in scenario.settings],
@@ -195,8 +211,9 @@ def _apply_curriculum_variation(
             clamped = value != raw
         else:
             value = raw
-        if setting.name.startswith("rail") and ctx.args.get("variation_rail_range"):
-            low, high = (float(v) for v in ctx.args["variation_rail_range"])
+        rail_range = (entry or {}).get("rail_range") or ctx.args.get("variation_rail_range")
+        if setting.name.startswith("rail") and rail_range:
+            low, high = (float(v) for v in rail_range)
             value = random.Random(f"{seed}:{episode}:{setting.name}").uniform(low, high)
             clamped = False
         scaled_settings.append(
@@ -211,6 +228,11 @@ def _apply_curriculum_variation(
     record = scaled.as_dict()
     if unapplied:
         record["not_applied"] = list(unapplied)
+    if entry is not None:
+        record["condition"] = str(entry["condition"])
+        if entry.get("brightness") is not None:
+            ctx.cell.lightbox.set(float(entry["brightness"]))
+            record["brightness"] = float(entry["brightness"])
     record["curriculum"] = curriculum.metadata(
         frontier_axis=frontier_axis
     )

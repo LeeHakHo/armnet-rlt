@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,12 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_VARIATION_SEED,
         help="Seed for deterministic per-rollout scene variation",
+    )
+    parser.add_argument(
+        "--eval-schedule",
+        default="",
+        help="JSON list of {condition, count, rail_range?, brightness?} entries run back "
+        "to back from scene episode 0, so one job covers several evaluation conditions",
     )
     parser.add_argument(
         "--armnet.variation-episode-offset",
@@ -455,6 +462,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
     )
     if variation_offset < 0:
         raise ValueError("variation_episode_offset must be nonnegative")
+    if getattr(args, "eval_schedule", ""):
+        job_args["eval_schedule"] = json.loads(args.eval_schedule)
     if variation_offset:
         job_args["variation_episode_offset"] = variation_offset
     job_args.update(variation_curriculum_job_args(args))

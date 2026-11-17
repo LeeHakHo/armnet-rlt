@@ -56,6 +56,9 @@ everything. Logs go to `experiment-data/logs/<run-id>/`, evaluations to
 Every evaluation is the same: 30 ID rollouts and 30 OOD rollouts (5 in each of the six
 conditions under [ID / OOD settings](#id--ood-settings)), deterministic, with scene seed
 1042 so every policy sees the same scenes; a safety trip counts as a failure.
+It takes three cell jobs: one walks through ID, rail-low, rail-high, bright15 and bright5,
+changing the rail and the light per episode (`--eval-schedule`), and one each for the two
+camera tilts, which a job sets only at its start.
 `eval.sh` runs it on an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
 `pretrained_model` directory and prints success per condition and the ID and OOD
 totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skips
