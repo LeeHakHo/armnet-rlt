@@ -187,10 +187,10 @@ for c, (n, s, t) in counts.items():
     print(c, n, s, t)' "$2" "$3"
 }
 
-# Runs the evaluation protocol on one checkpoint and prints its summary. It takes three
-# cell jobs, ID, OOD-easy and OOD-hard, as the top camera tilt is set only at job start;
-# each walks through the scene seeds with --eval-schedule, which also sets the rail range
-# and the light per episode.
+# Runs the evaluation protocol on one checkpoint and prints its summary, in one cell job
+# that walks through the levels and scene seeds with --eval-schedule, setting the rail, the
+# light and the top camera tilt per episode (EVAL_ONE_JOB=0: one job per level, tilted at
+# its start).
 #   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
 #     LeRobot learner), the actor sends it nothing (--eval-only); without, a
 #     checkpoint-eval learner is started for each job.
@@ -216,9 +216,10 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   # The cell's own top tilt for ID scenes (RLT_CELL_CAMERA_AIM), when it sets one.
   local id_tilt
   id_tilt=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.tilt=[0-9.]+" | cut -d= -f2 || true)
-  # EVAL_ONE_JOB=1 runs the three levels in one job, tilting the top camera per episode.
-  local groups="id ood-easy ood-hard"
-  [ "${EVAL_ONE_JOB:-0}" = 1 ] && groups=all
+  # One job for all three levels, tilting the top camera per episode; EVAL_ONE_JOB=0 runs
+  # one job per level instead, each tilted once at its start.
+  local groups=all
+  [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood-easy ood-hard"
   for group in $groups; do
     local entries="" seed level brightness ranges count tilt
     for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
