@@ -21,3 +21,25 @@ def test_tilt_steps_spans_the_mount_range() -> None:
     assert tilt_steps(1.0, [992, 3199]) == 3199
     assert abs(tilt_steps(0.2567, [992, 3199]) - (992 + 0.2567 * 2207)) < 1e-9
     assert tilt_steps(1.5, [0, 100]) == 100
+
+
+def test_tally_counts_rollouts_per_condition_and_seed(tmp_path) -> None:
+    import json
+    import subprocess
+    from pathlib import Path
+
+    rows = [
+        {"success": True, "variation": {"condition": "id", "seed": 1042}},
+        {"success": False, "outcome": "safety_trip", "variation": {"condition": "id", "seed": 1042}},
+        {"success": True, "variation": {"condition": "ood-hard", "seed": 2042}},
+        {"success": True},
+    ]
+    (tmp_path / "job.log").write_text(
+        "".join(f"[rlt rollout] {json.dumps(row)}\n" for row in rows)
+    )
+    lib = Path(__file__).resolve().parents[1] / "scripts" / "lib.sh"
+    out = subprocess.run(
+        ["bash", "-c", f'. "{lib}" >/dev/null; _tally "{tmp_path}" 10 all'],
+        capture_output=True, text=True, check=True,
+    ).stdout.split("\n")
+    assert out[:4] == ["4", "id 1042 2 1 1", "ood-hard 2042 1 1 0", "all -1 1 1 0"]

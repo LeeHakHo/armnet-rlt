@@ -68,11 +68,13 @@ def read_local_rendezvous(key: str) -> dict[str, Any] | None:
 
 
 def policy_rendezvous_key(config_name: str) -> str:
-    """Key a local policy server registers its endpoint under."""
+    """Key a local policy server registers its endpoint under: the config name, plus
+    ``RLT_POLICY_INSTANCE`` when set (one key per concurrently running server)."""
     clean_config = config_name.strip().replace("/", "-")
     if not clean_config:
         raise ValueError("config_name is required for rendezvous")
-    return f"policy:{clean_config}"
+    instance = os.environ.get("RLT_POLICY_INSTANCE", "").strip().replace("/", "-")
+    return f"policy:{clean_config}" + (f":{instance}" if instance else "")
 
 
 def add_remote_policy_arguments(parser: Any) -> None:
