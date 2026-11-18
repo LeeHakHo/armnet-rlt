@@ -141,19 +141,36 @@ def _variation_setting_enabled(name: str, args: dict[str, Any]) -> bool:
     return default
 
 
-def eval_schedule_entry(schedule: Any, episode: int) -> dict[str, Any] | None:
-    """The entry of an evaluation schedule covering ``episode``.
+def eval_schedule_entry(schedule: Any, episode: int) -> tuple[dict[str, Any], int] | None:
+    """The entry of an evaluation schedule covering job episode ``episode``, and
+    the episode's index within that entry.
 
-    A schedule is a list of ``{"condition", "count", "rail_range"?, "brightness"?}``
-    entries run back to back from episode 0, so one job can visit several
-    conditions; episodes past its end get None.
+    A schedule is a list of ``{"condition", "count", "seed"?, "rail_ranges"?,
+    "brightness"?}`` entries run back to back from episode 0, so one job can visit
+    several conditions and scene seeds; episodes past its end get None.
     """
     start = 0
     for entry in schedule or ():
         if start <= episode < start + int(entry["count"]):
-            return entry
+            return entry, episode - start
         start += int(entry["count"])
     return None
+
+
+def tilt_steps(fraction: float, tilt_range: Any) -> float:
+    """Encoder steps of a 0-1 tilt fraction (0 = the low stopper, 1 = the high one),
+    as ``--armnet.camera-aim`` takes it."""
+    low, high = (float(value) for value in tilt_range)
+    return low + min(1.0, max(0.0, fraction)) * (high - low)
+
+
+def aim_top_tilt(cell: Any, fraction: float) -> float:
+    """Tilts the top camera to ``fraction`` of its travel, pan at its default;
+    returns the commanded steps."""
+    mount = cell.camera_mounts["top"]
+    steps = tilt_steps(fraction, mount.mount_config["tilt_range"])
+    mount.set(float(mount.default_pan), steps)
+    return steps
 
 
 def _apply_curriculum_variation(
@@ -170,6 +187,12 @@ def _apply_curriculum_variation(
     enabled, seed = variation_request(ctx.args)
     if not enabled:
         return None
+    # A schedule entry may carry its own scene seed; its scenes are then
+    # numbered from 0 within the entry, as a job of that seed would number them.
+    scheduled = eval_schedule_entry(ctx.args.get("eval_schedule"), episode)
+    entry = scheduled[0] if scheduled else None
+    if entry is not None and entry.get("seed") is not None:
+        seed, episode = int(entry["seed"]), scheduled[1]
     scenario = sample_scenario(
         ctx.cell,
         seed=seed,
@@ -185,7 +208,6 @@ def _apply_curriculum_variation(
     )
     if not scenario.settings:
         return None
-    entry = eval_schedule_entry(ctx.args.get("eval_schedule"), episode)
     axes = _variation_axes(ctx.cell)
     frontier_axis = curriculum.frontier_axis(
         [setting.name for setting in scenario.settings],
@@ -211,7 +233,13 @@ def _apply_curriculum_variation(
             clamped = value != raw
         else:
             value = raw
-        rail_range = (entry or {}).get("rail_range") or ctx.args.get("variation_rail_range")
+        # An entry's rail_ranges: one range drawn per episode, then a position in it.
+        ranges = (entry or {}).get("rail_ranges")
+        rail_range = (
+            random.Random(f"{seed}:{episode}:{setting.name}:range").choice(ranges)
+            if ranges
+            else ctx.args.get("variation_rail_range")
+        )
         if setting.name.startswith("rail") and rail_range:
             low, high = (float(v) for v in rail_range)
             value = random.Random(f"{seed}:{episode}:{setting.name}").uniform(low, high)
@@ -230,9 +258,13 @@ def _apply_curriculum_variation(
         record["not_applied"] = list(unapplied)
     if entry is not None:
         record["condition"] = str(entry["condition"])
+        record["seed"] = seed
         if entry.get("brightness") is not None:
             ctx.cell.lightbox.set(float(entry["brightness"]))
             record["brightness"] = float(entry["brightness"])
+        if entry.get("top_tilt") is not None:
+            record["top_tilt_steps"] = aim_top_tilt(ctx.cell, float(entry["top_tilt"]))
+            record["top_tilt"] = float(entry["top_tilt"])
     record["curriculum"] = curriculum.metadata(
         frontier_axis=frontier_axis
     )

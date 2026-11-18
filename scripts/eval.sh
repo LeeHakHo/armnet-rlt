@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Evaluates one checkpoint on a cell: 30 ID rollouts and 30 OOD rollouts (5 in each of
-# rail-low, rail-high, bright15, bright5, tilt1550, tilt1750), deterministic, all with
-# scene-variation seed 1042 so every policy sees the same scenes. A safety trip counts
-# as a failed rollout. Conditions already in results.jsonl are skipped, so an
-# interrupted evaluation continues where it stopped. scripts/run.sh runs the same
-# protocol during training.
+# Evaluates one checkpoint on a cell. For each of the scene seeds 1042, 2042 and 3042: 10 ID
+# rollouts, 5 OOD-easy (rail outside the ID range, brightness 15, top tilt 0.2567) and 5
+# OOD-hard (rail outside the ID range, brightness 5, top tilt 0.3472); 30 ID and 30 OOD in
+# all, deterministic, with the same scenes for every policy. A safety trip counts as a
+# failed rollout. Conditions already in results.jsonl are skipped, so an interrupted
+# evaluation continues where it stopped. scripts/run.sh runs the same protocol during
+# training.
 #
 #   CELL=<cell-id> scripts/eval.sh <checkpoint> [options]
 #
@@ -13,10 +14,11 @@
 #   --step N               rlt/dsrl step to evaluate (default: newest saved step)
 #   --model <dir|HF repo>  rlt/dsrl: the π0.5 base the run trained on (default as run.sh)
 #   --label NAME           results go to experiment-data/eval/<NAME>/results.jsonl
-# Environment: EVAL_ID_ROLLOUTS (30), EVAL_OOD_ROLLOUTS (5 per OOD condition), EVAL_SEED (1042).
+# Environment: EVAL_SEEDS ("1042 2042 3042"), EVAL_ID_ROLLOUTS (10 per seed),
+# EVAL_OOD_ROLLOUTS (5 per seed for each of OOD-easy and OOD-hard).
 set -euo pipefail
 TARGET=${1:-}
-case "$TARGET" in ""|-h|--help) sed -n '2,16p' "$0"; exit 0 ;; esac
+case "$TARGET" in ""|-h|--help) sed -n '2,18p' "$0"; exit 0 ;; esac
 shift
 STEP="" MODEL="" LABEL=""
 while [ $# -gt 0 ]; do

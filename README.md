@@ -53,12 +53,12 @@ everything. Logs go to `experiment-data/logs/<run-id>/`, evaluations to
 | `--resume <run-id>` | Continue an `rlt`/`dsrl` run from its newest checkpoint |
 | `--learner-args "..."`, `--actor-args "..."` | Extra flags for the learner or `rlt-submit-actor` |
 
-Every evaluation is the same: 30 ID rollouts and 30 OOD rollouts (5 in each of the six
-conditions under [ID / OOD settings](#id--ood-settings)), deterministic, with scene seed
-1042 so every policy sees the same scenes; a safety trip counts as a failure.
-It takes three cell jobs: one walks through ID, rail-low, rail-high, bright15 and bright5,
-changing the rail and the light per episode (`--eval-schedule`), and one each for the two
-camera tilts, which a job sets only at its start.
+Every evaluation is the same. For each of the scene seeds 1042, 2042 and 3042 it runs 10
+ID rollouts and 5 rollouts each of OOD-easy and OOD-hard, so 30 ID and 30 OOD in all,
+deterministic, with the same scenes for every policy; a safety trip counts as a failure.
+The OOD levels stack changes (see [ID / OOD settings](#id--ood-settings)). It takes three
+cell jobs, one per level, since the top camera tilt is set when a job starts; each job
+walks through the seeds and sets the rail and the light per episode (`--eval-schedule`).
 `eval.sh` runs it on an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
 `pretrained_model` directory and prints success per condition and the ID and OOD
 totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skips
@@ -344,7 +344,13 @@ instead of a training run; with one checkpoint whose copy the cell loads as
 
 ### ID / OOD settings
 
-In-distribution training and evaluation vary only the rail, over 0.65-0.75:
+| Level | Rail | Brightness | Top camera tilt |
+|---|---|---|---|
+| ID | 0.65-0.75 (around 0.7) | 30 | the cell's aim (`RLT_CELL_CAMERA_AIM`) |
+| OOD-easy | 0.60-0.65 or 0.75-0.80 | 15 | 0.2567 |
+| OOD-hard | 0.60-0.65 or 0.75-0.80 | 5 | 0.3472 |
+
+Training uses the ID settings:
 
 ```bash
 --armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras \
@@ -352,27 +358,10 @@ In-distribution training and evaluation vary only the rail, over 0.65-0.75:
 --variation-scale-max 0.2 --variation-frontier-fraction 0
 ```
 
-Each out-of-distribution condition adds one change to the ID flags, so the
-rail is still drawn per episode from the variation seed. The flags go to
-`rlt-submit-actor` (LeRobot policies) and `rlt-submit-eval`
-(frozen RLT and DSRL actors):
-
-| Axis | Flag | Levels |
-|---|---|---|
-| Rail | `--variation-rail-range` | `0.60,0.65`, `0.75,0.80` |
-| Brightness | `--armnet.lightbox-brightness` | 15, 5 |
-| Top camera tilt | `--armnet.camera-aim top.tilt=` | 0.2567, 0.3472 |
-| Action noise | `--action-noise-std` | k = 0.05, 0.15 |
-
-`--variation-rail-range` draws each episode's rail uniformly from the range.
-Action noise std is k times the per-joint std of the demo actions, one value
-per joint (k = 0.05: `0.57,2.40,2.05,0.26,1.27,0.52`; k = 0.15:
-`1.71,7.19,6.14,0.79,3.82,1.55`).
-
-`scripts/eval.sh` and the evaluations in `scripts/run.sh` use the rail, brightness and
-tilt conditions: 30 ID rollouts and 5 rollouts in each of the six OOD conditions,
-deterministic, with `--armnet.variation-seed 1042 --action-noise-seed 1042`. The action
-noise levels are not part of it.
+`rlt-submit-actor` and `rlt-submit-eval` take `--eval-schedule '<json>'`, a list of
+`{"condition", "count", "seed", "rail_ranges", "brightness"}` entries run back to back;
+`scripts/lib.sh:eval_checkpoint` builds it. Rail positions are fractions of the usable
+rail, brightness a percentage, tilt a fraction of the mount's travel.
 
 ## Modal learner
 
