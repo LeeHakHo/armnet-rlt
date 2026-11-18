@@ -354,7 +354,6 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
             shutil.rmtree(temporary_calibration, ignore_errors=True)
 
 
-@main
 def _log_camera_mounts(ctx: Any) -> None:
     """Prints each pan/tilt mount's defaults and step ranges, which per-episode
     aiming (``camera_mounts[...].set(pan, tilt)`` in encoder steps) needs."""
@@ -387,6 +386,7 @@ def _log_camera_mounts(ctx: Any) -> None:
         print(f"[rlt] camera mounts unavailable: {exc}", flush=True)
 
 
+@main
 def run(ctx: Context) -> dict[str, Any]:
     # Validate before downloads, OpenPI imports, or robot construction.
     _log_camera_mounts(ctx)

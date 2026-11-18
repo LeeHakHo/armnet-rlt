@@ -468,3 +468,11 @@ def test_safety_trip_is_a_rejected_command_from_a_tripped_gate() -> None:
     assert not _is_safety_trip(RemoteCallError("Failed to open OpenCVCamera(/dev/video_wrist)"))
     assert not _is_safety_trip(DeviceNotConnectedError("SOFollower is not connected"))
     assert not _is_safety_trip(RuntimeError("current gate tripped"))
+
+
+def test_the_job_entry_point_is_run() -> None:
+    import inspect
+
+    source = inspect.getsource(actor_job)
+    assert "@main\ndef run(ctx: Context)" in source
+    assert source.count("\n@main\n") == 1
