@@ -10,6 +10,7 @@
 #                     PUBLIC_LEARNER_PORT (443) and PUBLIC_POLICY_PORT (8443)
 #   LEARNER_PORT, POLICY_PORT   local ports (50051, 50052)
 #   WANDB_PROJECT     log learners to this Weights & Biases project
+#   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661, cell-01 0.19)
 
 CALLER_PWD=$PWD
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +24,8 @@ if [ -f .env ]; then
     eval "export $line"
   done < .env
 fi
+# Top-camera aim per cell that centres the busybox (set it to '' to keep each cell's own aim).
+export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19"}
 UVRUN=(uv run --quiet)
 [ -f .env ] && UVRUN+=(--env-file .env)
 

@@ -56,9 +56,9 @@ everything. Logs go to `experiment-data/logs/<run-id>/`, evaluations to
 Every evaluation is the same. For each of the scene seeds 1042, 2042 and 3042 it runs 10
 ID rollouts and 5 rollouts each of OOD-easy and OOD-hard, so 30 ID and 30 OOD in all,
 deterministic, with the same scenes for every policy; a safety trip counts as a failure.
-The OOD levels stack changes (see [ID / OOD settings](#id--ood-settings)). It takes three
-cell jobs, one per level, since the top camera tilt is set when a job starts; each job
-walks through the seeds and sets the rail and the light per episode (`--eval-schedule`).
+The OOD levels stack changes (see [ID / OOD settings](#id--ood-settings)). It runs as one
+cell job that sets the rail, the light and the top camera tilt per episode
+(`--eval-schedule`); `EVAL_ONE_JOB=0` splits it into one job per level.
 `eval.sh` runs it on an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
 `pretrained_model` directory and prints success per condition and the ID and OOD
 totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skips
@@ -395,7 +395,7 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | `WANDB_PROJECT` | Weights & Biases project for the learners (optional) |
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `RLT_AUTH_SECRET` secret |
 | `RLT_DATA_ROOT` | Local learner data root (default `./experiment-data`) |
-| `RLT_CELL_CAMERA_AIM` | Camera aim per cell, `cell-01=top.tilt=0.5;cell-02=...` |
+| `RLT_CELL_CAMERA_AIM` | Camera aim per cell; the scripts default to `cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19`, which centre the busybox in the top view |
 | `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET` | Modal resource names |
 | `OPENPI_REPO`, `OPENPI_REVISION` | OpenPI fork with the `pi0_rl` model |
 
