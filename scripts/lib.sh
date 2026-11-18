@@ -76,21 +76,8 @@ actor_common() {
   return 0
 }
 
-# Scene variation of the ID condition and the six OOD conditions used in evaluation.
+# Scene variation of the ID condition: the rail is drawn per episode around 0.7 (0.65-0.75).
 ID_ARGS="--armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras --variation-curriculum --variation-scale-start 0.2 --variation-scale-min 0.2 --variation-scale-max 0.2 --variation-frontier-fraction 0"
-ALL_CONDITIONS="id rail-low rail-high bright15 bright5 tilt1550 tilt1750"
-condition_args() {
-  case "$1" in
-    id) echo "$ID_ARGS" ;;
-    rail-low) echo "$ID_ARGS --variation-rail-range 0.60,0.65" ;;
-    rail-high) echo "$ID_ARGS --variation-rail-range 0.75,0.80" ;;
-    bright15) echo "$ID_ARGS --armnet.lightbox-brightness 15" ;;
-    bright5) echo "$ID_ARGS --armnet.lightbox-brightness 5" ;;
-    tilt1550) echo "$ID_ARGS --armnet.camera-aim top.tilt=0.2567" ;;
-    tilt1750) echo "$ID_ARGS --armnet.camera-aim top.tilt=0.3472" ;;
-    *) die "unknown condition $1 (one of: $ALL_CONDITIONS)" ;;
-  esac
-}
 
 # 0 when CELL is available (or no CELL is set).
 cell_free() {
@@ -152,11 +139,13 @@ resolve_model() {
   echo "$dir"
 }
 
-# Evaluation protocol: EVAL_ID_ROLLOUTS (30) ID rollouts and EVAL_OOD_ROLLOUTS (5) for each
-# of the six OOD conditions (30 OOD in all), deterministic, all with variation seed
-# EVAL_SEED (1042) so every policy sees the same scenes. A safety trip is a failure.
-EVAL_SEED=${EVAL_SEED:-1042}
-EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-30}
+# Evaluation protocol, per scene seed in EVAL_SEEDS (1042 2042 3042): EVAL_ID_ROLLOUTS (10)
+# ID rollouts and EVAL_OOD_ROLLOUTS (5) each of OOD-easy and OOD-hard, so 30 ID and 30 OOD
+# in all. OOD-easy stacks a rail outside the ID range (0.60-0.65 or 0.75-0.80), brightness 15
+# and top tilt 0.2567; OOD-hard the same rail ranges, brightness 5 and tilt 0.3472. Rollouts
+# are deterministic and a safety trip is a failure.
+EVAL_SEEDS=${EVAL_SEEDS:-1042 2042 3042}
+EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
 EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-5}
 EVAL_PIDS=()
 EVAL_JOB_LOG=""
@@ -170,14 +159,17 @@ freeze_rlt() {  # <run> <step>
     && echo "volume://rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt"
 }
 
-# "<rollouts> <successes> <trips>" over the rollout records in a directory's job logs.
-_tally() {  # <logs dir> <cap>
-  cat "$1"/job*.log 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | python3 -c '
-import json, sys
-cap = int(sys.argv[1]); n = s = t = 0
+# Rollout counts per condition and scene seed over the job logs of an evaluation group:
+# "<condition> <seed> <rollouts> <successes> <trips>" lines, at most <cap> rollouts in all.
+# A rollout's condition is the one its scene recorded, else <default>.
+_tally() {  # <logs dir> <cap> <default condition>
+  { cat "$1"/job*.log 2>/dev/null || true; } | sed -E 's/\x1b\[[0-9;]*m//g' | python3 -c '
+import collections, json, sys
+cap, default = int(sys.argv[1]), sys.argv[2]
+counts = collections.OrderedDict(); total = 0
 for line in sys.stdin:
     tag = next((k for k in ("[rlt rollout]", "[act rollout]") if k in line), None)
-    if tag is None or n >= cap:
+    if tag is None or total >= cap:
         continue
     try:
         r = json.loads(line.split(tag, 1)[1])
@@ -185,19 +177,29 @@ for line in sys.stdin:
         continue
     if r.get("policy_variant") == "base":
         continue
-    n += 1; s += bool(r.get("success")); t += r.get("outcome") == "safety_trip"
-print(n, s, t)' "$2"
+    v = r.get("variation") or {}
+    c = f"{v.get('condition') or default} {v.get('seed', -1)}"
+    n, s, t = counts.get(c, (0, 0, 0))
+    counts[c] = (n + 1, s + bool(r.get("success")), t + (r.get("outcome") == "safety_trip"))
+    total += 1
+print(total)
+for c, (n, s, t) in counts.items():
+    print(c, n, s, t)' "$2" "$3"
 }
 
-# Runs the evaluation protocol on one checkpoint and prints its summary.
+# Runs the evaluation protocol on one checkpoint and prints its summary, in one cell job
+# that walks through the levels and scene seeds with --eval-schedule, setting the rail, the
+# light and the top camera tilt per episode (EVAL_ONE_JOB=0: one job per level, tilted at
+# its start).
 #   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
 #     LeRobot learner), the actor sends it nothing (--eval-only); without, a
 #     checkpoint-eval learner is started for each job.
 #   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
-# Results: experiment-data/eval/<label>/results.jsonl, one row per condition; conditions
-# already there are skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
+# Results: experiment-data/eval/<label>/results.jsonl, one row per condition; a group whose
+# conditions are all there is skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
 eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
-  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server c n done succ trips jobs ps key ev
+  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server ps key ev group n conds
+  local id=$EVAL_ID_ROLLOUTS ood=$EVAL_OOD_ROLLOUTS
   mkdir -p "$out"
   if [ "$kind" = lerobot ]; then
     server=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
@@ -211,31 +213,61 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   ps=$!; EVAL_PIDS+=($ps)
   wait_for $ps "$out/policy-server.log" "policy server" "eval policy server"
   log "evaluating $ckpt on ${CELL:-any cell} -> $out"
-  for c in $ALL_CONDITIONS; do
-    n=$([ "$c" = id ] && echo "$EVAL_ID_ROLLOUTS" || echo "$EVAL_OOD_ROLLOUTS")
-    grep -q "\"condition\": \"$c\"" "$out/results.jsonl" 2>/dev/null && continue
-    mkdir -p "$out/$c"
-    jobs=0
+  # The cell's own top tilt for ID scenes (RLT_CELL_CAMERA_AIM), when it sets one.
+  local id_tilt
+  id_tilt=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.tilt=[0-9.]+" | cut -d= -f2 || true)
+  # One job for all three levels, tilting the top camera per episode; EVAL_ONE_JOB=0 runs
+  # one job per level instead, each tilted once at its start.
+  local groups=all
+  [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood-easy ood-hard"
+  for group in $groups; do
+    local entries="" seed level brightness ranges count tilt
+    for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
+      case "$level" in
+        id) brightness=30 ranges=null count=$id tilt=$id_tilt ;;
+        ood-easy) brightness=15 ranges="[[0.60, 0.65], [0.75, 0.80]]" count=$ood tilt=0.2567 ;;
+        ood-hard) brightness=5 ranges="[[0.60, 0.65], [0.75, 0.80]]" count=$ood tilt=0.3472 ;;
+      esac
+      for seed in $EVAL_SEEDS; do
+        entries="$entries${entries:+, }{\"condition\": \"$level\", \"seed\": $seed, \"count\": $count, \"brightness\": $brightness, \"rail_ranges\": $ranges$([ "$group" = all ] && [ -n "$tilt" ] && echo ", \"top_tilt\": $tilt" || true)}"
+      done
+    done
+    local seeds; seeds=$(echo $EVAL_SEEDS | wc -w)
+    if [ "$group" = all ]; then
+      n=$(((id + 2 * ood) * seeds)); conds="id ood-easy ood-hard"
+      local group_args=(--eval-schedule "[$entries]" $ID_ARGS)
+    else
+      n=$((count * seeds)); conds=$group
+      # Without per-episode tilt the job's own aim sets it.
+      local group_args=(--eval-schedule "[$entries]" $ID_ARGS ${tilt:+--armnet.camera-aim top.tilt=$tilt})
+    fi
+    local missing=""
+    for c in $conds; do grep -q "\"condition\": \"$c\"" "$out/results.jsonl" 2>/dev/null || missing="$missing $c"; done
+    [ -n "$missing" ] || continue
+    mkdir -p "$out/$group"
+    local jobs=0 done
     while :; do
-      read -r done succ trips <<<"$(_tally "$out/$c" "$n")"
+      done=$(_tally "$out/$group" "$n" "$group" | sed -n 1p)
       [ "$done" -ge "$n" ] && break
-      [ "$jobs" -ge 4 ] && { log "$c: stopping after $jobs jobs at $done/$n"; break; }
+      [ "$jobs" -ge 4 ] && { log "$group: stopping after $jobs jobs at $done/$n"; break; }
       jobs=$((jobs + 1))
-      EVAL_JOB_LOG=$out/$c/job$(date +%s).log
+      EVAL_JOB_LOG=$out/$group/job$(date +%s).log
       wait_cell
-      local seeded=(--armnet.variation-seed "$EVAL_SEED" --armnet.variation-episode-offset "$done"
-        --action-noise-seed "$EVAL_SEED" --timeout-seconds 7200 $(condition_args "$c"))
+      # Each schedule entry sets its own scene seed; the job-level one is only a default.
+      local first=${EVAL_SEEDS%% *}
+      local seeded=(--armnet.variation-seed "$first" --armnet.variation-episode-offset "$done"
+        --action-noise-seed "$first" --timeout-seconds 7200 "${group_args[@]}")
       if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "$extra" --num-rollouts "$((n - done))" \
           --exploration-scale 0 --eval-only > "$EVAL_JOB_LOG" 2>&1 || true
       elif [ "$kind" = lerobot ]; then
-        key=$label-$c-$(date +%s)
+        key=$label-$group-$(date +%s)
         $LEROBOT_BIN/rlt-local checkpoint-eval $GPU_ARG --config-name eval --run-id "$key" \
           --checkpoint "$ckpt" --rollouts-per-checkpoint "$((n - done))" $LEARNER_TUNNEL \
-          > "$out/$c/learner.log" 2>&1 &
+          > "$out/$group/learner.log" 2>&1 &
         ev=$!; EVAL_PIDS+=($ev)
-        wait_for $ev "$out/$c/learner.log" "\[ckpt eval\] serving" checkpoint-eval
+        wait_for $ev "$out/$group/learner.log" "\[ckpt eval\] serving" checkpoint-eval
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "eval:$key" --num-rollouts "$((n - done + 2))" \
           --exploration-scale 0 > "$EVAL_JOB_LOG" 2>&1 || true
@@ -246,13 +278,15 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
           --num-rollouts "$((n - done))" --no-include-base > "$EVAL_JOB_LOG" 2>&1 || true
       fi
       stop_cell_job "$EVAL_JOB_LOG"; EVAL_JOB_LOG=""
-      sleep 30
+      sleep 5
     done
-    read -r done succ trips <<<"$(_tally "$out/$c" "$n")"
-    [ "$done" -ge "$n" ] || { log "$c incomplete ($done/$n); not recorded"; continue; }
-    python3 -c 'import json, sys; print(json.dumps({"checkpoint": sys.argv[1], "condition": sys.argv[2], "seed": int(sys.argv[3]), "rollouts": int(sys.argv[4]), "successes": int(sys.argv[5]), "safety_trips": int(sys.argv[6])}))' \
-      "$ckpt" "$c" "$EVAL_SEED" "$done" "$succ" "$trips" >> "$out/results.jsonl"
-    log "$c: $succ/$done ($trips trips)"
+    done=$(_tally "$out/$group" "$n" "$group" | sed -n 1p)
+    [ "$done" -ge "$n" ] || { log "$group incomplete ($done/$n); not recorded"; continue; }
+    _tally "$out/$group" "$n" "$group" | tail -n +2 | while read -r c seed rollouts succ trips; do
+      python3 -c 'import json, sys; print(json.dumps({"checkpoint": sys.argv[1], "condition": sys.argv[2], "seed": int(sys.argv[3]), "rollouts": int(sys.argv[4]), "successes": int(sys.argv[5]), "safety_trips": int(sys.argv[6])}))' \
+        "$ckpt" "$c" "$seed" "$rollouts" "$succ" "$trips" >> "$out/results.jsonl"
+      log "$c seed $seed: $succ/$rollouts ($trips trips)"
+    done
   done
   kill $ps 2>/dev/null || true
   wait $ps 2>/dev/null || true
@@ -266,8 +300,10 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])] if __import__("os").path.exists(sys.argv[1]) else []
 def total(rs):
     return sum(r["successes"] for r in rs), sum(r["rollouts"] for r in rs), sum(r["safety_trips"] for r in rs)
-for r in rows:
-    print(f"  {r['condition']:<10} {r['successes']}/{r['rollouts']}  trips {r['safety_trips']}")
+for c in dict.fromkeys(r["condition"] for r in rows):
+    s, n, t = total([r for r in rows if r["condition"] == c])
+    seeds = " ".join(f"{r['successes']}/{r['rollouts']}" for r in rows if r["condition"] == c)
+    print(f"  {c:<10} {s}/{n}  trips {t}  (per seed {seeds})")
 i = total([r for r in rows if r["condition"] == "id"]); o = total([r for r in rows if r["condition"] != "id"])
 print(f"  ID {i[0]}/{i[1]}  OOD {o[0]}/{o[1]}  trips {i[2] + o[2]}")
 PY

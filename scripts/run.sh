@@ -233,7 +233,7 @@ for MARK in $MARKS; do
       pause 600
     else
       QUICK=0 TRIPS=0
-      pause 30
+      pause 5
     fi
     ACTOR_LOG=""
   done
