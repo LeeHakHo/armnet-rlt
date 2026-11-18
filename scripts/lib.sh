@@ -26,6 +26,9 @@ if [ -f .env ]; then
 fi
 # Top-camera aim per cell that centres the busybox (set it to '' to keep each cell's own aim).
 export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19"}
+# Policy servers register under the config name plus this, so runs on other ports do not
+# pick up each other's server.
+export RLT_POLICY_INSTANCE=${RLT_POLICY_INSTANCE:-${POLICY_PORT:-50052}}
 UVRUN=(uv run --quiet)
 [ -f .env ] && UVRUN+=(--env-file .env)
 
@@ -181,7 +184,7 @@ for line in sys.stdin:
     if r.get("policy_variant") == "base":
         continue
     v = r.get("variation") or {}
-    c = f"{v.get('condition') or default} {v.get('seed', -1)}"
+    c = "%s %s" % (v.get("condition") or default, v.get("seed", -1))
     n, s, t = counts.get(c, (0, 0, 0))
     counts[c] = (n + 1, s + bool(r.get("success")), t + (r.get("outcome") == "safety_trip"))
     total += 1
