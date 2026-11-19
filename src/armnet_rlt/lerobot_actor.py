@@ -401,6 +401,7 @@ def run_lerobot_actor(
     session_id = uuid.uuid4().hex
     cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
+    episode_labels: list[dict[str, Any]] = []
     states: list[np.ndarray] = []
     actions: list[np.ndarray] = []
     frames: dict[str, list[bytes]] = {key: [] for key in shapes}
@@ -619,13 +620,14 @@ def run_lerobot_actor(
                 if eval_dataset is not None and frame_writer is not None:
                     from armnet_rlt.dataset_recording import save_episode
 
-                    save_episode(
+                    if save_episode(
                         ctx,
                         eval_dataset,
                         frame_writer,
                         telemetry=telemetry,
                         ticks=command_ticks,
-                    )
+                    ):
+                        episode_labels.append(rollout_record)
                 reset_policy()
                 states = []
                 actions = []
@@ -714,7 +716,7 @@ def run_lerobot_actor(
         try:
             operator.stop()
             eval_dataset_url = finish_rollout_recording(
-                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id
+                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels
             )
         finally:
             transport.close()

@@ -179,6 +179,11 @@ def _parser() -> argparse.ArgumentParser:
         default=True,
     )
     parser.add_argument("--record-dataset-repo-id")
+    parser.add_argument(
+        "--record-public",
+        action="store_true",
+        help="Make the recorded dataset public instead of private",
+    )
     parser.add_argument("--hf-user")
     parser.add_argument("--no-push-to-hub", action="store_true")
     parser.add_argument(
@@ -252,6 +257,7 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "base_exploration_scale", 0.0)
         ),
         "record_dataset": bool(args.record_dataset),
+        "record_public": bool(getattr(args, "record_public", False)),
         "robot_telemetry": str(args.robot_telemetry),
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
         "use_rerun": rerun_job_enabled(args),

@@ -940,21 +940,24 @@ def finish_rollout_recording(
     frame_writer: Any,
     telemetry: Any,
     eval_repo_id: str | None,
+    episode_labels: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Finalize the eval dataset and push it unless ``no_push_to_hub`` is set."""
+    """Finalize the eval dataset and push it unless ``no_push_to_hub`` is set;
+    public when the job's ``record_public`` arg is set."""
     if eval_dataset is None or frame_writer is None or eval_repo_id is None:
         return None
     from armnet_rlt.dataset_recording import finish_dataset
 
+    args = getattr(ctx, "args", {})
     return finish_dataset(
         ctx,
         eval_dataset,
         frame_writer,
         repo_id=eval_repo_id,
-        push_to_hub=not bool(
-            _field(getattr(ctx, "args", {}), "no_push_to_hub", False)
-        ),
+        push_to_hub=not bool(_field(args, "no_push_to_hub", False)),
         telemetry=telemetry,
+        public=as_bool(_field(args, "record_public", False)),
+        episode_labels=episode_labels,
     )
 
 
@@ -1118,6 +1121,7 @@ def run_actor(
     session_id = uuid.uuid4().hex
     cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
+    episode_labels: list[dict[str, Any]] = []
     transitions: list[_ChunkTransition] = []
     # JPEG views at each policy call, sent with the episode for a reward plugin.
     send_frames = bool(_field(cfg, "episode_frames", False))
@@ -1410,13 +1414,14 @@ def run_actor(
                 if eval_dataset is not None and frame_writer is not None:
                     from armnet_rlt.dataset_recording import save_episode
 
-                    save_episode(
+                    if save_episode(
                         ctx,
                         eval_dataset,
                         frame_writer,
                         telemetry=telemetry,
                         ticks=command_ticks,
-                    )
+                    ):
+                        episode_labels.append(rollout_record)
                 if getattr(transport, "failed", False):
                     raise ConnectionError(
                         "the learner connection is gone; this episode and "
@@ -1641,7 +1646,7 @@ def run_actor(
         try:
             operator.stop()
             eval_dataset_url = finish_rollout_recording(
-                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id
+                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels
             )
         finally:
             transport.close()

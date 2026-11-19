@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -107,8 +108,14 @@ def finish_dataset(
     repo_id: str,
     push_to_hub: bool,
     telemetry: Any = None,
+    public: bool = False,
+    episode_labels: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Discard an interrupted episode, finalize, and optionally upload."""
+    """Discard an interrupted episode, finalize, and optionally upload.
+
+    ``episode_labels`` (one dict per saved episode, in episode order) is written to
+    ``meta/armnet_rollouts.jsonl`` next to the dataset and uploaded with it.
+    """
     frame_writer.flush()
     if dataset.has_pending_frames():
         dataset.clear_episode_buffer()
@@ -119,10 +126,26 @@ def finish_dataset(
     if telemetry is not None:
         telemetry.close()
     dataset.finalize()
+    labels_path = None
+    if episode_labels is not None:
+        labels_path = Path(dataset.root) / "meta" / "armnet_rollouts.jsonl"
+        labels_path.parent.mkdir(parents=True, exist_ok=True)
+        labels_path.write_text(
+            "".join(json.dumps(row, default=str) + "\n" for row in episode_labels)
+        )
     if not push_to_hub:
         return None
     ctx.report_progress(f"uploading RLT eval dataset to HuggingFace: {repo_id}")
-    dataset.push_to_hub(private=True)
+    dataset.push_to_hub(private=not public)
+    if labels_path is not None:
+        from huggingface_hub import HfApi
+
+        HfApi().upload_file(
+            path_or_fileobj=str(labels_path),
+            path_in_repo="meta/armnet_rollouts.jsonl",
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
     url = f"https://huggingface.co/datasets/{repo_id}"
     ctx.report_progress(f"RLT eval dataset uploaded: {url}")
     return url

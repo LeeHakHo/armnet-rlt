@@ -15,10 +15,11 @@
 #   --model <dir|HF repo>  rlt/dsrl: the π0.5 base the run trained on (default as run.sh)
 #   --label NAME           results go to experiment-data/eval/<NAME>/results.jsonl
 # Environment: EVAL_SEEDS ("1042 2042 3042"), EVAL_ID_ROLLOUTS (10 per seed),
-# EVAL_OOD_ROLLOUTS (5 per seed for each of OOD-easy and OOD-hard).
+# EVAL_OOD_ROLLOUTS (5 per seed for each of OOD-easy and OOD-hard). Rollouts are recorded
+# publicly to RECORD_REPO (see scripts/lib.sh); RECORD=0 turns that off.
 set -euo pipefail
 TARGET=${1:-}
-case "$TARGET" in ""|-h|--help) sed -n '2,18p' "$0"; exit 0 ;; esac
+case "$TARGET" in ""|-h|--help) sed -n '2,19p' "$0"; exit 0 ;; esac
 shift
 STEP="" MODEL="" LABEL=""
 while [ $# -gt 0 ]; do
