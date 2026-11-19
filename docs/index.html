@@ -171,13 +171,13 @@ details.fold.sub > figure { margin-top: 10px }
 @media (max-width: 720px) { .flow { grid-template-columns: 1fr } }
 .legend2 { font-size: 13px; color: var(--muted); margin-top: -6px }
 /* pages */
-.tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: -20px }
+.tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: -20px }
 .tabs a { display: grid; justify-items: center; gap: 6px; padding: 14px 8px 12px; font: 500 13.5px var(--body); color: var(--muted); text-decoration: none; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); transition: border-color .15s, color .15s, background .15s }
 .tabs a svg { width: 26px; height: 26px }
 .tabs a span { white-space: nowrap }
 .tabs a:hover { color: var(--fg); border-color: var(--muted) }
 .tabs a[aria-current="page"] { color: var(--dsrl); border-color: var(--dsrl); background: color-mix(in srgb, var(--dsrl) 7%, var(--surface)) }
-@media (max-width: 560px) { .tabs { gap: 6px } .tabs a { font-size: 11.5px; padding: 10px 2px; text-align: center } .tabs a span { white-space: normal } .tabs a svg { width: 22px; height: 22px } }
+@media (max-width: 560px) { .tabs { gap: 5px } .tabs a { font-size: 10.5px; padding: 10px 1px; text-align: center } .tabs a span { white-space: normal } .tabs a svg { width: 22px; height: 22px } }
 .view { display: grid; gap: 52px }
 .view[hidden] { display: none }
 .check { display: inline-flex; gap: 8px; align-items: center; font-size: 13.5px; color: var(--muted) }
@@ -216,6 +216,7 @@ details.fold.sub > figure { margin-top: 10px }
 
   <nav class="tabs" aria-label="Pages">
     <a href="#/" data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg><span>Overview</span></a>
+    <a href="https://github.com/LeeHakHo/armnet-rlt" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg><span>Code</span></a>
     <a href="#/leaderboard" data-tab="leaderboard"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4"/><path d="M12 13v4M8 20h8M10 17h4"/></svg><span>Leaderboard</span></a>
     <a href="#/results" data-tab="results"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9.5v5l4-2.5z"/></svg><span>All results</span></a>
     <a href="#/submit" data-tab="submit"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 15v4h14v-4"/></svg><span>Submit a method</span></a>
