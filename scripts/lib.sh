@@ -10,6 +10,8 @@
 #                     PUBLIC_LEARNER_PORT (443) and PUBLIC_POLICY_PORT (8443)
 #   LEARNER_PORT, POLICY_PORT   local ports (50051, 50052)
 #   WANDB_PROJECT     log learners to this Weights & Biases project
+#   EVAL_RECORD_REPO  <hf user or org>/<prefix>: record evaluation rollouts as private
+#                     LeRobot datasets (unset: not recorded)
 #   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661, cell-01 0.19)
 
 CALLER_PWD=$PWD
@@ -263,6 +265,10 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       local first=${EVAL_SEEDS%% *}
       local seeded=(--armnet.variation-seed "$first" --armnet.variation-episode-offset "$done"
         --action-noise-seed "$first" --timeout-seconds 7200 "${group_args[@]}")
+      # EVAL_RECORD_REPO=<hf user or org>/<prefix>: the cell records the job's rollouts as a
+      # private LeRobot dataset <prefix>_<label>_<group>_<first rollout>.
+      [ -z "${EVAL_RECORD_REPO:-}" ] || seeded+=(--record-dataset
+        --record-dataset-repo-id "${EVAL_RECORD_REPO}_${label}_${group}_${done}")
       if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "$extra" --num-rollouts "$((n - done))" \
