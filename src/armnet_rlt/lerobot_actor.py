@@ -402,6 +402,7 @@ def run_lerobot_actor(
     cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
     episode_labels: list[dict[str, Any]] = []
+    episode_frame_times: list[list[float]] = []
     states: list[np.ndarray] = []
     actions: list[np.ndarray] = []
     frames: dict[str, list[bytes]] = {key: [] for key in shapes}
@@ -628,6 +629,7 @@ def run_lerobot_actor(
                         ticks=command_ticks,
                     ):
                         episode_labels.append(rollout_record)
+                        episode_frame_times.append(list(getattr(frame_writer, "frame_times", [])))
                 reset_policy()
                 states = []
                 actions = []
@@ -716,7 +718,8 @@ def run_lerobot_actor(
         try:
             operator.stop()
             eval_dataset_url = finish_rollout_recording(
-                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels
+                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels,
+                episode_frame_times,
             )
         finally:
             transport.close()
