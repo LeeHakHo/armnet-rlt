@@ -135,6 +135,23 @@ dialog.player video { width: 100%; display: block; border-radius: 6px; backgroun
 dialog.player .bar2 { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #fff; font-size: 13px; padding: 8px 2px }
 dialog.player button { font: 500 13px var(--body); color: #fff; background: transparent; border: 1px solid rgba(255, 255, 255, .5); border-radius: 4px; padding: 4px 10px; cursor: pointer }
 
+/* collapsible blocks */
+details.fold { border-top: 1px solid var(--line); padding-top: 14px }
+details.fold > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 6px 14px }
+details.fold > summary::-webkit-details-marker { display: none }
+details.fold > summary::after { content: "+"; font: 500 20px var(--mono); color: var(--muted); grid-column: 3; grid-row: 1 }
+details.fold[open] > summary::after { content: "–" }
+details.fold > summary h2, details.fold > summary h3 { grid-column: 1 }
+details.fold > summary .small { grid-column: 2; min-width: 0 }
+details.fold > summary:hover h2, details.fold > summary:hover h3 { text-decoration: underline; text-underline-offset: 4px }
+.fold-body { display: grid; gap: 16px; padding-top: 16px }
+.fold-body h3 { margin: 12px 0 0; font: 600 17px var(--body) }
+details.fold.sub { border-top: 0; padding-top: 0 }
+details.fold.sub > summary h3 { margin: 0; font: 600 14px var(--body); color: var(--muted) }
+details.fold.sub > figure { margin-top: 10px }
+.view[data-view="home"] { gap: 28px }
+@media (max-width: 720px) { details.fold > summary { grid-template-columns: 1fr auto } details.fold > summary .small { grid-column: 1; grid-row: 2 } details.fold > summary::after { grid-column: 2 } }
+
 /* pages */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -28px }
 .tabs a { font: 500 14px var(--body); color: var(--muted); text-decoration: none; padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px }
@@ -194,8 +211,7 @@ dialog.player button { font: 500 13px var(--body); color: #fff; background: tran
     <p class="cap">Top entries on the current protocol. <a href="#/leaderboard">Full leaderboard</a> with confidence intervals and per-cell results · <a href="#/results">every evaluation rollout</a> · <a href="#/submit">submit your method</a>.</p>
   </section>
 
-  <section>
-    <h2>How the system runs</h2>
+  <details class="fold"><summary><h2>How the system runs</h2><span class="muted small">the cell runs the actor; inference and training run on your GPU</span></summary><div class="fold-body">
     <figure>
       <div class="fig">
         <svg viewBox="0 0 900 350" role="img" aria-label="The robot cell runs the actor. It sends frames to the policy server on the GPU machine and gets action chunks back; finished episodes go to the learner, which sends new weights to the policy server.">
@@ -242,10 +258,9 @@ dialog.player button { font: 500 13px var(--body); color: #fff; background: tran
       </div>
       <figcaption>The cell only runs the actor; inference and training run on our GPU. ① frames go out, ② an action chunk comes back, ③ finished episodes go to the learner, ④ which pushes new weights to the policy server.<br>Jobs reach the cell through the Armnet queue.</figcaption>
     </figure>
-  </section>
+  </div></details>
 
-  <section>
-    <h2 id="howto">How to use</h2>
+  <details class="fold" id="howto"><summary><h2>How to use</h2><span class="muted small">set up once, then one command to train and one to evaluate</span></summary><div class="fold-body">
     <ol class="steps">
       <li><b>Set up once</b><pre>git clone https://github.com/LeeHakHo/armnet-rlt &amp;&amp; cd armnet-rlt
 scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging Face token, then installs the environments, creates the secrets, downloads the base model and builds the actor image.</p></li>
@@ -253,10 +268,9 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <li><b>Evaluate on ID and OOD scenes</b><pre>CELL=&lt;cell-id&gt; scripts/eval.sh &lt;run-id&gt;</pre></li>
     </ol>
     <p class="cap">Needs a GPU, Docker for the actor image and an ngrok token (or your own TLS ingress). Options and the individual commands are in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
-  </section>
+  </div></details>
 
-  <section id="protocol">
-    <h2>Evaluation protocol</h2>
+  <details class="fold" id="protocol"><summary><h2>Evaluation protocol</h2><span class="muted small">ID, OOD-easy and OOD-hard scenes, 3 seeds; click a setting for an example video</span></summary><div class="fold-body">
     <div class="settings">
       <button class="setting" data-video="" data-title="ID">
         <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
@@ -279,10 +293,9 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <div class="bar2"><span id="player-title"></span><button id="player-close">Close</button></div>
       <video id="player-video" controls playsinline></video>
     </dialog>
-  </section>
+  </div></details>
 
-  <section>
-    <h2>Baselines</h2>
+  <details class="fold"><summary><h2>Baselines</h2><span class="muted small">DSRL, RLT, iterative DiT, and where your method plugs in</span></summary><div class="fold-body">
     <figure>
       <div class="fig">
         <svg viewBox="0 0 900 455" role="img" aria-label="DSRL trains an actor that picks the sampler noise of a frozen pi0.5; RLT trains a residual on pi0.5's action chunk; iterative DiT retrains the whole policy on its own successes; your method plugs into the same policy server.">
@@ -348,10 +361,10 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       </div>
       <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen.<br>DiT starts from 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
     </figure>
-  </section>
+  </div></details>
 
-  <section id="v1">
-    <h2>Earlier results (v1 protocol)</h2>
+  <details class="fold" id="v1"><summary><h2>Earlier results (v1 protocol)</h2><span class="muted small">one cell, 105 rollouts per method; not comparable with the leaderboard</span></summary><div class="fold-body">
+    <h3>Results</h3>
     <p class="cap">These are from the first protocol (one cell, 7 conditions × 15 rollouts, cell-03 before its repair) and cannot be compared with the leaderboard. Each baseline trained for up to 6 hours, then ran 105 evaluation rollouts.</p>
     <div class="score">
       <div class="c-dit"><span><span class="dot"></span><b>Iterative DiT</b> <span class="muted small">step 1,800 · 2.1 h</span></span><span class="big">35<small> / 105 (33%)</small></span><span class="muted small">ID 10/15 · OOD 25/90</span><div class="bar"><i style="width:33.3%"></i></div></div>
@@ -361,10 +374,8 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     <p class="cap">105 evaluation rollouts per method: 15 in-distribution (ID) + 90 out-of-distribution (OOD, 6 conditions × 15).<br>No safety trips in any evaluation. DSRL's lead comes from the OOD conditions.</p>
     <div class="tbl"><table id="res"></table></div>
     <p class="cap">Successes out of 15. Each method uses its latest evaluated checkpoint within 6 hours of training.</p>
-  </section>
 
-  <section>
-    <h2>Earlier learning curves (v1)</h2>
+    <h3>Learning curves</h3>
     <div class="fig">
       <div class="figtop">
         <div class="legend"><span class="c-dit"><span class="dot"></span>Iterative DiT</span><span class="c-rlt"><span class="dot"></span>RLT</span><span class="c-dsrl"><span class="dot"></span>DSRL</span></div>
@@ -375,10 +386,8 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <svg id="curve" viewBox="0 0 900 340" role="img" aria-label="Training success rate over the first 6 hours for three methods"></svg>
     </div>
     <p class="cap">Success over the last 30 training rollouts (RLT and DSRL include exploration noise). Rings mark the evaluated checkpoints.</p>
-  </section>
 
-  <section>
-    <h2>Earlier time and compute (v1)</h2>
+    <h3>Time and compute</h3>
     <div class="tbl"><table>
       <thead><tr><th>Run</th><th>Learner steps</th><th>Wall clock</th><th>GPU-hours</th><th>Robot episodes</th><th>Robot time</th><th>Training successes</th></tr></thead>
       <tbody>
@@ -388,7 +397,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       </tbody>
     </table></div>
     <p class="cap">One RTX A6000 per run. Robot time is time spent inside episodes; the rest is resets and scene changes. Not counted: π0.5 fine-tuning, DiT pretraining, and evaluation (about 1.5 h of robot time per checkpoint).</p>
-  </section>
+  </div></details>
   </div>
   <div class="view" data-view="leaderboard" hidden>
     <section>
@@ -396,11 +405,11 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base, then is scored on the <a href="#/" data-goto="protocol">evaluation protocol</a>: 30 ID + 30 OOD rollouts per cell, 120 in all. Ranked by total successes.</p>
       <label class="check"><input type="checkbox" id="lb-open"> Open-source methods only</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
-      <p class="cap">Small numbers: cell-01 · cell-03. Brackets: 95% Wilson interval of the success rate. Click a method for its per-cell results and training curve.</p>
-      <figure>
+      <p class="cap">Small numbers: cell-01 · cell-03. Brackets: 95% Wilson interval of the success rate. Click a method to open its per-cell results and training curve; click again to close.</p>
+      <details class="fold sub"><summary><h3>Interval chart</h3></summary><figure>
         <div class="fig"><svg id="lb-chart" viewBox="0 0 900 220" role="img" aria-label="Success rate of each method with 95% intervals, for ID, OOD and total"></svg></div>
         <figcaption>Success rate with 95% Wilson intervals. Overlapping intervals mean the difference is within sampling noise at this number of rollouts.</figcaption>
-      </figure>
+      </figure></details>
       <div id="lb-detail"></div>
       <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. Iterative DiT and RLT are being re-run on this protocol; their earlier results are on the <a href="#/" data-goto="v1">overview</a>.</p>
     </section>
@@ -521,7 +530,11 @@ function route() {
   for (const a of document.querySelectorAll(".tabs a")) {
     if (a.dataset.tab === name) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
-  if (name === "home" && route.goto) { const el = document.getElementById(route.goto); if (el) el.scrollIntoView(); route.goto = null; }
+  if (name === "home" && route.goto) {
+    const el = document.getElementById(route.goto);
+    if (el) { if (el.tagName === "DETAILS") el.open = true; el.scrollIntoView(); }
+    route.goto = null;
+  }
   else window.scrollTo(0, 0);
 }
 document.addEventListener("click", e => {
@@ -574,7 +587,6 @@ function drawBoard() {
   for (const tr of document.querySelectorAll("#lb-full tr.row"))
     tr.addEventListener("click", () => detail(tr.dataset.key));
   drawChart(rows);
-  if (rows.length) detail(rows[0][0].key);
 }
 function drawChart(rows) {
   const W = 900, L = 200, R = 20, rowH = 22, groups = ["ID", "OOD", "Total"];
@@ -612,6 +624,8 @@ function curveSvg(e, cell) {
 }
 function detail(key) {
   const e = BOARD.find(x => x.key === key), box = document.getElementById("lb-detail");
+  if (box.dataset.key === key) { box.dataset.key = ""; box.innerHTML = ""; for (const tr of document.querySelectorAll("#lb-full tr.row")) tr.classList.remove("open"); return; }
+  box.dataset.key = key;
   for (const tr of document.querySelectorAll("#lb-full tr.row")) tr.classList.toggle("open", tr.dataset.key === key);
   const cells = Object.keys(e.curve).sort();
   const eps = [...new Set(cells.flatMap(c => Object.keys(e.curve[c])))].sort((a, b) => a - b);
@@ -625,7 +639,7 @@ function detail(key) {
 document.getElementById("lb-open").addEventListener("change", drawBoard);
 
 /* results browser */
-let ROLLS = [], shown = 50;
+let ROLLS = [], shown = 20;
 const FILTERS = [["method", "Method"], ["cell", "Cell"], ["episodes", "Training episodes"], ["condition", "Condition"], ["seed", "Seed"], ["result", "Result"]];
 const resultOf = r => r.outcome === "safety_trip" ? "safety trip" : r.success ? "success" : "failure";
 const valueOf = (r, k) => String(k === "result" ? resultOf(r) : r[k]);
@@ -635,7 +649,7 @@ function buildFilters() {
     const vals = [...new Set(ROLLS.map(r => valueOf(r, k)))].sort((a, b) => isNaN(a) ? (a > b ? 1 : -1) : a - b);
     return `<label>${label}<select data-k="${k}"><option value="">all</option>${vals.map(v => `<option>${v}</option>`).join("")}</select></label>`;
   }).join("");
-  for (const s of box.querySelectorAll("select")) s.addEventListener("change", () => { shown = 50; drawRolls(); });
+  for (const s of box.querySelectorAll("select")) s.addEventListener("change", () => { shown = 20; drawRolls(); });
 }
 function drawRolls() {
   const sel = Object.fromEntries([...document.querySelectorAll("#rs-filters select")].map(s => [s.dataset.k, s.value]));
@@ -654,11 +668,11 @@ function drawRolls() {
   document.getElementById("rs-more").hidden = rows.length <= shown;
   for (const b of document.querySelectorAll("#rs-table .vbtn")) b.addEventListener("click", () => play(b.dataset.t, b.dataset.v));
 }
-document.getElementById("rs-more").addEventListener("click", () => { shown += 100; drawRolls(); });
+document.getElementById("rs-more").addEventListener("click", () => { shown += 40; drawRolls(); });
 document.addEventListener("click", e => {
   const a = e.target.closest("a[data-method]");
   const s = a && document.querySelector('#rs-filters select[data-k="method"]');
-  if (s) { s.value = a.dataset.method; shown = 50; drawRolls(); }
+  if (s) { s.value = a.dataset.method; shown = 20; drawRolls(); }
 });
 
 Promise.all([fetch("data/leaderboard.json").then(r => r.json()), fetch("data/rollouts.json").then(r => r.json())])
