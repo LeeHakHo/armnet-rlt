@@ -152,6 +152,16 @@ details.fold.sub > figure { margin-top: 10px }
 .view[data-view="home"] { gap: 28px }
 @media (max-width: 720px) { details.fold > summary { grid-template-columns: 1fr auto } details.fold > summary .small { grid-column: 1; grid-row: 2 } details.fold > summary::after { grid-column: 2 } }
 
+.cmp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px }
+.cmp figure { margin: 0; display: grid; gap: 4px }
+.cmp figure[hidden] { display: none }
+.cmp figcaption { color: #fff; font-size: 13px }
+.cmp.single { grid-template-columns: 1fr }
+.seg.dark { border-color: rgba(255, 255, 255, .5) }
+.seg.dark button { color: rgba(255, 255, 255, .75); border: 0; border-radius: 0 }
+.seg.dark button[aria-pressed="true"] { background: #fff; color: #000 }
+@media (max-width: 720px) { .cmp { grid-template-columns: 1fr } }
+
 /* pages */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -28px }
 .tabs a { font: 500 14px var(--body); color: var(--muted); text-decoration: none; padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px }
@@ -270,28 +280,37 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     <p class="cap">Needs a GPU, Docker for the actor image and an ngrok token (or your own TLS ingress). Options and the individual commands are in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
   </div></details>
 
-  <details class="fold" id="protocol"><summary><h2>Evaluation protocol</h2><span class="muted small">ID, OOD-easy and OOD-hard scenes, 3 seeds; click a setting for an example video</span></summary><div class="fold-body">
+  <details class="fold" id="protocol"><summary><h2>Evaluation protocol</h2><span class="muted small">30 ID + 30 OOD rollouts over 3 seeds; click rail, light or tilt to compare with ID</span></summary><div class="fold-body">
+    <div class="tbl"><table>
+      <thead><tr><th>Scene</th><th>Rail</th><th>Light</th><th>Top camera tilt</th><th>Rollouts</th></tr></thead>
+      <tbody>
+        <tr><td><b>ID</b></td><td class="h">0.65–0.75</td><td class="h">30 %</td><td class="h">cell default</td><td class="h">10 per seed</td></tr>
+        <tr><td><b>OOD</b></td><td class="h">0.60–0.65 or 0.75–0.80</td><td class="h">15 % or 5 %</td><td class="h">0.2567 or 0.3472</td><td class="h">10 per seed</td></tr>
+      </tbody>
+    </table></div>
+    <p class="cap">An OOD scene changes all three at once: the rail leaves the training range, and the light and the camera move together in two steps (15 % with 0.2567, 5 % with 0.3472). Seeds 1042, 2042 and 3042 fix the scenes, so every policy sees the same ones. No exploration noise, 30 s limit, a safety trip counts as a failure. Rail and tilt are 0–1 of each axis's travel.</p>
     <div class="settings">
-      <button class="setting" data-video="" data-title="ID">
+      <button class="setting" data-factor="rail" data-title="Rail">
         <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
-        <h3>ID</h3>
-        <dl><dt>Rail</dt><dd>0.65–0.75</dd><dt>Light</dt><dd>30 %</dd><dt>Top tilt</dt><dd>cell default</dd><dt>Rollouts</dt><dd>10 per seed</dd></dl>
+        <h3>Rail</h3>
+        <dl><dt>ID</dt><dd>0.70</dd><dt>OOD</dt><dd>0.62 · 0.78</dd></dl>
       </button>
-      <button class="setting" data-video="" data-title="OOD-easy">
+      <button class="setting" data-factor="light" data-title="Light">
         <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
-        <h3>OOD-easy</h3>
-        <dl><dt>Rail</dt><dd>0.60–0.65 or 0.75–0.80</dd><dt>Light</dt><dd>15 %</dd><dt>Top tilt</dt><dd>0.2567</dd><dt>Rollouts</dt><dd>5 per seed</dd></dl>
+        <h3>Light</h3>
+        <dl><dt>ID</dt><dd>30 %</dd><dt>OOD</dt><dd>15 % · 5 %</dd></dl>
       </button>
-      <button class="setting" data-video="" data-title="OOD-hard">
+      <button class="setting" data-factor="tilt" data-title="Top camera tilt">
         <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
-        <h3>OOD-hard</h3>
-        <dl><dt>Rail</dt><dd>0.60–0.65 or 0.75–0.80</dd><dt>Light</dt><dd>5 %</dd><dt>Top tilt</dt><dd>0.3472</dd><dt>Rollouts</dt><dd>5 per seed</dd></dl>
+        <h3>Top camera tilt</h3>
+        <dl><dt>ID</dt><dd>cell default</dd><dt>OOD</dt><dd>0.2567 · 0.3472</dd></dl>
       </button>
     </div>
-    <p class="cap">Seeds 1042, 2042 and 3042, so 30 ID + 30 OOD rollouts per evaluation. OOD-easy and OOD-hard get the same rail positions and differ only in light and camera tilt.<br>There is no exploration noise and each rollout has a 30 s limit; a safety trip counts as a failure. The seed fixes the scenes, so every policy sees the same ones. One cell job runs the whole evaluation and sets the rail, the light and the camera per episode. Rail and tilt are 0–1 of each axis's travel. Click a setting to watch an example rollout.</p>
+    <p class="cap">Each video changes one factor of the ID scene and plays next to the ID rollout. Same policy (DSRL after 400 episodes), cell-01.</p>
     <dialog class="player" id="player">
       <div class="bar2"><span id="player-title"></span><button id="player-close">Close</button></div>
-      <video id="player-video" controls playsinline></video>
+      <div class="cmp"><figure><figcaption id="cmp-a-label">ID</figcaption><video id="player-video" playsinline muted></video></figure><figure id="cmp-b"><figcaption id="cmp-b-label"></figcaption><video id="cmp-video" playsinline muted></video></figure></div>
+      <div class="bar2"><span class="seg dark" id="cmp-levels"></span><button id="cmp-replay">Replay</button></div>
     </dialog>
   </div></details>
 
@@ -405,7 +424,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base, then is scored on the <a href="#/" data-goto="protocol">evaluation protocol</a>: 30 ID + 30 OOD rollouts per cell, 120 in all. Ranked by total successes.</p>
       <label class="check"><input type="checkbox" id="lb-open"> Open-source methods only</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
-      <p class="cap">Small numbers: cell-01 · cell-03. Brackets: 95% Wilson interval of the success rate. Click a method to open its per-cell results and training curve; click again to close.</p>
+      <p class="cap">Small numbers: cell-01 · cell-03. OOD counts both OOD steps (see the protocol). Brackets: 95% Wilson interval of the success rate. Click a method to open its per-cell results and training curve; click again to close.</p>
       <details class="fold sub"><summary><h3>Interval chart</h3></summary><figure>
         <div class="fig"><svg id="lb-chart" viewBox="0 0 900 220" role="img" aria-label="Success rate of each method with 95% intervals, for ID, OOD and total"></svg></div>
         <figcaption>Success rate with 95% Wilson intervals. Overlapping intervals mean the difference is within sampling noise at this number of rollouts.</figcaption>
@@ -512,15 +531,42 @@ buildResults(); drawCurve();
 
 const player = document.getElementById("player"), pv = document.getElementById("player-video");
 document.body.appendChild(player);
+// Protocol videos: the ID rollout and one-factor variations of it (filled after recording).
+const SHOWCASE = {
+  id: "",
+  rail: [["rail 0.62", ""], ["rail 0.78", ""]],
+  light: [["light 15 %", ""], ["light 5 %", ""]],
+  tilt: [["tilt 0.2567", ""], ["tilt 0.3472", ""]],
+  poster: {}
+};
+const cv = document.getElementById("cmp-video"), cmpB = document.getElementById("cmp-b"), levels = document.getElementById("cmp-levels");
 function play(title, src) {
   document.getElementById("player-title").textContent = title;
-  pv.src = src; player.showModal(); pv.play();
+  cmpB.hidden = true; cmpB.parentElement.classList.add("single"); levels.innerHTML = ""; document.getElementById("cmp-a-label").hidden = true;
+  pv.controls = true; pv.muted = true; pv.src = src; player.showModal(); pv.play();
 }
+function compare(title, options) {
+  document.getElementById("player-title").textContent = title + " vs ID";
+  cmpB.hidden = false; cmpB.parentElement.classList.remove("single"); document.getElementById("cmp-a-label").hidden = false; pv.controls = false;
+  const show = i => {
+    document.getElementById("cmp-b-label").textContent = options[i][0];
+    for (const [j, b] of [...levels.children].entries()) b.setAttribute("aria-pressed", i === j);
+    pv.src = SHOWCASE.id; cv.src = options[i][1]; pv.play(); cv.play();
+  };
+  levels.innerHTML = options.map(o => `<button>${o[0]}</button>`).join("");
+  [...levels.children].forEach((b, i) => b.addEventListener("click", () => show(i)));
+  player.showModal(); show(0);
+}
+document.getElementById("cmp-replay").addEventListener("click", () => {
+  for (const v of [pv, cv]) if (v.src) { v.currentTime = 0; v.play(); }
+});
 for (const b of document.querySelectorAll(".setting")) {
-  if (!b.dataset.video) { b.disabled = true; continue; }
+  const options = SHOWCASE[b.dataset.factor] || [];
+  if (!SHOWCASE.id || !options.every(o => o[1])) { b.disabled = true; continue; }
   b.querySelector(".soon").remove();
-  if (b.dataset.poster) b.querySelector(".thumb").insertAdjacentHTML("afterbegin", `<img src="${b.dataset.poster}" alt="">`);
-  b.addEventListener("click", () => play(b.dataset.title, b.dataset.video));
+  const poster = SHOWCASE.poster[b.dataset.factor];
+  if (poster) b.querySelector(".thumb").insertAdjacentHTML("afterbegin", `<img src="${poster}" alt="">`);
+  b.addEventListener("click", () => compare(b.dataset.title, options));
 }
 
 /* pages */
@@ -575,11 +621,10 @@ function drawBoard() {
   const rows = BOARD.filter(e => !open || e.open_source).map(e => [e, score(e)]).sort((a, b) => b[1].total[0] - a[1].total[0]);
   const name = e => `<span class="dot" style="--c:${color(e.key)}"></span>${e.name}<span class="cellsplit">${e.detail}</span>`;
   document.getElementById("lb-full").innerHTML =
-    `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD-easy / 30</th><th>OOD-hard / 30</th><th>OOD / 60</th><th>Total / 120</th><th>Safety trips</th></tr></thead><tbody>`
+    `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th><th>Total / 120</th><th>Safety trips</th></tr></thead><tbody>`
     + rows.map(([e, s], i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>`
-      + cellTd(s.id, s.split(c => c.id), true) + cellTd(s.easy, s.split(c => c["ood-easy"]), true) + cellTd(s.hard, s.split(c => c["ood-hard"]), true)
-      + cellTd(s.ood, s.split(ood), true) + cellTd(s.total, s.split(tot), true) + `<td class="h">${s.trips}</td></tr>`).join("")
-    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="6" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
+      + cellTd(s.id, s.split(c => c.id), true) + cellTd(s.ood, s.split(ood), true) + cellTd(s.total, s.split(tot), true) + `<td class="h">${s.trips}</td></tr>`).join("")
+    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="4" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
   document.getElementById("lb-mini").innerHTML =
     `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th><th>Total / 120</th></tr></thead><tbody>`
     + rows.slice(0, 5).map(([e, s], i) => `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>`
@@ -642,7 +687,8 @@ document.getElementById("lb-open").addEventListener("change", drawBoard);
 let ROLLS = [], shown = 20;
 const FILTERS = [["method", "Method"], ["cell", "Cell"], ["episodes", "Training episodes"], ["condition", "Condition"], ["seed", "Seed"], ["result", "Result"]];
 const resultOf = r => r.outcome === "safety_trip" ? "safety trip" : r.success ? "success" : "failure";
-const valueOf = (r, k) => String(k === "result" ? resultOf(r) : r[k]);
+const condOf = r => r.condition === "id" ? "ID" : "OOD";
+const valueOf = (r, k) => String(k === "result" ? resultOf(r) : k === "condition" ? condOf(r) : r[k]);
 function buildFilters() {
   const box = document.getElementById("rs-filters");
   box.innerHTML = FILTERS.map(([k, label]) => {
@@ -661,10 +707,10 @@ function drawRolls() {
   const nameOf = key => (BOARD.find(e => e.key === key) || {}).name || key;
   document.getElementById("rs-table").innerHTML =
     `<thead><tr><th>Method</th><th>Cell</th><th>Episodes</th><th>Condition</th><th>Seed</th><th>Rail</th><th>Light</th><th>Top tilt</th><th>Result</th><th>Time</th><th>Video</th></tr></thead><tbody>`
-    + rows.slice(0, shown).map(r => `<tr><td>${nameOf(r.method)}</td><td>${r.cell}</td><td class="h">${r.episodes}</td><td>${r.condition}</td><td class="h">${r.seed}</td>`
+    + rows.slice(0, shown).map(r => `<tr><td>${nameOf(r.method)}</td><td>${r.cell}</td><td class="h">${r.episodes}</td><td>${condOf(r)}</td><td class="h">${r.seed}</td>`
       + `<td class="h">${r.rail.toFixed(3)}</td><td class="h">${r.light}%</td><td class="h">${r.tilt == null ? "–" : r.tilt}</td>`
       + `<td class="${r.outcome === "safety_trip" ? "trip" : r.success ? "ok" : "no"}">${resultOf(r)}</td><td class="h">${r.duration_s.toFixed(1)} s</td>`
-      + `<td>${r.video ? `<button class="vbtn" data-v="${r.video}" data-t="${nameOf(r.method)} · ${r.cell} · ${r.condition} · ${resultOf(r)}">Play</button>` : `<span class="muted">–</span>`}</td></tr>`).join("") + `</tbody>`;
+      + `<td>${r.video ? `<button class="vbtn" data-v="${r.video}" data-t="${nameOf(r.method)} · ${r.cell} · ${condOf(r)} · ${resultOf(r)}">Play</button>` : `<span class="muted">–</span>`}</td></tr>`).join("") + `</tbody>`;
   document.getElementById("rs-more").hidden = rows.length <= shown;
   for (const b of document.querySelectorAll("#rs-table .vbtn")) b.addEventListener("click", () => play(b.dataset.t, b.dataset.v));
 }
@@ -678,10 +724,10 @@ document.addEventListener("click", e => {
 Promise.all([fetch("data/leaderboard.json").then(r => r.json()), fetch("data/rollouts.json").then(r => r.json())])
   .then(([board, rolls]) => { BOARD = board; ROLLS = rolls; drawBoard(); buildFilters(); drawRolls(); })
   .catch(() => { document.getElementById("lb-mini").innerHTML = `<tbody><tr><td>Could not load the leaderboard data.</td></tr></tbody>`; });
-const closePlayer = () => { pv.pause(); player.close(); };
+const closePlayer = () => { pv.pause(); cv.pause(); player.close(); };
 document.getElementById("player-close").addEventListener("click", closePlayer);
 player.addEventListener("click", e => { if (e.target === player) closePlayer(); });
-player.addEventListener("close", () => pv.pause());
+player.addEventListener("close", () => { pv.pause(); cv.pause(); });
 </script>
 </body>
 </html>
