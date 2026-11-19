@@ -914,16 +914,29 @@ def record_rollout_frame(
     tick: float,
     action_write_s: float,
 ) -> None:
-    """Write one control tick to the eval dataset and the telemetry sidecar."""
+    """Write one control tick to the eval dataset and the telemetry sidecar.
+
+    The dataset keeps real time: a tick that starts more than one period after the
+    previous one (the loop waits for the next action chunk) is written as many frames as
+    periods have passed, so the video shows the arm holding still instead of skipping.
+    """
     if frame_writer is None:
         return
-    frame_writer.submit_observation(raw_obs, actual_action, task=task)
-    ctx.cell.record_frame()
+    # [episode start, frames written], kept on the writer and reset at each episode's first tick.
+    clock = getattr(frame_writer, "real_time_clock", None)
+    if frame_index == 0 or clock is None:
+        clock = [tick, 0]
+        frame_writer.real_time_clock = clock
+    due = int((tick - clock[0]) / period_s + 1e-6) + 1
+    copies = max(1, due - clock[1])
+    for _ in range(copies):
+        frame_writer.submit_observation(raw_obs, actual_action, task=task)
+        ctx.cell.record_frame()
+    clock[1] += copies
     if telemetry is not None:
         telemetry.submit_frame(
             frame_index=frame_index,
-            dataset_timestamp_s=frame_index
-            / max(1, int(_field(cfg, "command_fps", 20))),
+            dataset_timestamp_s=(clock[1] - 1) * period_s,
             action=requested_action,
             client_clipped_action=actual_action,
             observation=raw_obs,

@@ -163,7 +163,7 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
         m = methods.setdefault(key, {"name": e["name"], "tag": e.get("tag") or "", "code": e.get("code"),
                                      "notes": e.get("notes"), "cells": {}, "rows": {}, "date": ""})
         m["cells"][e["cell"]] = e["evals"]
-        m["rows"][e["cell"]] = [{**r, "method": key} for r in e["rows"]]
+        m["rows"][e["cell"]] = [{**r, "method": key, "name": e["name"], "tag": e.get("tag") or ""} for r in e["rows"]]
         m["date"] = max(m["date"], e.get("date") or "")
     board, rollouts = [], []
     for key, m in methods.items():
@@ -178,6 +178,46 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
             entry["best"][part] = [total(best, 0), total(best, 1), best]
         board.append(entry)
     return board, rollouts
+
+
+CLIPS = os.environ.get("CLIPS_REPO", "AutoRLBench/armnet-benchmark-rollouts")
+
+
+def clips(repo: str, existing: set[str]) -> dict[int, str]:
+    """One video per episode of a recorded dataset: the episode only, top above front and
+    wrist (640x540), retimed to the episode's real duration (the recording keeps its
+    nominal fps while the control loop ticks slower). Uploads the missing ones to the
+    public CLIPS dataset and returns {episode index: URL}."""
+    import subprocess
+
+    from huggingface_hub import HfApi, snapshot_download
+
+    prefix = f"clips/{repo.replace('/', '__')}/"
+    rows, spans = labels(repo)
+    urls = {i: f"https://huggingface.co/datasets/{CLIPS}/resolve/main/{prefix}{i:03d}.mp4" for i in range(min(len(rows), len(spans)))}
+    todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
+    if not todo:
+        return urls
+    root = Path(snapshot_download(repo, repo_type="dataset"))
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / prefix
+        out_dir.mkdir(parents=True)
+        for i in todo:
+            s, parts = spans[i], []
+            for view in ("top", "front", "wrist"):
+                key = f"videos/observation.images.{view}"
+                src = root / key / f"chunk-{int(s[key + '/chunk_index']):03d}" / f"file-{int(s[key + '/file_index']):03d}.mp4"
+                parts += ["-ss", f"{float(s[key + '/from_timestamp']):.3f}", "-to", f"{float(s[key + '/to_timestamp']):.3f}", "-i", str(src)]
+            key = "videos/observation.images.top"
+            recorded = float(s[key + "/to_timestamp"]) - float(s[key + "/from_timestamp"])
+            stretch = (rows[i].get("duration_s") or recorded) / recorded if recorded > 0 else 1.0
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *parts, "-filter_complex",
+                            "[0:v]scale=640:360,setsar=1[t];[1:v]scale=320:180,setsar=1[f];[2:v]scale=320:180,setsar=1[w];"
+                            f"[f][w]hstack=2[b];[t][b]vstack=2:shortest=1,setpts={stretch:.4f}*PTS,fps=20,format=yuv420p[v]",
+                            "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-movflags", "+faststart",
+                            str(out_dir / f"{i:03d}.mp4")], check=True)
+        HfApi().upload_folder(folder_path=tmp, repo_id=CLIPS, repo_type="dataset", commit_message=f"Episode videos of {repo}")
+    return urls
 
 
 def score(args: argparse.Namespace) -> None:
@@ -218,6 +258,14 @@ def score(args: argparse.Namespace) -> None:
             for e in json.loads(Path(hf_hub_download(LEADERBOARD, f, repo_type="dataset")).read_text()):
                 entries.append({**e, "evals": {int(k): v for k, v in e["evals"].items()}})
     board, rollouts = build(entries)
+    if not args.dry_run:
+        existing = set(api.list_repo_files(CLIPS, repo_type="dataset"))
+        urls: dict[str, dict[int, str]] = {}
+        for r in rollouts:
+            if r.get("dataset"):
+                if r["dataset"] not in urls:
+                    urls[r["dataset"]] = clips(r["dataset"], existing)
+                r["video"] = urls[r["dataset"]].get(r["dataset_episode"], r.get("video"))
     print(f"{len(board)} methods listed, {len(rollouts)} rollouts")
     if args.dry_run:
         return
