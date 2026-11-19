@@ -33,6 +33,7 @@ from armnet_rlt.so101_actor import (
     add_action_noise,
     open_rollout_recording,
     parse_action_noise_std,
+    call_while_recording,
     record_rollout_frame,
     robot_action,
 )
@@ -413,6 +414,9 @@ def run_lerobot_actor(
     policy_reload_count = 0
     episode_started_at = ""
     command_ticks = 0
+    # Frames written this episode and the last tick's (requested, actual) action, repeated
+    # by the frames recorded while the loop waits for the policy server.
+    recording = {"frames": 0, "last_action": None}
     hardware_clamp_steps = 0
 
     def predict(state: np.ndarray, images: dict[str, np.ndarray], scale: float) -> np.ndarray:
@@ -626,7 +630,7 @@ def run_lerobot_actor(
                         eval_dataset,
                         frame_writer,
                         telemetry=telemetry,
-                        ticks=command_ticks,
+                        ticks=recording["frames"],
                     ):
                         episode_labels.append(rollout_record)
                         episode_frame_times.append(list(getattr(frame_writer, "frame_times", [])))
@@ -640,6 +644,7 @@ def run_lerobot_actor(
                 policy_reload_count = 0
                 episode_started_at = ""
                 command_ticks = 0
+                recording = {"frames": 0, "last_action": None}
                 hardware_clamp_steps = 0
                 continue
 
@@ -655,7 +660,27 @@ def run_lerobot_actor(
             elif chunk is None or chunk_index >= len(chunk):
                 # A policy server answers with the policy's queued actions for
                 # the coming steps, so it is asked once per planning interval.
-                chunk = predict(state, images, exploration_scale)
+                def record_wait() -> None:
+                    # A frame while the request is out: cameras and joints now, with
+                    # the last tick's action (no new command is sent meanwhile).
+                    if frame_writer is None or recording["last_action"] is None:
+                        return
+                    try:
+                        wait_obs = robot.get_observation()
+                    except Exception:  # noqa: BLE001 - the loop's next read reports it
+                        return
+                    last_requested, last_actual = recording["last_action"]
+                    record_rollout_frame(
+                        ctx, cfg, frame_writer, telemetry, raw_obs=wait_obs,
+                        requested_action=last_requested, actual_action=last_actual,
+                        task=instruction, frame_index=recording["frames"], period_s=period_s,
+                        tick=time.perf_counter(), action_write_s=0.0,
+                    )
+                    recording["frames"] += 1
+
+                chunk = call_while_recording(
+                    lambda: predict(state, images, exploration_scale), period_s, record_wait
+                )
                 chunk_index = 0
                 state_machine.episode_ctx.total_chunk_count += 1
             if remote is not None and remote.policy_step is not None:
@@ -681,11 +706,13 @@ def run_lerobot_actor(
                 requested_action=requested_action,
                 actual_action=actual_action,
                 task=instruction,
-                frame_index=command_ticks,
+                frame_index=recording["frames"],
                 period_s=period_s,
                 tick=tick,
                 action_write_s=action_write_s,
             )
+            recording["frames"] += 1
+            recording["last_action"] = (requested_action, actual_action)
             if any(
                 not math.isclose(
                     float(actual_action.get(key, requested_action[key])),

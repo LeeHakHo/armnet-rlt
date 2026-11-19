@@ -30,3 +30,22 @@ def test_each_tick_is_one_frame_with_its_real_time(monkeypatch) -> None:
     record_rollout_frame(ctx, {}, writer, None, raw_obs={}, requested_action={}, actual_action={},
                          task="t", frame_index=0, period_s=0.05, tick=80.0, action_write_s=0.0)
     assert writer.frame_times == [0.0]
+
+
+def test_call_while_recording_records_until_the_call_returns() -> None:
+    import time as _time
+
+    frames = []
+    result = actor.call_while_recording(lambda: (_time.sleep(0.23), "chunk")[1], 0.05, lambda: frames.append(1))
+    assert result == "chunk"
+    assert 3 <= len(frames) <= 5
+
+
+def test_call_while_recording_raises_the_call_error() -> None:
+    import pytest
+
+    def boom():
+        raise RuntimeError("server down")
+
+    with pytest.raises(RuntimeError, match="server down"):
+        actor.call_while_recording(boom, 0.05, lambda: None)
