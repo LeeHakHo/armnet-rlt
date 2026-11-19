@@ -193,7 +193,8 @@ details.fold.sub > figure { margin-top: 10px }
 @media (max-width: 720px) { .mini-curves { grid-template-columns: 1fr } }
 .filters { display: flex; flex-wrap: wrap; gap: 10px }
 .filters label { display: grid; gap: 3px; font-size: 12px; color: var(--muted) }
-.filters select { font: 13px var(--body); padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--fg) }
+.filters select, .filters input { font: 13px var(--body); padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--fg) }
+.filters input { width: 160px }
 #rs-table td, #rs-table th { text-align: left }
 #rs-table tr.job { cursor: pointer }
 #rs-table tr.job:hover td, #rs-table tr.job.open td { background: var(--box) }
@@ -682,23 +683,29 @@ document.getElementById("lb-open").addEventListener("change", drawBoard);
 
 /* results browser */
 let ROLLS = [];
-const FILTERS = [["method", "Method"], ["cell", "Cell"], ["episodes", "Training episodes"], ["condition", "Condition"], ["seed", "Seed"], ["result", "Result"]];
+const FILTERS = [["name", "Method"], ["tag", "Tag"], ["cell", "Cell"], ["episodes", "Training episodes"], ["condition", "Condition"], ["seed", "Seed"], ["result", "Result"]];
 const resultOf = r => r.outcome === "safety_trip" ? "safety trip" : r.success ? "success" : "failure";
 const condOf = r => r.condition === "id" ? "ID" : "OOD";
-const valueOf = (r, k) => String(k === "result" ? resultOf(r) : k === "condition" ? condOf(r) : r[k]);
+const nameOfRow = r => r.name || (BOARD.find(e => e.key === r.method) || {}).name || r.method;
+const tagOfRow = r => r.tag != null ? r.tag : (BOARD.find(e => e.key === r.method) || {}).tag || "";
+const valueOf = (r, k) => String(k === "result" ? resultOf(r) : k === "condition" ? condOf(r)
+  : k === "name" ? nameOfRow(r) : k === "tag" ? (tagOfRow(r) || "none") : r[k]);
 function buildFilters() {
   const box = document.getElementById("rs-filters");
-  box.innerHTML = FILTERS.map(([k, label]) => {
+  box.innerHTML = `<label>Search<input type="search" id="rs-search" placeholder="method or tag"></label>` + FILTERS.map(([k, label]) => {
     const vals = [...new Set(ROLLS.map(r => valueOf(r, k)))].sort((a, b) => isNaN(a) ? (a > b ? 1 : -1) : a - b);
     return `<label>${label}<select data-k="${k}"><option value="">all</option>${vals.map(v => `<option>${v}</option>`).join("")}</select></label>`;
   }).join("");
   for (const s of box.querySelectorAll("select")) s.addEventListener("change", drawRolls);
+  document.getElementById("rs-search").addEventListener("input", drawRolls);
 }
 const OPEN = new Set();
 function drawRolls() {
   const sel = Object.fromEntries([...document.querySelectorAll("#rs-filters select")].map(s => [s.dataset.k, s.value]));
-  const rows = ROLLS.filter(r => FILTERS.every(([k]) => !sel[k] || valueOf(r, k) === sel[k]));
-  const nameOf = key => { const e = BOARD.find(x => x.key === key); return e ? e.name + (e.tag ? ` [${e.tag}]` : "") : key; };
+  const q = ((document.getElementById("rs-search") || {}).value || "").trim().toLowerCase();
+  const rows = ROLLS.filter(r => FILTERS.every(([k]) => !sel[k] || valueOf(r, k) === sel[k])
+    && (!q || `${nameOfRow(r)} ${tagOfRow(r)}`.toLowerCase().includes(q)));
+  const nameOf = key => { const r = ROLLS.find(x => x.method === key) || { method: key }; const tag = tagOfRow(r); return nameOfRow(r) + (tag ? ` [${tag}]` : ""); };
   const jobs = new Map();
   for (const r of rows) {
     const key = `${r.method}|${r.cell}|${r.episodes}`;
@@ -717,7 +724,8 @@ function drawRolls() {
   let html = `<thead><tr><th>Evaluation job</th><th>ID</th><th>OOD</th><th colspan="6">Rollouts</th></tr></thead><tbody>`;
   for (const [key, rs] of jobs) {
     const [method, cell, eps] = key.split("|"), open = OPEN.has(key);
-    html += `<tr class="job${open ? " open" : ""}" data-key="${key}"><td><span class="caret">${open ? "▾" : "▸"}</span> <b>${nameOf(method)}</b> · ${cell} · after ${eps} episodes</td>`
+    const tag = tagOfRow(rs[0]);
+    html += `<tr class="job${open ? " open" : ""}" data-key="${key}"><td><span class="caret">${open ? "▾" : "▸"}</span> <b>${nameOfRow(rs[0])}</b>${tag ? ` <span class="tagchip">${tag}</span>` : ""} · ${cell} · after ${eps} episodes</td>`
       + `<td class="h">${count(rs, "ID")}</td><td class="h">${count(rs, "OOD")}</td><td colspan="6" class="muted">${rs.length} rollouts${rs.some(r => r.video) ? " · videos" : ""}</td></tr>`;
     if (open) html += `<tr class="roll head"><td></td><td>Condition</td><td>Seed</td><td>Rail</td><td>Light</td><td>Top tilt</td><td>Result</td><td>Time</td><td>Video</td></tr>` + rs.map(rollRow).join("");
   }
@@ -728,8 +736,9 @@ function drawRolls() {
 }
 document.addEventListener("click", e => {
   const a = e.target.closest("a[data-method]");
-  const s = a && document.querySelector('#rs-filters select[data-k="method"]');
-  if (s) { s.value = a.dataset.method; drawRolls(); }
+  if (!a) return;
+  const e2 = BOARD.find(x => x.key === a.dataset.method), q = document.getElementById("rs-search");
+  if (e2 && q) { q.value = e2.tag || e2.name; drawRolls(); }
 });
 
 // The scorer (scripts/leaderboard.py) publishes the data to the leaderboard dataset; the copy
