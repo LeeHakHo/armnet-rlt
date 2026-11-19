@@ -29,6 +29,8 @@
 #   --leaderboard NAME     after the last evaluation, submit the run to the leaderboard as
 #                          method NAME (needs CELL and recorded evaluations; see
 #                          scripts/leaderboard.py). Listed once both leaderboard cells are in.
+#   --leaderboard-tag TAG  separate entry of the same method (default none: a new submission
+#                          replaces the method's entry on that cell)
 #   --leaderboard-code URL, --leaderboard-notes TEXT   shown with the method
 #
 # Logs: experiment-data/logs/<run id>/. Checkpoints: experiment-data/tasks/<config>/
@@ -36,10 +38,10 @@
 # Evaluations: experiment-data/eval/<run id>-ep<episodes>/results.jsonl.
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,36p' "$0"; exit 0 ;;
+case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,38p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
-RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_CODE="" BOARD_NOTES=""
+RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episodes) EPISODES=$2 ;; --eval-every) EVAL_EVERY=$2 ;;
@@ -47,7 +49,8 @@ while [ $# -gt 0 ]; do
     --std) STD=$2 ;; --trip-penalty) PENALTY=$2 ;; --run-id) RUN=$2 ;;
     --resume) RUN=$2; RESUME=--resume ;;
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
-    --leaderboard) BOARD_NAME=$2 ;; --leaderboard-code) BOARD_CODE=$2 ;; --leaderboard-notes) BOARD_NOTES=$2 ;;
+    --leaderboard) BOARD_NAME=$2 ;; --leaderboard-tag) BOARD_TAG=$2 ;;
+    --leaderboard-code) BOARD_CODE=$2 ;; --leaderboard-notes) BOARD_NOTES=$2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -265,6 +268,6 @@ for MARK in $MARKS; do
   fi
 done
 if [ -n "$BOARD_NAME" ]; then
-  $LEARNER_BIN/python scripts/leaderboard.py submit --name "$BOARD_NAME" --run "$RUN" --cell "$CELL" \
+  $LEARNER_BIN/python scripts/leaderboard.py submit --name "$BOARD_NAME" --tag "$BOARD_TAG" --run "$RUN" --cell "$CELL" \
     --code "$BOARD_CODE" --notes "$BOARD_NOTES" || die "leaderboard submission failed"
 fi

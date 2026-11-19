@@ -1,6 +1,6 @@
 """Leaderboard submissions and scoring.
 
-  python scripts/leaderboard.py submit --name NAME --run RUN --cell CELL [--code URL] [--notes TEXT]
+  python scripts/leaderboard.py submit --name NAME --run RUN --cell CELL [--tag TAG] [--code URL] [--notes TEXT]
       Opens a pull request on the leaderboard dataset with the run's evaluations: for every
       checkpoint, the recorded public evaluation datasets. scripts/run.sh --leaderboard
       calls it after the last evaluation.
@@ -11,8 +11,11 @@
       valid ones, comments on the rest, and rebuilds data/leaderboard.json and
       data/rollouts.json in the leaderboard dataset, which the project page reads.
 
-A method is listed once it has every checkpoint on every leaderboard cell. ID and OOD each
-use the method's best checkpoint, summed over the cells.
+An entry is a method name plus a tag (--tag; empty by default), so one method can have
+several entries, e.g. different versions or settings. A new submission with the same name,
+tag and cell replaces the earlier one. An entry is listed once it has every checkpoint on
+every leaderboard cell, with the date of its latest submission. ID and OOD each use the
+entry's best checkpoint, summed over the cells.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import re
 import sys
 import tempfile
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 LEADERBOARD = os.environ.get("LEADERBOARD_REPO", "AutoRLBench/armnet-leaderboard")
@@ -37,6 +41,10 @@ DATA = Path(os.environ.get("RLT_DATA_ROOT") or Path(__file__).resolve().parents[
 
 def slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def entry_key(name: str, tag: str | None) -> str:
+    return slug(name) + (f"--{slug(tag)}" if tag else "")
 
 
 # ----------------------------------------------------------------------------- submit
@@ -64,10 +72,11 @@ def submit(args: argparse.Namespace) -> None:
         sys.exit(f"{args.run} has no recorded evaluation after {missing} episodes; "
                  "evaluations must be recorded (RECORD_REPO set, RECORD not 0)")
     submission = {
-        "name": args.name, "code": args.code, "notes": args.notes, "cell": args.cell, "run": args.run,
+        "name": args.name, "tag": args.tag, "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "code": args.code, "notes": args.notes, "cell": args.cell, "run": args.run,
         "evaluations": {str(c): datasets[c] for c in CHECKPOINTS},
     }
-    path = f"submissions/{slug(args.name)}/{args.cell}__{args.run}.json"
+    path = f"submissions/{entry_key(args.name, args.tag)}/{args.cell}.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         json.dump(submission, handle, indent=1)
     commit = HfApi().upload_file(
@@ -142,16 +151,19 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
 def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
     """Leaderboard rows and rollout rows from checked submissions grouped by method."""
     methods: dict[str, dict] = {}
-    for e in entries:
-        m = methods.setdefault(slug(e["name"]), {"name": e["name"], "code": e.get("code"), "notes": e.get("notes"), "cells": {}, "rows": []})
+    for e in sorted(entries, key=lambda e: e.get("date") or ""):
+        key = entry_key(e["name"], e.get("tag"))
+        m = methods.setdefault(key, {"name": e["name"], "tag": e.get("tag") or "", "code": e.get("code"),
+                                     "notes": e.get("notes"), "cells": {}, "rows": {}, "date": ""})
         m["cells"][e["cell"]] = e["evals"]
-        m["rows"] += [{**r, "method": slug(e["name"])} for r in e["rows"]]
+        m["rows"][e["cell"]] = [{**r, "method": key} for r in e["rows"]]
+        m["date"] = max(m["date"], e.get("date") or "")
     board, rollouts = [], []
     for key, m in methods.items():
-        rollouts += m["rows"]
+        rollouts += [r for rows in m["rows"].values() for r in rows]
         if set(m["cells"]) != set(CELLS):
             continue
-        entry = {"key": key, "name": m["name"], "detail": m["notes"] or "", "open_source": bool(m["code"]),
+        entry = {"key": key, "name": m["name"], "tag": m["tag"], "date": m["date"], "detail": m["notes"] or "", "open_source": bool(m["code"]),
                  "code": m["code"], "best": {}, "curve": {c: {str(k): v for k, v in m["cells"][c].items()} for c in sorted(m["cells"])}}
         for part, conds in (("id", ("id",)), ("ood", OOD)):
             total = lambda ep, i: sum(m["cells"][c][ep][x][i] for c in CELLS for x in conds)
@@ -181,9 +193,14 @@ def score(args: argparse.Namespace) -> None:
         if not args.dry_run:
             api.merge_pull_request(LEADERBOARD, pr.num, repo_type="dataset")
     entries = []
+    # Submissions without a date (older submit scripts) take their file's commit date.
+    dates = {item.path: item.last_commit.date.strftime("%Y-%m-%d")
+             for item in api.list_repo_tree(LEADERBOARD, path_in_repo="submissions", recursive=True, expand=True, repo_type="dataset")
+             if getattr(item, "last_commit", None)}
     for f in list_repo_files(LEADERBOARD, repo_type="dataset"):
         if f.startswith("submissions/") and f.endswith(".json"):
             sub = json.loads(Path(hf_hub_download(LEADERBOARD, f, repo_type="dataset")).read_text())
+            sub.setdefault("date", dates.get(f, ""))
             evals, rows = check(sub)
             entries.append({**sub, "evals": evals, "rows": rows})
         elif f.startswith("legacy/") and f.endswith(".json"):
@@ -208,6 +225,7 @@ def main() -> None:
     p.add_argument("--name", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--cell", required=True)
+    p.add_argument("--tag", default="", help="separates entries of the same method (e.g. v2, lr3e-4)")
     p.add_argument("--code", default="")
     p.add_argument("--notes", default="")
     p = sub.add_parser("score")
