@@ -171,10 +171,10 @@ details.fold.sub > figure { margin-top: 10px }
 .legend2 { font-size: 13px; color: var(--muted); margin-top: -6px }
 @media (max-width: 560px) { 
 /* pages */
-.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -28px }
-.tabs a { font: 500 14px var(--body); color: var(--muted); text-decoration: none; padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px }
-.tabs a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--fg) }
-.tabs a:hover { color: var(--fg) }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -20px }
+.tabs a { font: 500 14px var(--body); color: var(--fg); text-decoration: none; padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface) }
+.tabs a[aria-current="page"] { color: var(--bg); background: var(--fg); border-color: var(--fg) }
+.tabs a:hover:not([aria-current]) { border-color: var(--muted) }
 .view { display: grid; gap: 52px }
 .view[hidden] { display: none }
 .check { display: inline-flex; gap: 8px; align-items: center; font-size: 13.5px; color: var(--muted) }
@@ -212,7 +212,10 @@ details.fold.sub > figure { margin-top: 10px }
   </header>
 
   <nav class="tabs" aria-label="Pages">
-    <a href="#/" data-tab="home">Overview</a><a href="#/leaderboard" data-tab="leaderboard">Leaderboard</a><a href="#/results" data-tab="results">Results</a><a href="#/submit" data-tab="submit">Submit</a>
+    <a href="#/" data-tab="home">Overview</a>
+    <a href="#/leaderboard" data-tab="leaderboard">Leaderboard</a>
+    <a href="#/results" data-tab="results">All results</a>
+    <a href="#/submit" data-tab="submit">Submit a method</a>
   </nav>
 
   <div class="view" data-view="home">
