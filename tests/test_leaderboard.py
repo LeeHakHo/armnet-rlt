@@ -68,3 +68,13 @@ def test_a_resubmission_replaces_the_cell() -> None:
             {"name": "X", "date": "2026-11-19", "cell": "cell-03", "evals": evals(9), "rows": []}]
     board, _ = lb.build(subs)
     assert board[0]["best"]["id"][0] == 18 and board[0]["date"] == "2026-11-19"
+
+
+def test_eval_datasets_include_jobs_that_stopped_early(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(lb, "DATA", tmp_path)
+    out = tmp_path / "eval/run-a-ep100/all"
+    out.mkdir(parents=True)
+    (out / "job1.log").write_text("[rlt eval] task=x args={'record_dataset_repo_id': 'u/armnet_run-a-ep100_all_0'}\nJobStatus.FAILED\n")
+    (out / "job2.log").write_text("[rlt eval] task=x args={'record_dataset_repo_id': 'u/armnet_run-a-ep100_all_13'}\n"
+                                  '"eval_dataset_url": "https://huggingface.co/datasets/u/armnet_run-a-ep100_all_13"\n')
+    assert lb.eval_datasets("run-a") == {100: ["u/armnet_run-a-ep100_all_0", "u/armnet_run-a-ep100_all_13"]}

@@ -57,6 +57,9 @@ def eval_datasets(run: str) -> dict[int, list[str]]:
         repos = []
         for log in sorted(out.glob("*/job*.log")):
             text = re.sub(r"\x1b\[[0-9;]*m", "", log.read_text(errors="replace"))
+            # The job args name the dataset; a job that stopped early (safety trip) still
+            # uploads the episodes it finished but prints no result line.
+            repos += re.findall(r"'record_dataset_repo_id': '([^']+)'", text)
             repos += re.findall(r'"eval_dataset_url": "https://huggingface.co/datasets/([^"]+)"', text)
         if repos:
             found[episodes] = sorted(set(repos))
@@ -66,7 +69,11 @@ def eval_datasets(run: str) -> dict[int, list[str]]:
 def submit(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
-    datasets = eval_datasets(args.run)
+    from huggingface_hub import repo_exists
+
+    datasets = {ep: [r for r in repos if repo_exists(r, repo_type="dataset")]
+                for ep, repos in eval_datasets(args.run).items()}
+    datasets = {ep: repos for ep, repos in datasets.items() if repos}
     missing = [c for c in CHECKPOINTS if c not in datasets]
     if missing:
         sys.exit(f"{args.run} has no recorded evaluation after {missing} episodes; "
