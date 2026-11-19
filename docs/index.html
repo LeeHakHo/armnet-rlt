@@ -421,10 +421,10 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="leaderboard" hidden>
     <section>
       <h2>Leaderboard</h2>
-      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base, then is scored on the <a href="#/" data-goto="protocol">evaluation protocol</a>: 30 ID + 30 OOD rollouts per cell, 120 in all. Ranked by total successes.</p>
+      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base and is evaluated on the <a href="#/" data-goto="protocol">evaluation protocol</a> (30 ID + 30 OOD rollouts) after every 100 episodes. Per cell, the leaderboard takes the best of these four evaluations by ID + OOD successes, 120 rollouts in all. Ranked by total successes.</p>
       <label class="check"><input type="checkbox" id="lb-open"> Open-source methods only</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
-      <p class="cap">Small numbers: cell-01 · cell-03. OOD counts both OOD steps (see the protocol). Brackets: 95% Wilson interval of the success rate. Click a method to open its per-cell results and training curve; click again to close.</p>
+      <p class="cap">Small numbers: cell-01 · cell-03. Picking the best of four evaluations favours a method slightly; every evaluation is in its details and on the results page. OOD counts both OOD steps (see the protocol). Brackets: 95% Wilson interval of the success rate. Click a method to open its per-cell results and training curve; click again to close.</p>
       <details class="fold sub"><summary><h3>Interval chart</h3></summary><figure>
         <div class="fig"><svg id="lb-chart" viewBox="0 0 900 220" role="img" aria-label="Success rate of each method with 95% intervals, for ID, OOD and total"></svg></div>
         <figcaption>Success rate with 95% Wilson intervals. Overlapping intervals mean the difference is within sampling noise at this number of rollouts.</figcaption>
@@ -616,15 +616,17 @@ function cellTd([k, n], split, ci) {
   return `<td class="h">${k} <span class="muted">(${pct(k / n)}%)</span>${ci ? `<span class="ci">[${pct(lo)}–${pct(hi)}%]</span>` : ""}<span class="cellsplit">${split}</span></td>`;
 }
 let BOARD = [];
+const bestAt = e => Object.keys(e.scored_at).sort().map(c => e.scored_at[c]).join(" · ");
 function drawBoard() {
   const open = document.getElementById("lb-open").checked;
   const rows = BOARD.filter(e => !open || e.open_source).map(e => [e, score(e)]).sort((a, b) => b[1].total[0] - a[1].total[0]);
   const name = e => `<span class="dot" style="--c:${color(e.key)}"></span>${e.name}<span class="cellsplit">${e.detail}</span>`;
   document.getElementById("lb-full").innerHTML =
-    `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th><th>Total / 120</th><th>Safety trips</th></tr></thead><tbody>`
+    `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th><th>Total / 120</th><th>Best checkpoint</th><th>Safety trips</th></tr></thead><tbody>`
     + rows.map(([e, s], i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>`
-      + cellTd(s.id, s.split(c => c.id), true) + cellTd(s.ood, s.split(ood), true) + cellTd(s.total, s.split(tot), true) + `<td class="h">${s.trips}</td></tr>`).join("")
-    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="4" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
+      + cellTd(s.id, s.split(c => c.id), true) + cellTd(s.ood, s.split(ood), true) + cellTd(s.total, s.split(tot), true)
+      + `<td class="h">${bestAt(e)}<span class="cellsplit">episodes</span></td><td class="h">${s.trips}</td></tr>`).join("")
+    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="5" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
   document.getElementById("lb-mini").innerHTML =
     `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th><th>Total / 120</th></tr></thead><tbody>`
     + rows.slice(0, 5).map(([e, s], i) => `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>`
@@ -674,12 +676,12 @@ function detail(key) {
   for (const tr of document.querySelectorAll("#lb-full tr.row")) tr.classList.toggle("open", tr.dataset.key === key);
   const cells = Object.keys(e.curve).sort();
   const eps = [...new Set(cells.flatMap(c => Object.keys(e.curve[c])))].sort((a, b) => a - b);
-  const fmt = c => c ? `${c.id[0]} / ${ood(c)[0]}` : "–";
+  const fmt = (c, cell, x) => c ? (e.scored_at[cell] == x ? `<b>${c.id[0]} / ${ood(c)[0]}</b>` : `${c.id[0]} / ${ood(c)[0]}`) : "–";
   box.innerHTML = `<h3>${e.name} <span class="muted small">${e.detail}${e.code ? ` · <a href="${e.code}">code</a>` : ""}</span></h3>`
     + `<div class="mini-curves fig">${cells.map(c => curveSvg(e, c)).join("")}</div>`
     + `<div class="tbl"><table><thead><tr><th>ID / OOD successes (of 30 each)</th>${eps.map(x => `<th>${x} episodes</th>`).join("")}</tr></thead><tbody>`
-    + cells.map(c => `<tr><td>${c}</td>${eps.map(x => `<td class="h">${fmt(e.curve[c][x])}</td>`).join("")}</tr>`).join("")
-    + `</tbody></table></div><p class="cap">Solid: ID, dashed: OOD. The leaderboard scores the evaluation after episode ${e.scored_at}. <a href="#/results" data-method="${e.key}">See its rollouts</a>.</p>`;
+    + cells.map(c => `<tr><td>${c}</td>${eps.map(x => `<td class="h">${fmt(e.curve[c][x], c, x)}</td>`).join("")}</tr>`).join("")
+    + `</tbody></table></div><p class="cap">Solid: ID, dashed: OOD. Bold: the evaluation the leaderboard uses for each cell. <a href="#/results" data-method="${e.key}">See its rollouts</a>.</p>`;
 }
 document.getElementById("lb-open").addEventListener("change", drawBoard);
 
