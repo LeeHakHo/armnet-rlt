@@ -162,6 +162,17 @@ details.fold.sub > figure { margin-top: 10px }
 .seg.dark button[aria-pressed="true"] { background: #fff; color: #000 }
 @media (max-width: 720px) { .cmp { grid-template-columns: 1fr } }
 
+.flow { list-style: none; margin: -24px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px }
+.flow li { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; display: grid; gap: 4px }
+.flow b { font: 600 14px var(--body) }
+.flow span { font-size: 13px; color: var(--muted) }
+@media (max-width: 720px) { .flow { grid-template-columns: 1fr } }
+.legend2 { font-size: 13px; color: var(--muted); margin-top: -6px }
+.terms { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; font-size: 14px }
+.terms dt { font-weight: 600 }
+.terms dd { margin: 0; color: var(--muted) }
+@media (max-width: 560px) { .terms { grid-template-columns: 1fr } .terms dd { margin-bottom: 6px } }
+
 /* pages */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -28px }
 .tabs a { font: 500 14px var(--body); color: var(--muted); text-decoration: none; padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px }
@@ -208,14 +219,20 @@ details.fold.sub > figure { margin-top: 10px }
   </nav>
 
   <div class="view" data-view="home">
+  <ol class="flow" aria-label="How the benchmark works">
+    <li><b>1 · Pick a method</b><span>a baseline (DSRL, RLT, DiT) or your own policy</span></li>
+    <li><b>2 · Train on a real arm</b><span>your GPU learns; a robot cell runs 400 episodes of the task over the internet</span></li>
+    <li><b>3 · Get scored</b><span>fixed test scenes, the same for everyone; results and videos go on the leaderboard</span></li>
+  </ol>
   <figure>
     <video src="demo-cell03.mp4" poster="demo-cell03.jpg" autoplay muted loop playsinline controls aria-label="The arm presses the green button on cell-03, seen from the top, front and wrist cameras" style="width:100%;height:auto;border-radius:6px;background:var(--box);display:block"></video>
-    <figcaption>Example episode on cell-03, a second cell with the same setup. Real time; top, front and wrist cameras.</figcaption>
+    <figcaption><b>The task:</b> press the green button on the busybox within 30 seconds. One successful episode on cell-03, in real time, from the top, front and wrist cameras.</figcaption>
   </figure>
 
   <section>
     <h2>Leaderboard</h2>
     <div class="tbl"><table class="lb" id="lb-mini"></table></div>
+    <p class="legend2"><b>ID</b> = test scenes like the ones the robot trained in. <b>OOD</b> = harder scenes: the busybox moved outside the training range, dimmer light and a tilted camera. Each number is how many of 60 test episodes pressed the button; higher is better.</p>
     <p class="cap">Top entries on the current protocol. <a href="#/leaderboard">Full leaderboard</a> with confidence intervals and per-cell results · <a href="#/results">every evaluation rollout</a> · <a href="#/submit">submit your method</a>.</p>
   </section>
 
@@ -380,6 +397,17 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     </figure>
   </div></details>
 
+  <details class="fold" id="terms"><summary><h2>Terms</h2><span class="muted small">episode, cell, checkpoint, ID / OOD, safety trip</span></summary><div class="fold-body">
+    <dl class="terms">
+      <dt>Episode</dt><dd>One attempt at the task, at most 30 s. The cell resets the scene before the next one.</dd>
+      <dt>Cell</dt><dd>A booth with an SO-101 arm, a busybox on a motorised rail, a light box and three cameras. We use cell-01 and cell-03.</dd>
+      <dt>Checkpoint</dt><dd>The policy saved after every 100 training episodes; each is tested on 60 episodes.</dd>
+      <dt>ID / OOD</dt><dd>In-distribution test scenes match training; out-of-distribution scenes move the rail, dim the light and tilt the camera.</dd>
+      <dt>Safety trip</dt><dd>The arm drew too much current and the cell stopped it; it counts as a failure.</dd>
+      <dt>Seed</dt><dd>Fixes the random scene changes, so every method is tested on the same scenes.</dd>
+    </dl>
+  </div></details>
+
   <details class="fold" id="v1"><summary><h2>Earlier results (v1 protocol)</h2><span class="muted small">one cell, 105 rollouts per method; not comparable with the leaderboard</span></summary><div class="fold-body">
     <h3>Results</h3>
     <p class="cap">These are from the first protocol (one cell, 7 conditions × 15 rollouts, cell-03 before its repair) and cannot be compared with the leaderboard. Each baseline trained for up to 6 hours, then ran 105 evaluation rollouts.</p>
@@ -422,6 +450,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base and is evaluated on the <a href="#/" data-goto="protocol">evaluation protocol</a> (30 ID + 30 OOD rollouts) after every 100 episodes. ID and OOD each use the method's best of the four checkpoints, summed over both cells (60 rollouts each); the small line under each number is that checkpoint. Ranked by ID + OOD.</p>
       <label class="check"><input type="checkbox" id="lb-open"> Open-source methods only</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
+      <p class="legend2"><b>ID</b> = test scenes like the ones the robot trained in. <b>OOD</b> = harder scenes: the busybox moved outside the training range, dimmer light and a tilted camera. Each number is how many of 60 test episodes pressed the button; higher is better.</p>
       <p class="cap">Click a method for its per-cell curves and every evaluation.</p>
       <div id="lb-detail"></div>
       <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. Iterative DiT and RLT are being re-run on this protocol; their earlier results are on the <a href="#/" data-goto="v1">overview</a>.</p>
@@ -431,7 +460,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="results" hidden>
     <section>
       <h2>Evaluation rollouts</h2>
-      <p class="cap">Every evaluation rollout behind the leaderboard, at each checkpoint (100–400 training episodes). Filter, then open a row to watch it when the evaluation was recorded.</p>
+      <p class="cap">Every test episode behind the leaderboard, one row each, for every checkpoint (after 100–400 training episodes). Use the filters to narrow it down, and press Play to watch an episode.</p>
       <div class="filters" id="rs-filters"></div>
       <p class="cap" id="rs-summary"></p>
       <div class="tbl"><table id="rs-table"></table></div>
@@ -687,7 +716,9 @@ document.addEventListener("click", e => {
   if (s) { s.value = a.dataset.method; shown = 20; drawRolls(); }
 });
 
-Promise.all([fetch("data/leaderboard.json").then(r => r.json()), fetch("data/rollouts.json").then(r => r.json())])
+// Bump with every data format change, so a page and its data are always read together.
+const DATA_V = "2";
+Promise.all([fetch(`data/leaderboard.json?v=${DATA_V}`).then(r => r.json()), fetch(`data/rollouts.json?v=${DATA_V}`).then(r => r.json())])
   .then(([board, rolls]) => { BOARD = board; ROLLS = rolls; drawBoard(); buildFilters(); drawRolls(); })
   .catch(() => { document.getElementById("lb-mini").innerHTML = `<tbody><tr><td>Could not load the leaderboard data.</td></tr></tbody>`; });
 const closePlayer = () => { pv.pause(); cv.pause(); player.close(); };
