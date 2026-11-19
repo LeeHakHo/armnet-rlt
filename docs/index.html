@@ -115,7 +115,7 @@ img, video { max-width: 100% }
 .lb .cellsplit { display: block; font: 11.5px var(--mono); color: var(--muted); font-weight: 400 }
 
 /* evaluation settings with example videos */
-.settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
+.settings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px }
 .setting { display: grid; gap: 10px; align-content: start; text-align: left; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0 0 14px; overflow: hidden; cursor: pointer }
 .setting:disabled { cursor: default }
 .setting .thumb { position: relative; aspect-ratio: 16 / 9; background: var(--box); display: grid; place-items: center; color: var(--muted); font: 12px var(--mono) }
@@ -124,11 +124,12 @@ img, video { max-width: 100% }
 .setting .play::after { content: ""; margin-left: 4px; border-style: solid; border-width: 9px 0 9px 15px; border-color: transparent transparent transparent #fff }
 .setting:disabled .play { display: none }
 .setting:not(:disabled):hover { border-color: var(--muted) }
-.setting h3 { margin: 0 14px; font: 600 16px var(--body) }
-.setting dl { margin: 0 14px; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px }
+.setting h3 { margin: 0 14px; font: 600 16px var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.setting dl { margin: 0 14px; display: grid; grid-template-columns: 3.2em 1fr; gap: 3px 10px; font-size: 13px; align-items: baseline }
 .setting dt { color: var(--muted) }
 .setting dd { margin: 0; font-family: var(--mono); font-size: 12.5px }
-@media (max-width: 720px) { .settings { grid-template-columns: 1fr } }
+@media (max-width: 860px) { .settings { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+@media (max-width: 480px) { .settings { grid-template-columns: 1fr } }
 dialog.player { border: 0; padding: 0; background: transparent; max-width: min(960px, 94vw); width: 100% }
 dialog.player::backdrop { background: rgba(0, 0, 0, .75) }
 dialog.player video { width: 100%; display: block; border-radius: 6px; background: #000 }
@@ -295,7 +296,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     <p class="cap">Needs a GPU, Docker for the actor image and an ngrok token (or your own TLS ingress). Options and the individual commands are in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
   </div></details>
 
-  <details class="fold" id="protocol"><summary><h2>Evaluation protocol</h2><span class="muted small">30 ID + 30 OOD rollouts over 3 seeds; click rail, light or tilt to compare with ID</span></summary><div class="fold-body">
+  <details class="fold" id="protocol"><summary><h2>Evaluation protocol</h2><span class="muted small">30 ID + 30 OOD rollouts over 3 seeds; click a card to watch the ID scene or compare rail, light and tilt with it</span></summary><div class="fold-body">
     <div class="tbl"><table>
       <thead><tr><th>Scene</th><th>Rail</th><th>Light</th><th>Top camera tilt</th><th>Rollouts</th></tr></thead>
       <tbody>
@@ -305,6 +306,11 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     </table></div>
     <p class="cap">An OOD scene changes all three at once: the rail leaves the training range, and the light and the camera move together in two steps (15 % with 0.2567, 5 % with 0.3472). Seeds 1042, 2042 and 3042 fix the scenes, so every policy sees the same ones. No exploration noise, 30 s limit, a safety trip counts as a failure. Rail and tilt are 0–1 of each axis's travel.</p>
     <div class="settings">
+      <button class="setting" data-factor="id" data-title="ID">
+        <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
+        <h3>ID</h3>
+        <dl><dt>Rail</dt><dd>0.70</dd><dt>Light</dt><dd>30 %</dd><dt>Tilt</dt><dd>cell default</dd></dl>
+      </button>
       <button class="setting" data-factor="rail" data-title="Rail">
         <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
         <h3>Rail</h3>
@@ -321,7 +327,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
         <dl><dt>ID</dt><dd>cell default</dd><dt>OOD</dt><dd>0.2567 · 0.3472</dd></dl>
       </button>
     </div>
-    <p class="cap">Each video changes one factor of the ID scene and plays next to the ID rollout. Same policy (DSRL after 400 episodes), cell-01.</p>
+    <p class="cap">ID plays the training-like scene. Rail, light and tilt each change one factor of it and play next to the ID video. Same policy (DSRL after 400 episodes), cell-01.</p>
     <dialog class="player" id="player">
       <div class="bar2"><span id="player-title"></span><button id="player-close">Close</button></div>
       <div class="cmp"><figure><figcaption id="cmp-a-label">ID</figcaption><video id="player-video" playsinline muted></video></figure><figure id="cmp-b"><figcaption id="cmp-b-label"></figcaption><video id="cmp-video" playsinline muted></video></figure></div>
@@ -584,12 +590,12 @@ document.getElementById("cmp-replay").addEventListener("click", () => {
   for (const v of [pv, cv]) if (v.src) { v.currentTime = 0; v.play(); }
 });
 for (const b of document.querySelectorAll(".setting")) {
-  const options = SHOWCASE[b.dataset.factor] || [];
+  const isId = b.dataset.factor === "id", options = isId ? [] : SHOWCASE[b.dataset.factor] || [];
   if (!SHOWCASE.id || !options.every(o => o[1])) { b.disabled = true; continue; }
   b.querySelector(".soon").remove();
   const poster = SHOWCASE.poster[b.dataset.factor];
   if (poster) b.querySelector(".thumb").insertAdjacentHTML("afterbegin", `<img src="${poster}" alt="">`);
-  b.addEventListener("click", () => compare(b.dataset.title, options));
+  b.addEventListener("click", () => isId ? play("ID scene", SHOWCASE.id) : compare(b.dataset.title, options));
 }
 
 /* pages */
