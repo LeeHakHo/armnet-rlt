@@ -10,8 +10,10 @@
 #                     PUBLIC_LEARNER_PORT (443) and PUBLIC_POLICY_PORT (8443)
 #   LEARNER_PORT, POLICY_PORT   local ports (50051, 50052)
 #   WANDB_PROJECT     log learners to this Weights & Biases project
-#   EVAL_RECORD_REPO  <hf user or org>/<prefix>: record evaluation rollouts as private
-#                     LeRobot datasets (unset: not recorded)
+#   RECORD_REPO       <hf user or org>/<prefix> (setup.sh: <your user>/armnet): the cell
+#                     records training and evaluation episodes, all three cameras, as
+#                     private LeRobot datasets <prefix>_<run or label>_...; RECORD=0 turns
+#                     it off
 #   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661, cell-01 0.19)
 
 CALLER_PWD=$PWD
@@ -82,6 +84,14 @@ actor_common() {
     --image-ref "$IMAGE_REF")
   [ -n "$CELL" ] && ACTOR+=(--armnet.require-cell "$CELL")
   return 0
+}
+
+# Recording flags for one cell job in RECORD_ARGS: a private dataset <RECORD_REPO>_<name>,
+# or none when RECORD=0 or RECORD_REPO is unset.
+record_args() {  # <name>
+  RECORD_ARGS=()
+  [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ] || return 0
+  RECORD_ARGS=(--record-dataset --record-dataset-repo-id "${RECORD_REPO}_$1")
 }
 
 # Scene variation of the ID condition: the rail is drawn per episode around 0.7 (0.65-0.75).
@@ -265,10 +275,8 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       local first=${EVAL_SEEDS%% *}
       local seeded=(--armnet.variation-seed "$first" --armnet.variation-episode-offset "$done"
         --action-noise-seed "$first" --timeout-seconds 7200 "${group_args[@]}")
-      # EVAL_RECORD_REPO=<hf user or org>/<prefix>: the cell records the job's rollouts as a
-      # private LeRobot dataset <prefix>_<label>_<group>_<first rollout>.
-      [ -z "${EVAL_RECORD_REPO:-}" ] || seeded+=(--record-dataset
-        --record-dataset-repo-id "${EVAL_RECORD_REPO}_${label}_${group}_${done}")
+      record_args "${label}_${group}_${done}"
+      seeded+=("${RECORD_ARGS[@]}")
       if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
         "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "$extra" --num-rollouts "$((n - done))" \

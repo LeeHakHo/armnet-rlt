@@ -205,7 +205,8 @@ for MARK in $MARKS; do
     LEFT=$((MARK - $(episodes_done)))
     log "actor attempt $ATTEMPT${CELL:+ on $CELL}: $LEFT episodes to $MARK"
     START=$(date +%s) BEFORE=$(episodes_done)
-    "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${SUBMIT[@]}" --num-rollouts "$LEFT" \
+    record_args "${RUN}_train_$(episodes_done)"
+    "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${SUBMIT[@]}" "${RECORD_ARGS[@]}" --num-rollouts "$LEFT" \
       --timeout-seconds 72000 $ID_ARGS $ACTOR_ARGS > "$ACTOR_LOG" 2>&1 || true
     stop_cell_job "$ACTOR_LOG"
     ELAPSED=$(( $(date +%s) - START ))

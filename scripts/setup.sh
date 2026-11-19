@@ -40,7 +40,7 @@ log "1/5 .env"
 [ -f .env ] || cp .env.example .env
 UVRUN=(uv run --quiet --env-file .env)
 ask ARMNET_API_KEY "Armnet API key"
-ask HF_TOKEN "Hugging Face token (read access to AutoRLBench)"
+ask HF_TOKEN "Hugging Face token (read access to AutoRLBench, write access to your account for the episode videos)"
 grep -q "^RLT_HF_SECRET=" .env || set_env RLT_HF_SECRET "$RLT_HF_SECRET"
 grep -q "^RLT_AUTH_SECRET=" .env || set_env RLT_AUTH_SECRET "$RLT_AUTH_SECRET"
 
@@ -69,6 +69,13 @@ fi
 if [ -z "${PUBLIC_HOST:-}" ] && ! ngrok config check >/dev/null 2>&1; then
   log "ngrok is not configured: install it and run 'ngrok config add-authtoken <token>'"
   log "(or set PUBLIC_HOST, TLS_CERT and TLS_KEY in .env to use your own TLS ingress)"
+fi
+
+if ! grep -q "^RECORD_REPO=" .env; then
+  # Training and evaluation episodes are recorded as private datasets under your account.
+  HF_USER=$(HF_TOKEN=$HF_TOKEN "$LEARNER_BIN/hf" auth whoami 2>/dev/null | sed -nE 's/^user[=:] *([^ ]+).*/\1/p' | head -1 || true)
+  [ -n "$HF_USER" ] && set_env RECORD_REPO "$HF_USER/armnet" \
+    || log "could not read your Hugging Face user; set RECORD_REPO=<user>/armnet in .env to record episodes"
 fi
 
 log "4/5 base checkpoint, normalization stats and demo cache"
