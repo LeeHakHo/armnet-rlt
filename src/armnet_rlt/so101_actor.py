@@ -922,12 +922,15 @@ def record_rollout_frame(
     """
     if frame_writer is None:
         return
-    # [episode start, frames written], kept on the writer and reset at each episode's first tick.
+    # [episode start, frames written], kept on the writer and reset at each episode's first
+    # tick. Times are taken here: an episode's first loop tick can start before the scene
+    # reset that precedes it.
+    now = time.perf_counter()
     clock = getattr(frame_writer, "real_time_clock", None)
     if frame_index == 0 or clock is None:
-        clock = [tick, 0]
+        clock = [now, 0]
         frame_writer.real_time_clock = clock
-    due = int((tick - clock[0]) / period_s + 1e-6) + 1
+    due = int((now - clock[0]) / period_s + 1e-6) + 1
     copies = max(1, due - clock[1])
     for _ in range(copies):
         frame_writer.submit_observation(raw_obs, actual_action, task=task)
