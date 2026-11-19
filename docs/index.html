@@ -194,6 +194,11 @@ details.fold.sub > figure { margin-top: 10px }
 .filters label { display: grid; gap: 3px; font-size: 12px; color: var(--muted) }
 .filters select { font: 13px var(--body); padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--fg) }
 #rs-table td, #rs-table th { text-align: left }
+#rs-table tr.job { cursor: pointer }
+#rs-table tr.job:hover td, #rs-table tr.job.open td { background: var(--box) }
+#rs-table .caret { display: inline-block; width: 1em; color: var(--muted) }
+#rs-table tr.roll td { font-size: 12.5px; padding-top: 5px; padding-bottom: 5px }
+#rs-table tr.roll.head td { color: var(--muted); font-weight: 600; font-size: 11.5px }
 #rs-table td.h { text-align: right }
 .ok { color: #1f7a3f; font-weight: 600 } .no { color: var(--muted) } .trip { color: var(--dit); font-weight: 600 }
 .vbtn { font: 500 12px var(--body); border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 4px; padding: 3px 9px; cursor: pointer }
@@ -458,11 +463,10 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="results" hidden>
     <section>
       <h2>Evaluation rollouts</h2>
-      <p class="cap">Every test episode behind the leaderboard, one row each, for every checkpoint (after 100–400 training episodes). Use the filters to narrow it down, and press Play to watch an episode.</p>
+      <p class="cap">One row per evaluation job: a method on one cell after 100, 200, 300 or 400 training episodes, 60 test episodes each. Click a job to list its episodes and play them.</p>
       <div class="filters" id="rs-filters"></div>
       <p class="cap" id="rs-summary"></p>
       <div class="tbl"><table id="rs-table"></table></div>
-      <div class="pager"><button id="rs-more">Show more</button></div>
     </section>
   </div>
 
@@ -677,7 +681,7 @@ function detail(key) {
 document.getElementById("lb-open").addEventListener("change", drawBoard);
 
 /* results browser */
-let ROLLS = [], shown = 20;
+let ROLLS = [];
 const FILTERS = [["method", "Method"], ["cell", "Cell"], ["episodes", "Training episodes"], ["condition", "Condition"], ["seed", "Seed"], ["result", "Result"]];
 const resultOf = r => r.outcome === "safety_trip" ? "safety trip" : r.success ? "success" : "failure";
 const condOf = r => r.condition === "id" ? "ID" : "OOD";
@@ -688,30 +692,44 @@ function buildFilters() {
     const vals = [...new Set(ROLLS.map(r => valueOf(r, k)))].sort((a, b) => isNaN(a) ? (a > b ? 1 : -1) : a - b);
     return `<label>${label}<select data-k="${k}"><option value="">all</option>${vals.map(v => `<option>${v}</option>`).join("")}</select></label>`;
   }).join("");
-  for (const s of box.querySelectorAll("select")) s.addEventListener("change", () => { shown = 20; drawRolls(); });
+  for (const s of box.querySelectorAll("select")) s.addEventListener("change", drawRolls);
 }
+const OPEN = new Set();
 function drawRolls() {
   const sel = Object.fromEntries([...document.querySelectorAll("#rs-filters select")].map(s => [s.dataset.k, s.value]));
   const rows = ROLLS.filter(r => FILTERS.every(([k]) => !sel[k] || valueOf(r, k) === sel[k]));
-  const k = rows.filter(r => r.success).length, [lo, hi] = wilson(k, rows.length);
-  document.getElementById("rs-summary").textContent = rows.length
-    ? `${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%, 95% interval ${pct(lo)}–${pct(hi)}%) · ${rows.filter(r => r.video).length} with video`
-    : "No rollouts match.";
   const nameOf = key => (BOARD.find(e => e.key === key) || {}).name || key;
-  document.getElementById("rs-table").innerHTML =
-    `<thead><tr><th>Method</th><th>Cell</th><th>Episodes</th><th>Condition</th><th>Seed</th><th>Rail</th><th>Light</th><th>Top tilt</th><th>Result</th><th>Time</th><th>Video</th></tr></thead><tbody>`
-    + rows.slice(0, shown).map(r => `<tr><td>${nameOf(r.method)}</td><td>${r.cell}</td><td class="h">${r.episodes}</td><td>${condOf(r)}</td><td class="h">${r.seed}</td>`
-      + `<td class="h">${r.rail.toFixed(3)}</td><td class="h">${r.light}%</td><td class="h">${r.tilt == null ? "–" : r.tilt}</td>`
-      + `<td class="${r.outcome === "safety_trip" ? "trip" : r.success ? "ok" : "no"}">${resultOf(r)}</td><td class="h">${r.duration_s.toFixed(1)} s</td>`
-      + `<td>${r.video ? `<button class="vbtn" data-v="${r.video}" data-t="${nameOf(r.method)} · ${r.cell} · ${condOf(r)} · ${resultOf(r)}">Play</button>` : `<span class="muted">–</span>`}</td></tr>`).join("") + `</tbody>`;
-  document.getElementById("rs-more").hidden = rows.length <= shown;
-  for (const b of document.querySelectorAll("#rs-table .vbtn")) b.addEventListener("click", () => play(b.dataset.t, b.dataset.v));
+  const jobs = new Map();
+  for (const r of rows) {
+    const key = `${r.method}|${r.cell}|${r.episodes}`;
+    if (!jobs.has(key)) jobs.set(key, []);
+    jobs.get(key).push(r);
+  }
+  const k = rows.filter(r => r.success).length;
+  document.getElementById("rs-summary").textContent = rows.length
+    ? `${jobs.size} evaluation jobs · ${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%). Click a job to see its rollouts.`
+    : "No rollouts match.";
+  const count = (rs, c) => { const x = rs.filter(r => condOf(r) === c); return x.length ? `${x.filter(r => r.success).length} / ${x.length}` : "–"; };
+  const rollRow = r => `<tr class="roll"><td></td><td>${condOf(r)}</td><td class="h">${r.seed}</td>`
+    + `<td class="h">${r.rail.toFixed(3)}</td><td class="h">${r.light}%</td><td class="h">${r.tilt == null ? "–" : r.tilt}</td>`
+    + `<td class="${r.outcome === "safety_trip" ? "trip" : r.success ? "ok" : "no"}">${resultOf(r)}</td><td class="h">${r.duration_s.toFixed(1)} s</td>`
+    + `<td>${r.video ? `<button class="vbtn" data-v="${r.video}" data-t="${nameOf(r.method)} · ${r.cell} · ${r.episodes} episodes · ${condOf(r)} · ${resultOf(r)}">Play</button>` : `<span class="muted">–</span>`}</td></tr>`;
+  let html = `<thead><tr><th>Evaluation job</th><th>ID</th><th>OOD</th><th colspan="6">Rollouts</th></tr></thead><tbody>`;
+  for (const [key, rs] of jobs) {
+    const [method, cell, eps] = key.split("|"), open = OPEN.has(key);
+    html += `<tr class="job${open ? " open" : ""}" data-key="${key}"><td><span class="caret">${open ? "▾" : "▸"}</span> <b>${nameOf(method)}</b> · ${cell} · after ${eps} episodes</td>`
+      + `<td class="h">${count(rs, "ID")}</td><td class="h">${count(rs, "OOD")}</td><td colspan="6" class="muted">${rs.length} rollouts${rs.some(r => r.video) ? " · videos" : ""}</td></tr>`;
+    if (open) html += `<tr class="roll head"><td></td><td>Condition</td><td>Seed</td><td>Rail</td><td>Light</td><td>Top tilt</td><td>Result</td><td>Time</td><td>Video</td></tr>` + rs.map(rollRow).join("");
+  }
+  document.getElementById("rs-table").innerHTML = html + `</tbody>`;
+  for (const tr of document.querySelectorAll("#rs-table tr.job"))
+    tr.addEventListener("click", () => { OPEN.has(tr.dataset.key) ? OPEN.delete(tr.dataset.key) : OPEN.add(tr.dataset.key); drawRolls(); });
+  for (const b of document.querySelectorAll("#rs-table .vbtn")) b.addEventListener("click", ev => { ev.stopPropagation(); play(b.dataset.t, b.dataset.v); });
 }
-document.getElementById("rs-more").addEventListener("click", () => { shown += 40; drawRolls(); });
 document.addEventListener("click", e => {
   const a = e.target.closest("a[data-method]");
   const s = a && document.querySelector('#rs-filters select[data-k="method"]');
-  if (s) { s.value = a.dataset.method; shown = 20; drawRolls(); }
+  if (s) { s.value = a.dataset.method; drawRolls(); }
 });
 
 // Bump with every data format change, so a page and its data are always read together.
