@@ -163,7 +163,7 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
         m = methods.setdefault(key, {"name": e["name"], "tag": e.get("tag") or "", "code": e.get("code"),
                                      "notes": e.get("notes"), "cells": {}, "rows": {}, "date": ""})
         m["cells"][e["cell"]] = e["evals"]
-        m["rows"][e["cell"]] = [{**r, "method": key} for r in e["rows"]]
+        m["rows"][e["cell"]] = [{**r, "method": key, "name": e["name"], "tag": e.get("tag") or ""} for r in e["rows"]]
         m["date"] = max(m["date"], e.get("date") or "")
     board, rollouts = [], []
     for key, m in methods.items():
