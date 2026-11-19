@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Train and evaluate robot learning methods on real SO-101 arms over the internet.">
-<title>Armnet-Remote-Platform</title>
+<title>Armnet RL Benchmark</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap">
 <style>
@@ -106,13 +106,42 @@ img, video { max-width: 100% }
 .qr { flex: none; display: grid; gap: 6px; justify-items: center; text-decoration: none; color: var(--muted); font: 11px var(--mono) }
 .qr svg { width: 104px; height: 104px; display: block; border: 1px solid var(--line); border-radius: 6px; background: #fff }
 @media (max-width: 560px) { .qr { display: none } }
+.kicker { font: 600 12px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--dsrl) }
+
+/* leaderboard */
+.lb td.m { font-weight: 600 }
+.lb td.rank { font: 600 14px var(--mono); color: var(--muted); width: 1% }
+.lb tr.you td { color: var(--muted); font-style: italic }
+.lb .cellsplit { display: block; font: 11.5px var(--mono); color: var(--muted); font-weight: 400 }
+
+/* evaluation settings with example videos */
+.settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
+.setting { display: grid; gap: 10px; align-content: start; text-align: left; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0 0 14px; overflow: hidden; cursor: pointer }
+.setting:disabled { cursor: default }
+.setting .thumb { position: relative; aspect-ratio: 16 / 9; background: var(--box); display: grid; place-items: center; color: var(--muted); font: 12px var(--mono) }
+.setting .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover }
+.setting .play { position: relative; width: 44px; height: 44px; border-radius: 50%; background: rgba(0, 0, 0, .55); display: grid; place-items: center }
+.setting .play::after { content: ""; margin-left: 4px; border-style: solid; border-width: 9px 0 9px 15px; border-color: transparent transparent transparent #fff }
+.setting:disabled .play { display: none }
+.setting:not(:disabled):hover { border-color: var(--muted) }
+.setting h3 { margin: 0 14px; font: 600 16px var(--body) }
+.setting dl { margin: 0 14px; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px }
+.setting dt { color: var(--muted) }
+.setting dd { margin: 0; font-family: var(--mono); font-size: 12.5px }
+@media (max-width: 720px) { .settings { grid-template-columns: 1fr } }
+dialog.player { border: 0; padding: 0; background: transparent; max-width: min(960px, 94vw); width: 100% }
+dialog.player::backdrop { background: rgba(0, 0, 0, .75) }
+dialog.player video { width: 100%; display: block; border-radius: 6px; background: #000 }
+dialog.player .bar2 { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #fff; font-size: 13px; padding: 8px 2px }
+dialog.player button { font: 500 13px var(--body); color: #fff; background: transparent; border: 1px solid rgba(255, 255, 255, .5); border-radius: 4px; padding: 4px 10px; cursor: pointer }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="top">
     <div class="hd">
-    <h1>Armnet Remote Platform</h1>
+    <p class="kicker">Open-source RL benchmark</p>
+    <h1>Armnet: an Open-Source Real-Robot RL Benchmark</h1>
     <p class="lede">Train and evaluate robot learning methods on real SO-101 arms over the internet.<br>Your GPU runs the policy and the learner; a remote cell runs the episodes, resets the scene and scores each one.</p>
     <div class="repo"><span class="muted">Code</span><a href="https://github.com/LeeHakHo/armnet-rlt"><code>github.com/LeeHakHo/armnet-rlt</code></a></div>
     </div>
@@ -123,6 +152,33 @@ img, video { max-width: 100% }
     <video src="demo-cell03.mp4" poster="demo-cell03.jpg" autoplay muted loop playsinline controls aria-label="The arm presses the green button on cell-03, seen from the top, front and wrist cameras" style="width:100%;height:auto;border-radius:6px;background:var(--box);display:block"></video>
     <figcaption>Example episode on cell-03, a second cell with the same setup. Real time; top, front and wrist cameras.</figcaption>
   </figure>
+
+  <section id="leaderboard">
+    <h2>Leaderboard</h2>
+    <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes on each cell. It is scored after its last training episode on the <a href="#protocol">evaluation protocol</a>: 60 rollouts per cell, so 120 in all.</p>
+    <div class="tbl"><table class="lb">
+      <thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD-easy / 30</th><th>OOD-hard / 30</th><th>OOD / 60</th><th>Total / 120</th><th>Safety trips</th></tr></thead>
+      <tbody>
+        <tr class="c-dsrl"><td class="rank">1</td><td class="m"><span class="dot"></span>DSRL <span class="cellsplit">π0.5 + SAC noise actor</span></td>
+          <td class="h">42 <span class="muted">(70%)</span><span class="cellsplit">27 · 15</span></td>
+          <td class="h">2<span class="cellsplit">2 · 0</span></td>
+          <td class="h">2<span class="cellsplit">1 · 1</span></td>
+          <td class="h">4 <span class="muted">(7%)</span><span class="cellsplit">3 · 1</span></td>
+          <td class="h"><b>46</b> <span class="muted">(38%)</span><span class="cellsplit">30 · 16</span></td>
+          <td class="h">0</td></tr>
+        <tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="6" style="text-align:left">train with <code>scripts/run.sh</code>; the same script evaluates it</td></tr>
+      </tbody>
+    </table></div>
+    <p class="cap">Small numbers: cell-01 · cell-03. Ranked by total successes. Iterative DiT and RLT are being re-run on this protocol; their earlier results are <a href="#v1">below</a>.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>DSRL during training</th><th>100 episodes</th><th>200</th><th>300</th><th>400</th></tr></thead>
+      <tbody>
+        <tr><td>ID / 60</td><td class="h">31</td><td class="h">39</td><td class="h">40</td><td class="h">42</td></tr>
+        <tr><td>OOD / 60</td><td class="h">16</td><td class="h">7</td><td class="h">8</td><td class="h">4</td></tr>
+      </tbody>
+    </table></div>
+    <p class="cap">Both cells summed. Training only sees ID scenes: ID success rises while OOD success falls.</p>
+  </section>
 
   <section>
     <h2>How the system runs</h2>
@@ -185,18 +241,30 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     <p class="cap">Needs a GPU, Docker for the actor image and an ngrok token (or your own TLS ingress). Options and the individual commands are in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
   </section>
 
-  <section>
+  <section id="protocol">
     <h2>Evaluation protocol</h2>
-    <div class="chips">
-      <span><b>ID</b> <i>rail in training range</i></span>
-      <span><b>rail-low</b> <i>below range</i></span>
-      <span><b>rail-high</b> <i>above range</i></span>
-      <span><b>bright15</b> <i>light 30 → 15</i></span>
-      <span><b>bright5</b> <i>light 30 → 5</i></span>
-      <span><b>tilt1550</b> <i>top camera tilted</i></span>
-      <span><b>tilt1750</b> <i>tilted further</i></span>
+    <div class="settings">
+      <button class="setting" data-video="" data-title="ID">
+        <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
+        <h3>ID</h3>
+        <dl><dt>Rail</dt><dd>0.65–0.75</dd><dt>Light</dt><dd>30 %</dd><dt>Top tilt</dt><dd>cell default</dd><dt>Rollouts</dt><dd>10 per seed</dd></dl>
+      </button>
+      <button class="setting" data-video="" data-title="OOD-easy">
+        <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
+        <h3>OOD-easy</h3>
+        <dl><dt>Rail</dt><dd>0.60–0.65 or 0.75–0.80</dd><dt>Light</dt><dd>15 %</dd><dt>Top tilt</dt><dd>0.2567</dd><dt>Rollouts</dt><dd>5 per seed</dd></dl>
+      </button>
+      <button class="setting" data-video="" data-title="OOD-hard">
+        <span class="thumb"><span class="play"></span><span class="soon">video soon</span></span>
+        <h3>OOD-hard</h3>
+        <dl><dt>Rail</dt><dd>0.60–0.65 or 0.75–0.80</dd><dt>Light</dt><dd>5 %</dd><dt>Top tilt</dt><dd>0.3472</dd><dt>Rollouts</dt><dd>5 per seed</dd></dl>
+      </button>
     </div>
-    <p class="cap">Each condition: 3 seeds × 5 rollouts, no exploration noise, 30 s limit. A safety trip counts as a failure.<br>The seed fixes the rail positions, so every policy sees the same scenes.</p>
+    <p class="cap">Seeds 1042, 2042 and 3042, so 30 ID + 30 OOD rollouts per evaluation. OOD-easy and OOD-hard get the same rail positions and differ only in light and camera tilt.<br>There is no exploration noise and each rollout has a 30 s limit; a safety trip counts as a failure. The seed fixes the scenes, so every policy sees the same ones. One cell job runs the whole evaluation and sets the rail, the light and the camera per episode. Rail and tilt are 0–1 of each axis's travel. Click a setting to watch an example rollout.</p>
+    <dialog class="player" id="player">
+      <div class="bar2"><span id="player-title"></span><button id="player-close">Close</button></div>
+      <video id="player-video" controls playsinline></video>
+    </dialog>
   </section>
 
   <section>
@@ -268,9 +336,9 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     </figure>
   </section>
 
-  <section>
-    <h2>Baseline results</h2>
-    <p class="cap">push_green_button on one SO-101 cell. Each baseline trains for up to 6 hours, then runs 105 evaluation rollouts.</p>
+  <section id="v1">
+    <h2>Earlier results (v1 protocol)</h2>
+    <p class="cap">These are from the first protocol (one cell, 7 conditions × 15 rollouts, cell-03 before its repair) and cannot be compared with the leaderboard. Each baseline trained for up to 6 hours, then ran 105 evaluation rollouts.</p>
     <div class="score">
       <div class="c-dit"><span><span class="dot"></span><b>Iterative DiT</b> <span class="muted small">step 1,800 · 2.1 h</span></span><span class="big">35<small> / 105 (33%)</small></span><span class="muted small">ID 10/15 · OOD 25/90</span><div class="bar"><i style="width:33.3%"></i></div></div>
       <div class="c-rlt"><span><span class="dot"></span><b>RLT</b> <span class="muted small">step 20k · 5.9 h</span></span><span class="big">40<small> / 105 (38%)</small></span><span class="muted small">ID 10/15 · OOD 30/90</span><div class="bar"><i style="width:38.1%"></i></div></div>
@@ -282,7 +350,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   </section>
 
   <section>
-    <h2>Baseline learning curves</h2>
+    <h2>Earlier learning curves (v1)</h2>
     <div class="fig">
       <div class="figtop">
         <div class="legend"><span class="c-dit"><span class="dot"></span>Iterative DiT</span><span class="c-rlt"><span class="dot"></span>RLT</span><span class="c-dsrl"><span class="dot"></span>DSRL</span></div>
@@ -296,7 +364,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   </section>
 
   <section>
-    <h2>Baseline time and compute</h2>
+    <h2>Earlier time and compute (v1)</h2>
     <div class="tbl"><table>
       <thead><tr><th>Run</th><th>Learner steps</th><th>Wall clock</th><th>GPU-hours</th><th>Robot episodes</th><th>Robot time</th><th>Training successes</th></tr></thead>
       <tbody>
@@ -376,6 +444,21 @@ for (const [id, m] of [["x-hours", "hours"], ["x-eps", "eps"]])
     drawCurve();
   });
 buildResults(); drawCurve();
+
+const player = document.getElementById("player"), pv = document.getElementById("player-video");
+for (const b of document.querySelectorAll(".setting")) {
+  if (!b.dataset.video) { b.disabled = true; continue; }
+  b.querySelector(".soon").remove();
+  if (b.dataset.poster) b.querySelector(".thumb").insertAdjacentHTML("afterbegin", `<img src="${b.dataset.poster}" alt="">`);
+  b.addEventListener("click", () => {
+    document.getElementById("player-title").textContent = b.dataset.title;
+    pv.src = b.dataset.video; player.showModal(); pv.play();
+  });
+}
+const closePlayer = () => { pv.pause(); player.close(); };
+document.getElementById("player-close").addEventListener("click", closePlayer);
+player.addEventListener("click", e => { if (e.target === player) closePlayer(); });
+player.addEventListener("close", () => pv.pause());
 </script>
 </body>
 </html>
