@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import shutil
 import tempfile
@@ -300,6 +301,7 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
         ),
         image_size=str(args.get("policy_image_size", "") or ""),
         stream_episodes=bool(args.get("stream_episodes", True)),
+        eval_only=bool(args.get("eval_only", False)),
         exploration_scale=float(args.get("exploration_scale", 0.0)),
         exploration_correlation=float(
             args.get("exploration_correlation", 0.85)
@@ -352,9 +354,42 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
             shutil.rmtree(temporary_calibration, ignore_errors=True)
 
 
+def _log_camera_mounts(ctx: Any) -> None:
+    """Prints each pan/tilt mount's defaults and step ranges, which per-episode
+    aiming (``camera_mounts[...].set(pan, tilt)`` in encoder steps) needs."""
+    try:
+        mounts = getattr(ctx.cell, "camera_mounts", None) or {}
+        axes = getattr(getattr(ctx.cell, "device_config", None), "camera_mounts", None) or {}
+        for name, mount in mounts.items():
+            print(
+                "[rlt] camera mount "
+                + json.dumps(
+                    {
+                        "camera": name,
+                        "default_pan": getattr(mount, "default_pan", None),
+                        "default_tilt": getattr(mount, "default_tilt", None),
+                        "mount_config": getattr(mount, "mount_config", None),
+                        "axes": {
+                            axis: {
+                                key: getattr(getattr(axes.get(name), axis, None), key, None)
+                                for key in ("default", "minimum", "maximum", "std")
+                            }
+                            for axis in ("pan", "tilt")
+                        },
+                        "job_aim": ctx.args.get("camera_aim"),
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
+    except Exception as exc:  # diagnostics only
+        print(f"[rlt] camera mounts unavailable: {exc}", flush=True)
+
+
 @main
 def run(ctx: Context) -> dict[str, Any]:
     # Validate before downloads, OpenPI imports, or robot construction.
+    _log_camera_mounts(ctx)
     if require_so101_embodiment(ctx, "Armnet RLT actor"):
         raise NotImplementedError(
             "the production RLT actor supports only single-arm 'lerobot/so-101'; "

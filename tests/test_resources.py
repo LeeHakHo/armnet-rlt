@@ -16,3 +16,12 @@ def test_rendezvous_is_namespaced_by_config_and_run() -> None:
     assert rendezvous_key("config", "run-1") == "config:run-1"
     with pytest.raises(ValueError):
         rendezvous_key("config", "")
+
+
+def test_policy_rendezvous_key_includes_the_instance(monkeypatch) -> None:
+    from armnet_rlt.resources import policy_rendezvous_key
+
+    monkeypatch.delenv("RLT_POLICY_INSTANCE", raising=False)
+    assert policy_rendezvous_key("cfg") == "policy:cfg"
+    monkeypatch.setenv("RLT_POLICY_INSTANCE", "20062")
+    assert policy_rendezvous_key("cfg") == "policy:cfg:20062"

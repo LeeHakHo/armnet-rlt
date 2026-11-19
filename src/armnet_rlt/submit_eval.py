@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -161,6 +162,12 @@ def _parser() -> argparse.ArgumentParser:
         default=EVAL_VARIATION_SEED,
     )
     parser.add_argument(
+        "--eval-schedule",
+        default="",
+        help="JSON list of {condition, count, rail_range?, brightness?} entries run back "
+        "to back from scene episode 0, so one job covers several evaluation conditions",
+    )
+    parser.add_argument(
         "--armnet.variation-episode-offset",
         dest="variation_episode_offset",
         type=int,
@@ -172,6 +179,11 @@ def _parser() -> argparse.ArgumentParser:
         default=True,
     )
     parser.add_argument("--record-dataset-repo-id")
+    parser.add_argument(
+        "--record-public",
+        action="store_true",
+        help="Make the recorded dataset public instead of private",
+    )
     parser.add_argument("--hf-user")
     parser.add_argument("--no-push-to-hub", action="store_true")
     parser.add_argument(
@@ -245,6 +257,7 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "base_exploration_scale", 0.0)
         ),
         "record_dataset": bool(args.record_dataset),
+        "record_public": bool(getattr(args, "record_public", False)),
         "robot_telemetry": str(args.robot_telemetry),
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
         "use_rerun": rerun_job_enabled(args),
@@ -275,6 +288,8 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
     if str(getattr(args, "action_noise_std", "") or "").strip():
         job_args["action_noise_std"] = str(args.action_noise_std)
         job_args["action_noise_seed"] = int(getattr(args, "action_noise_seed", 0))
+    if getattr(args, "eval_schedule", ""):
+        job_args["eval_schedule"] = json.loads(args.eval_schedule)
     if args.variation_episode_offset:
         job_args["variation_episode_offset"] = int(
             args.variation_episode_offset

@@ -23,8 +23,8 @@ serves π0.5 or a LeRobot policy and the cell only streams observations to it
 
 ```bash
 scripts/setup.sh                                # once: environments, .env, secrets, base model, actor image
-CELL=<cell-id> scripts/run.sh dsrl              # train: rlt, dsrl or dit
-CELL=<cell-id> scripts/eval.sh <run-id>         # evaluate: 7 conditions x 3 seeds x 5 rollouts
+CELL=<cell-id> scripts/run.sh dsrl              # train 400 episodes (rlt, dsrl or dit), evaluating every 100
+CELL=<cell-id> scripts/eval.sh <checkpoint>     # evaluate one checkpoint: 30 ID + 30 OOD rollouts
 ```
 
 `setup.sh` asks for an Armnet API key and a Hugging Face token with read access
@@ -35,23 +35,41 @@ it and run `ngrok config add-authtoken <token>` once, or set `PUBLIC_HOST`,
 `TLS_CERT` and `TLS_KEY` in `.env` for your own TLS ingress.
 
 `run.sh` starts the policy server and the learner on this machine's GPU (`GPU=<index>`
-picks one), submits the actor to `CELL`, resubmits it after a cell or safety stop, and
-stops everything on Ctrl-C. Logs go to `experiment-data/logs/<run-id>/`.
+picks one) and trains for a fixed number of robot episodes, the same budget for every
+method. It submits the actor to `CELL` in segments of `--eval-every` episodes
+(resubmitting after a cell or safety stop); after each segment the learner saves a
+checkpoint and the evaluation below runs on it, so a run of 400 episodes is evaluated
+after 100, 200, 300 and 400. Evaluation rollouts are not training episodes. Ctrl-C stops
+everything. Logs go to `experiment-data/logs/<run-id>/`, evaluations to
+`experiment-data/eval/<run-id>-ep<episodes>/results.jsonl`.
 
 | Option | Meaning |
 |---|---|
 | `--model <dir or HF repo>` | Starting policy: an OpenPI π0.5 checkpoint for `rlt`/`dsrl`, a LeRobot `pretrained_model` for `dit` |
 | `--policy-type <type>` | `dit` without `--model`: LeRobot policy trained on the demos first (`multi_task_dit`, `diffusion`, `smolvla`, ...) |
-| `--steps N` | Learner steps (`rlt` 30000, `dsrl` 400000, `dit` 1800) |
+| `--episodes N`, `--eval-every N` | Training episodes (400) and the evaluation interval (100; 0 disables) |
+| `--steps N` | `rlt`/`dsrl` learner step cap, which also sets the learning-rate schedule (30000, 400000) |
 | `--std X`, `--trip-penalty X` | Exploration std (0.5) and safety-trip reward (`rlt` 5, `dsrl` 2) |
-| `--resume <run-id>` | Continue a run from its newest checkpoint |
+| `--resume <run-id>` | Continue an `rlt`/`dsrl` run from its newest checkpoint |
 | `--learner-args "..."`, `--actor-args "..."` | Extra flags for the learner or `rlt-submit-actor` |
 
-`eval.sh` takes an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
-`pretrained_model` directory, and prints success and safety trips per condition.
-`--conditions`, `--seeds` and `--rollouts` narrow it. Results go to
-`experiment-data/eval/<label>-<condition>/results.jsonl`; a rerun skips seeds already
-there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
+Every evaluation is the same. For each of the scene seeds 1042, 2042 and 3042 it runs 10
+ID rollouts and 5 rollouts each of OOD-easy and OOD-hard, so 30 ID and 30 OOD in all,
+deterministic, with the same scenes for every policy; a safety trip counts as a failure.
+The OOD levels stack changes (see [ID / OOD settings](#id--ood-settings)). It runs as one
+cell job that sets the rail, the light and the top camera tilt per episode
+(`--eval-schedule`); `EVAL_ONE_JOB=0` splits it into one job per level.
+`eval.sh` runs it on an `rlt`/`dsrl` run id (newest step, or `--step N`) or a LeRobot
+`pretrained_model` directory and prints success per condition and the ID and OOD
+totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skips
+conditions already there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
+Every training and evaluation episode is recorded, with a label per episode (`meta/armnet_rollouts.jsonl`: success, condition, seed, rail, light, tilt, duration), to a public dataset under your Hugging Face account (`RECORD_REPO`, set by `scripts/setup.sh`; `RECORD_PUBLIC=0` keeps it private, `RECORD=0` turns recording off).
+
+To put a method on the [leaderboard](https://leehakho.github.io/armnet-rlt/#/leaderboard), run it on
+cell-01 and cell-03 with `--leaderboard "<method name>"` (and optionally `--leaderboard-code <url>`).
+After the last evaluation the run opens a pull request on the `AutoRLBench/armnet-leaderboard`
+dataset; the scorer recounts every checkpoint from the episode labels in the recorded datasets,
+checks the protocol and lists the method once both cells are in (`scripts/leaderboard.py`).
 
 ### Changing the models
 
@@ -144,7 +162,7 @@ Pass the printed ref as `--image-ref` to every submit command below.
 
 ```bash
 export RLT_CONFIG=pi05_rlt_busybox_multitask_singlearm_minmax
-uv run hf download AutoRLBench/pi05_busybox_minmax_step5k_rltoken \
+envs/venv-learner/bin/hf download AutoRLBench/pi05_busybox_minmax_step5k_rltoken \
   --local-dir checkpoints/pi05_rltoken                                  # π0.5 with the RL token
 envs/venv-learner/bin/rlt-local assets --config-name "$RLT_CONFIG"      # normalization stats
 envs/venv-openpi/bin/rlt-local cache --preset multitask                 # demo cache (RLT pretraining)
@@ -228,12 +246,11 @@ CELL=<cell-id> scripts/run.sh dit
 
 It trains the starting policy on the demo dataset (300 `lerobot-train`
 steps; reused once it exists), starts the LeRobot policy server and the
-learner, and submits the actor until the learner finishes. The learner
-fine-tunes on the successful episodes the actor streams: each round is 30, 30,
-then 20 rollouts (the last entry repeats) followed by 300 learner steps, half
-of every batch from the demo dataset; every round saves a `pretrained_model`
-checkpoint of the EMA weights (decay 0.998) and pushes it to the policy
-server. A run ends at 1800 steps. Logs go to `experiment-data/logs/<run-id>`.
+learner, and submits the actor for the episode budget. The learner fine-tunes on
+the successful episodes the actor streams: each round is 20 rollouts followed by
+300 learner steps, half of every batch from the demo dataset; every round saves a
+`pretrained_model` checkpoint of the EMA weights (decay 0.998) and pushes it to the
+policy server. Logs go to `experiment-data/logs/<run-id>`.
 `--actor-args` takes extra actor flags.
 
 ## Policy server
@@ -334,7 +351,13 @@ instead of a training run; with one checkpoint whose copy the cell loads as
 
 ### ID / OOD settings
 
-In-distribution training and evaluation vary only the rail, over 0.65-0.75:
+| Level | Rail | Brightness | Top camera tilt |
+|---|---|---|---|
+| ID | 0.65-0.75 (around 0.7) | 30 | the cell's aim (`RLT_CELL_CAMERA_AIM`) |
+| OOD-easy | 0.60-0.65 or 0.75-0.80 | 15 | 0.2567 |
+| OOD-hard | 0.60-0.65 or 0.75-0.80 | 5 | 0.3472 |
+
+Training uses the ID settings:
 
 ```bash
 --armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras \
@@ -342,26 +365,10 @@ In-distribution training and evaluation vary only the rail, over 0.65-0.75:
 --variation-scale-max 0.2 --variation-frontier-fraction 0
 ```
 
-Each out-of-distribution condition adds one change to the ID flags, so the
-rail is still drawn per episode from the variation seed. The flags go to
-`rlt-submit-actor` (LeRobot policies) and `rlt-submit-eval`
-(frozen RLT and DSRL actors):
-
-| Axis | Flag | Levels |
-|---|---|---|
-| Rail | `--variation-rail-range` | `0.60,0.65`, `0.75,0.80` |
-| Brightness | `--armnet.lightbox-brightness` | 15, 5 |
-| Top camera tilt | `--armnet.camera-aim top.tilt=` | 0.2567, 0.3472 |
-| Action noise | `--action-noise-std` | k = 0.05, 0.15 |
-
-`--variation-rail-range` draws each episode's rail uniformly from the range.
-Action noise std is k times the per-joint std of the demo actions, one value
-per joint (k = 0.05: `0.57,2.40,2.05,0.26,1.27,0.52`; k = 0.15:
-`1.71,7.19,6.14,0.79,3.82,1.55`).
-
-Evaluation runs every condition with seeds 1042, 2042 and 3042
-(`--armnet.variation-seed S --action-noise-seed S`), 10 deterministic
-rollouts per seed, for every policy.
+`rlt-submit-actor` and `rlt-submit-eval` take `--eval-schedule '<json>'`, a list of
+`{"condition", "count", "seed", "rail_ranges", "brightness"}` entries run back to back;
+`scripts/lib.sh:eval_checkpoint` builds it. Rail positions are fractions of the usable
+rail, brightness a percentage, tilt a fraction of the mount's travel.
 
 ## Modal learner
 
@@ -393,9 +400,10 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | `CELL`, `GPU` | Cell and local GPU index for `scripts/run.sh` and `scripts/eval.sh` |
 | `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of ngrok; ports in `scripts/lib.sh` |
 | `WANDB_PROJECT` | Weights & Biases project for the learners (optional) |
+| `RECORD_REPO`, `RECORD_PUBLIC`, `RECORD` | Training and evaluation episodes (top, front and wrist video, one label per episode) are recorded as public Hugging Face datasets `<RECORD_REPO>_<run>_...`; `scripts/setup.sh` sets `RECORD_REPO=<your user>/armnet`, `RECORD_PUBLIC=0` keeps them private, `RECORD=0` turns recording off |
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `RLT_AUTH_SECRET` secret |
 | `RLT_DATA_ROOT` | Local learner data root (default `./experiment-data`) |
-| `RLT_CELL_CAMERA_AIM` | Camera aim per cell, `cell-01=top.tilt=0.5;cell-02=...` |
+| `RLT_CELL_CAMERA_AIM` | Camera aim per cell; the scripts default to `cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19`, which centre the busybox in the top view |
 | `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET` | Modal resource names |
 | `OPENPI_REPO`, `OPENPI_REVISION` | OpenPI fork with the `pi0_rl` model |
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,12 @@ def _parser() -> argparse.ArgumentParser:
         dest="stream_episodes",
         action="store_false",
         help="Do not send successful LeRobot policy episodes to the learner",
+    )
+    parser.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="LeRobot policy: send nothing to the learner, so the rollouts do not "
+        "count toward its training (evaluation during a run)",
     )
     parser.add_argument("--language-instruction", required=True)
     parser.add_argument(
@@ -196,6 +203,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Seed for deterministic per-rollout scene variation",
     )
     parser.add_argument(
+        "--eval-schedule",
+        default="",
+        help="JSON list of {condition, count, rail_range?, brightness?} entries run back "
+        "to back from scene episode 0, so one job covers several evaluation conditions",
+    )
+    parser.add_argument(
         "--armnet.variation-episode-offset",
         dest="variation_episode_offset",
         type=int,
@@ -264,6 +277,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--record-dataset-repo-id",
         help="Explicit HuggingFace dataset repo id (defaults to eval_rlt_<task>_<timestamp>)",
+    )
+    parser.add_argument(
+        "--record-public",
+        action="store_true",
+        help="Make the recorded dataset public instead of private",
     )
     parser.add_argument("--hf-user", help="HuggingFace username for generated dataset ids")
     parser.add_argument("--no-push-to-hub", action="store_true")
@@ -369,6 +387,7 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "scene_retry_limit": int(getattr(args, "scene_retry_limit", 1)),
         "retry_after_round": bool(getattr(args, "retry_after_round", False)),
         "record_dataset": bool(getattr(args, "record_dataset", True)),
+        "record_public": bool(getattr(args, "record_public", False)),
         "robot_telemetry": str(getattr(args, "robot_telemetry", "full")),
         "robot_telemetry_strict": bool(
             getattr(args, "robot_telemetry_strict", False)
@@ -389,6 +408,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
             job_args["policy_image_size"] = str(args.policy_image_size)
         if not getattr(args, "stream_episodes", True):
             job_args["stream_episodes"] = False
+        if getattr(args, "eval_only", False):
+            job_args["eval_only"] = True
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell
@@ -447,6 +468,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
     )
     if variation_offset < 0:
         raise ValueError("variation_episode_offset must be nonnegative")
+    if getattr(args, "eval_schedule", ""):
+        job_args["eval_schedule"] = json.loads(args.eval_schedule)
     if variation_offset:
         job_args["variation_episode_offset"] = variation_offset
     job_args.update(variation_curriculum_job_args(args))

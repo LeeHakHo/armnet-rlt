@@ -349,6 +349,9 @@ def run_lerobot_actor(
         _close_robot_and_cell(robot, ctx.cell)
         raise
     stream_episodes = bool(_field(cfg, "stream_episodes", True))
+    # Evaluation during a run: the learner must not count these rollouts.
+    eval_only = bool(_field(cfg, "eval_only", False))
+    stream_episodes = stream_episodes and not eval_only
 
     transport = transport or LearnerTransport(
         cfg.actor_learner, subscribe_parameters=remote is None
@@ -398,6 +401,7 @@ def run_lerobot_actor(
     session_id = uuid.uuid4().hex
     cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
+    episode_labels: list[dict[str, Any]] = []
     states: list[np.ndarray] = []
     actions: list[np.ndarray] = []
     frames: dict[str, list[bytes]] = {key: [] for key in shapes}
@@ -599,7 +603,8 @@ def run_lerobot_actor(
                     command_ticks=command_ticks,
                     hardware_clamp_steps=hardware_clamp_steps,
                 )
-                transport.send_episode(payload, _serialize_interaction(record))
+                if not eval_only:
+                    transport.send_episode(payload, _serialize_interaction(record))
                 rollout_record = record.to_dict()
                 per_rollout.append(rollout_record)
                 print(
@@ -615,13 +620,14 @@ def run_lerobot_actor(
                 if eval_dataset is not None and frame_writer is not None:
                     from armnet_rlt.dataset_recording import save_episode
 
-                    save_episode(
+                    if save_episode(
                         ctx,
                         eval_dataset,
                         frame_writer,
                         telemetry=telemetry,
                         ticks=command_ticks,
-                    )
+                    ):
+                        episode_labels.append(rollout_record)
                 reset_policy()
                 states = []
                 actions = []
@@ -710,7 +716,7 @@ def run_lerobot_actor(
         try:
             operator.stop()
             eval_dataset_url = finish_rollout_recording(
-                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id
+                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels
             )
         finally:
             transport.close()
