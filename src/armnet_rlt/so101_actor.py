@@ -873,6 +873,32 @@ def open_rollout_recording(
     return eval_dataset, frame_writer, telemetry, eval_repo_id
 
 
+def call_while_recording(call: Any, period_s: float, record_wait: Any) -> Any:
+    """Runs ``call`` (a policy request) on a worker thread and calls ``record_wait`` every
+    ``period_s`` until it returns, so the recording keeps up while the loop waits for an
+    action chunk; the arm still moves towards its last goal meanwhile. Returns the call's
+    result or raises its exception."""
+    import threading
+
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["result"] = call()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the loop's thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(period_s)
+    while worker.is_alive():
+        record_wait()
+        worker.join(period_s)
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
 def record_rollout_frame(
     ctx: Any,
     cfg: Any,
@@ -1120,6 +1146,9 @@ def run_actor(
     policy_variant = "online_rlt"
     episode_curriculum_scale = 0.0
     command_ticks = 0
+    # Frames written this episode, and the last tick's (requested, actual) action: frames
+    # recorded while the loop waits for an action chunk repeat it.
+    recording = {"frames": 0, "last_action": None}
     hardware_clamp_steps = 0
     deviation_sum = torch.zeros(action_dim, dtype=torch.float64)
     deviation_count = 0
@@ -1400,7 +1429,7 @@ def run_actor(
                         eval_dataset,
                         frame_writer,
                         telemetry=telemetry,
-                        ticks=command_ticks,
+                        ticks=recording["frames"],
                     ):
                         episode_labels.append(rollout_record)
                         episode_frame_times.append(list(getattr(frame_writer, "frame_times", [])))
@@ -1418,6 +1447,7 @@ def run_actor(
                 policy_reload_count = 0
                 episode_started_at = ""
                 command_ticks = 0
+                recording = {"frames": 0, "last_action": None}
                 hardware_clamp_steps = 0
                 deviation_sum.zero_()
                 deviation_count = 0
@@ -1444,22 +1474,47 @@ def run_actor(
                 dtype=torch.float32,
                 device=device,
             )
+            def record_wait() -> None:
+                # A frame while the policy request is out: the cameras and joints now,
+                # with the last tick's action (no new command is sent meanwhile).
+                if frame_writer is None or recording["last_action"] is None:
+                    return
+                try:
+                    wait_obs = robot.get_observation()
+                except Exception:  # noqa: BLE001 - the loop's next read reports it
+                    return
+                last_requested, last_actual = recording["last_action"]
+                record_rollout_frame(
+                    ctx, cfg, frame_writer, telemetry, raw_obs=wait_obs,
+                    requested_action=last_requested, actual_action=last_actual,
+                    task=instruction if not frozen_eval else f"{instruction} [{policy_variant}]",
+                    frame_index=recording["frames"], period_s=period_s,
+                    tick=time.perf_counter(), action_write_s=0.0,
+                )
+                recording["frames"] += 1
+
             if chunk is None or chunk_index >= execute_len:
                 if dsrl:
                     # The base variant is the unsteered base policy: zero-mean
                     # unit noise. The steered variant explores around the
                     # actor's noise with exploration_scale as its deviation.
                     steer = policy_variant != "base"
-                    result = policy.infer(
-                        build_policy_observation(raw_obs, instruction),
-                        exploration_std=exploration_scale if steer else 1.0,
-                        steer=steer,
+                    policy_obs = build_policy_observation(raw_obs, instruction)
+                    result = call_while_recording(
+                        lambda: policy.infer(
+                            policy_obs,
+                            exploration_std=exploration_scale if steer else 1.0,
+                            steer=steer,
+                        ),
+                        period_s,
+                        record_wait,
                     )
                     if result.noise is None:
                         raise RuntimeError("policy server returned no DSRL noise")
                 else:
-                    result = policy.infer(
-                        build_policy_observation(raw_obs, instruction)
+                    policy_obs = build_policy_observation(raw_obs, instruction)
+                    result = call_while_recording(
+                        lambda: policy.infer(policy_obs), period_s, record_wait
                     )
                 token = torch.from_numpy(result.rl_token).float().to(device)
                 reference_np = result.action_chunk[:reference_len, :action_dim]
@@ -1591,11 +1646,13 @@ def run_actor(
                     if not frozen_eval
                     else f"{instruction} [{policy_variant}]"
                 ),
-                frame_index=command_ticks,
+                frame_index=recording["frames"],
                 period_s=period_s,
                 tick=tick,
                 action_write_s=action_write_s,
             )
+            recording["frames"] += 1
+            recording["last_action"] = (requested_action, actual_action)
             if any(
                 not math.isclose(
                     float(actual_action.get(key, requested_action[key])),

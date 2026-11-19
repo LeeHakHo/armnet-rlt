@@ -185,20 +185,28 @@ CLIPS = os.environ.get("CLIPS_REPO", "AutoRLBench/armnet-benchmark-rollouts")
 
 def clips(repo: str, existing: set[str]) -> dict[int, str]:
     """One video per episode of a recorded dataset: the episode only, top above front and
-    wrist (640x540), retimed to the episode's real duration (the recording keeps its
-    nominal fps while the control loop ticks slower). Uploads the missing ones to the
+    wrist (640x540), in real time. The recording has one frame per control tick at a
+    nominal fps; each frame is shown for its real duration from meta/armnet_frame_times.jsonl,
+    so the arm holds still while the loop waits for an action chunk (without that file the
+    clip is stretched evenly to the episode's duration). Uploads the missing ones to the
     public CLIPS dataset and returns {episode index: URL}."""
     import subprocess
 
     from huggingface_hub import HfApi, snapshot_download
 
-    prefix = f"clips/{repo.replace('/', '__')}/"
+    prefix = f"clips/v2/{repo.replace('/', '__')}/"
     rows, spans = labels(repo)
     urls = {i: f"https://huggingface.co/datasets/{CLIPS}/resolve/main/{prefix}{i:03d}.mp4" for i in range(min(len(rows), len(spans)))}
     todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
     if not todo:
         return urls
     root = Path(snapshot_download(repo, repo_type="dataset"))
+    times_file = root / "meta/armnet_frame_times.jsonl"
+    frame_times = {}
+    if times_file.exists():
+        for line in times_file.read_text().splitlines():
+            row = json.loads(line)
+            frame_times[int(row["episode_index"])] = row["frame_times_s"]
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / prefix
         out_dir.mkdir(parents=True)
@@ -211,11 +219,26 @@ def clips(repo: str, existing: set[str]) -> dict[int, str]:
             key = "videos/observation.images.top"
             recorded = float(s[key + "/to_timestamp"]) - float(s[key + "/from_timestamp"])
             stretch = (rows[i].get("duration_s") or recorded) / recorded if recorded > 0 else 1.0
-            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *parts, "-filter_complex",
-                            "[0:v]scale=640:360,setsar=1[t];[1:v]scale=320:180,setsar=1[f];[2:v]scale=320:180,setsar=1[w];"
-                            f"[f][w]hstack=2[b];[t][b]vstack=2:shortest=1,setpts={stretch:.4f}*PTS,fps=20,format=yuv420p[v]",
-                            "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-movflags", "+faststart",
-                            str(out_dir / f"{i:03d}.mp4")], check=True)
+            tile = ("[0:v]scale=640:360,setsar=1[t];[1:v]scale=320:180,setsar=1[f];[2:v]scale=320:180,setsar=1[w];"
+                    "[f][w]hstack=2[b];[t][b]vstack=2:shortest=1")
+            out = out_dir / f"{i:03d}.mp4"
+            encode = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+            times = frame_times.get(i)
+            if times and len(times) > 1:
+                frames = Path(tmp) / f"frames-{i}"
+                frames.mkdir()
+                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *parts, "-filter_complex", tile + "[v]",
+                                "-map", "[v]", "-q:v", "3", str(frames / "%05d.jpg")], check=True)
+                images = sorted(frames.glob("*.jpg"))[: len(times)]
+                durations = [b - a for a, b in zip(times, times[1:])] + [0.05]
+                listing = frames / "list.txt"
+                listing.write_text("".join(f"file '{img}'\nduration {max(d, 0.001):.4f}\n" for img, d in zip(images, durations))
+                                   + f"file '{images[-1]}'\n")
+                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+                                "-vf", "fps=20", *encode, str(out)], check=True)
+            else:
+                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *parts, "-filter_complex",
+                                tile + f",setpts={stretch:.4f}*PTS,fps=20[v]", "-map", "[v]", *encode, str(out)], check=True)
         HfApi().upload_folder(folder_path=tmp, repo_id=CLIPS, repo_type="dataset", commit_message=f"Episode videos of {repo}")
     return urls
 
