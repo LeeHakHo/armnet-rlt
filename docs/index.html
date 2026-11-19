@@ -110,6 +110,7 @@ img, video { max-width: 100% }
 
 /* leaderboard */
 .lb td.m { font-weight: 600 }
+.tagchip { font: 500 11.5px var(--mono); background: var(--box); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; white-space: nowrap }
 .lb th:nth-child(2), .lb td:nth-child(2) { text-align: left }
 .lb td.rank { font: 600 14px var(--mono); color: var(--muted); width: 1% }
 .lb tr.you td { color: var(--muted); font-style: italic }
@@ -132,7 +133,7 @@ img, video { max-width: 100% }
 @media (max-width: 860px) { .settings { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
 @media (max-width: 480px) { .settings { grid-template-columns: 1fr } }
 dialog.player { border: 0; padding: 0; background: transparent; max-width: min(960px, 94vw); width: 100% }
-dialog.player::backdrop { background: rgba(0, 0, 0, .75) }
+dialog.player::backdrop { background: rgba(0, 0, 0, .92) }
 dialog.player video { width: 100%; display: block; border-radius: 6px; background: #000 }
 dialog.player .bar2 { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #fff; font-size: 13px; padding: 8px 2px }
 dialog.player button { font: 500 13px var(--body); color: #fff; background: transparent; border: 1px solid rgba(255, 255, 255, .5); border-radius: 4px; padding: 4px 10px; cursor: pointer }
@@ -454,7 +455,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <label class="check"><input type="checkbox" id="lb-open"> Open-source methods only</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
       <p class="legend2"><b>ID</b> = test scenes like the ones the robot trained in. <b>OOD</b> = harder scenes: the busybox moved outside the training range, dimmer light and a tilted camera. Each number is how many of 60 test episodes pressed the button; higher is better.</p>
-      <p class="cap">Click a method for its per-cell curves and every evaluation.</p>
+      <p class="cap">Tag tells entries of the same method apart (versions or settings); Date is the latest submission. Click a method for its per-cell curves and every evaluation.</p>
       <div id="lb-detail"></div>
       <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. Iterative DiT and RLT are being re-run on this protocol; their earlier results are on the <a href="#/" data-goto="v1">overview</a>.</p>
     </section>
@@ -475,8 +476,8 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       <h2>Submit your method</h2>
       <ol class="steps">
         <li><b>Set up once</b><pre>scripts/setup.sh</pre><p class="note">Also sets <code>RECORD_REPO=&lt;your Hugging Face user&gt;/armnet</code>: every training and test episode is recorded, with all three cameras and a label per episode, as a public dataset under your account.</p></li>
-        <li><b>Train and submit on both cells</b><pre>CELL=cell-01 scripts/run.sh &lt;method&gt; --leaderboard "My Method" --leaderboard-code &lt;repo url&gt;
-CELL=cell-03 scripts/run.sh &lt;method&gt; --leaderboard "My Method" --leaderboard-code &lt;repo url&gt;</pre><p class="note">Each run trains for 400 episodes and is tested after every 100. After the last test it opens a pull request on <a href="https://huggingface.co/datasets/AutoRLBench/armnet-leaderboard">AutoRLBench/armnet-leaderboard</a> listing its recordings. Your own policy: see <a href="#/" data-goto="howto">How to use</a>.</p></li>
+        <li><b>Train and submit on both cells</b><pre>CELL=cell-01 scripts/run.sh &lt;method&gt; --leaderboard "My Method" --leaderboard-tag v1 --leaderboard-code &lt;repo url&gt;
+CELL=cell-03 scripts/run.sh &lt;method&gt; --leaderboard "My Method" --leaderboard-tag v1 --leaderboard-code &lt;repo url&gt;</pre><p class="note">Each run trains for 400 episodes and is tested after every 100. After the last test it opens a pull request on <a href="https://huggingface.co/datasets/AutoRLBench/armnet-leaderboard">AutoRLBench/armnet-leaderboard</a> listing its recordings. Use the same tag on both cells; a new tag adds a separate entry of the same method, the same tag replaces it. Your own policy: see <a href="#/" data-goto="howto">How to use</a>.</p></li>
         <li><b>Scored automatically</b><p class="note" style="opacity:1">The scorer recounts every test from the episode labels in your recordings, checks the cell, the seeds and the number of episodes, and merges the pull request. Your method appears once both cells are in; its episodes and videos appear under All results.</p></li>
       </ol>
       <p class="cap">Rules: same task, cells and protocol; at most 400 training episodes per cell; no training on test episodes. Extra offline data (demonstrations, reward models) is allowed; say so in <code>--leaderboard-notes</code>. Success is decided by the busybox and every episode is on video, so anyone can check a result.</p>
@@ -556,11 +557,11 @@ const player = document.getElementById("player"), pv = document.getElementById("
 document.body.appendChild(player);
 // Protocol videos: the ID rollout and one-factor variations of it (filled after recording).
 const SHOWCASE = {
-  id: "",
-  rail: [["rail 0.62", ""], ["rail 0.78", ""]],
-  light: [["light 15 %", ""], ["light 5 %", ""]],
-  tilt: [["tilt 0.2567", ""], ["tilt 0.3472", ""]],
-  poster: {}
+  id: "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/000.mp4",
+  rail: [["rail 0.62", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/001.mp4"], ["rail 0.78", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/002.mp4"]],
+  light: [["light 15 %", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/003.mp4"], ["light 5 %", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/004.mp4"]],
+  tilt: [["tilt 0.2567", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/005.mp4"], ["tilt 0.3472", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119/006.mp4"]],
+  poster: { id: "img/showcase-000.jpg", rail: "img/showcase-001.jpg", light: "img/showcase-004.jpg", tilt: "img/showcase-006.jpg" }
 };
 const cv = document.getElementById("cmp-video"), cmpB = document.getElementById("cmp-b"), levels = document.getElementById("cmp-levels");
 function play(title, src) {
@@ -637,12 +638,13 @@ function drawBoard() {
   const rows = BOARD.filter(e => !open || e.open_source)
     .sort((a, b) => (b.best.id[0] + b.best.ood[0]) - (a.best.id[0] + a.best.ood[0]));
   const name = e => `<span class="dot" style="--c:${color(e.key)}"></span>${e.name}<span class="cellsplit">${e.detail}</span>`;
-  const head = `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th></tr></thead><tbody>`;
-  const body = rows.map((e, i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${cellTd(e.best.id)}${cellTd(e.best.ood)}</tr>`).join("");
+  const head = `<thead><tr><th>#</th><th>Method</th><th>Tag</th><th>Date</th><th>ID / 60</th><th>OOD / 60</th></tr></thead><tbody>`;
+  const meta = e => `<td><span class="tagchip">${e.tag || "–"}</span></td><td class="h">${e.date || "–"}</td>`;
+  const body = rows.map((e, i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${meta(e)}${cellTd(e.best.id)}${cellTd(e.best.ood)}</tr>`).join("");
   document.getElementById("lb-full").innerHTML = head + body
-    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="2" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
+    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="4" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
   document.getElementById("lb-mini").innerHTML = head + rows.slice(0, 5).map((e, i) =>
-    `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${cellTd(e.best.id)}${cellTd(e.best.ood)}</tr>`).join("") + `</tbody>`;
+    `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${meta(e)}${cellTd(e.best.id)}${cellTd(e.best.ood)}</tr>`).join("") + `</tbody>`;
   for (const tr of document.querySelectorAll("#lb-full tr.row"))
     tr.addEventListener("click", () => detail(tr.dataset.key));
 }
@@ -670,7 +672,7 @@ function detail(key) {
   const eps = [...new Set(cells.flatMap(c => Object.keys(e.curve[c])))].sort((a, b) => a - b);
   const mark = (v, at, x) => at == x ? `<b>${v}</b>` : v;
   const fmt = (c, cell, x) => c ? `${mark(c.id[0], e.best.id[2], x)} / ${mark(ood(c)[0], e.best.ood[2], x)}` : "–";
-  box.innerHTML = `<h3>${e.name} <span class="muted small">${e.detail}${e.code ? ` · <a href="${e.code}">code</a>` : ""}</span></h3>`
+  box.innerHTML = `<h3>${e.name}${e.tag ? ` <span class="tagchip">${e.tag}</span>` : ""} <span class="muted small">${e.detail}${e.code ? ` · <a href="${e.code}">code</a>` : ""}</span></h3>`
     + `<div class="mini-curves fig">${cells.map(c => curveSvg(e, c)).join("")}</div>`
     + `<div class="tbl"><table><thead><tr><th>ID / OOD successes (of 30 each)</th>${eps.map(x => `<th>${x} episodes</th>`).join("")}</tr></thead><tbody>`
     + cells.map(c => `<tr><td>${c}</td>${eps.map(x => `<td class="h">${fmt(e.curve[c][x], c, x)}</td>`).join("")}</tr>`).join("")
@@ -696,7 +698,7 @@ const OPEN = new Set();
 function drawRolls() {
   const sel = Object.fromEntries([...document.querySelectorAll("#rs-filters select")].map(s => [s.dataset.k, s.value]));
   const rows = ROLLS.filter(r => FILTERS.every(([k]) => !sel[k] || valueOf(r, k) === sel[k]));
-  const nameOf = key => (BOARD.find(e => e.key === key) || {}).name || key;
+  const nameOf = key => { const e = BOARD.find(x => x.key === key); return e ? e.name + (e.tag ? ` [${e.tag}]` : "") : key; };
   const jobs = new Map();
   for (const r of rows) {
     const key = `${r.method}|${r.cell}|${r.episodes}`;
