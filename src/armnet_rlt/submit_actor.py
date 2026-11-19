@@ -278,6 +278,11 @@ def _parser() -> argparse.ArgumentParser:
         "--record-dataset-repo-id",
         help="Explicit HuggingFace dataset repo id (defaults to eval_rlt_<task>_<timestamp>)",
     )
+    parser.add_argument(
+        "--record-public",
+        action="store_true",
+        help="Make the recorded dataset public instead of private",
+    )
     parser.add_argument("--hf-user", help="HuggingFace username for generated dataset ids")
     parser.add_argument("--no-push-to-hub", action="store_true")
     parser.add_argument(
@@ -382,6 +387,7 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "scene_retry_limit": int(getattr(args, "scene_retry_limit", 1)),
         "retry_after_round": bool(getattr(args, "retry_after_round", False)),
         "record_dataset": bool(getattr(args, "record_dataset", True)),
+        "record_public": bool(getattr(args, "record_public", False)),
         "robot_telemetry": str(getattr(args, "robot_telemetry", "full")),
         "robot_telemetry_strict": bool(
             getattr(args, "robot_telemetry_strict", False)

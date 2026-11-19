@@ -11,9 +11,10 @@
 #   LEARNER_PORT, POLICY_PORT   local ports (50051, 50052)
 #   WANDB_PROJECT     log learners to this Weights & Biases project
 #   RECORD_REPO       <hf user or org>/<prefix> (setup.sh: <your user>/armnet): the cell
-#                     records training and evaluation episodes, all three cameras, as
-#                     private LeRobot datasets <prefix>_<run or label>_...; RECORD=0 turns
-#                     it off
+#                     records training and evaluation episodes, all three cameras and a
+#                     label per episode (meta/armnet_rollouts.jsonl), as public LeRobot
+#                     datasets <prefix>_<run or label>_...; RECORD_PUBLIC=0 keeps them
+#                     private, RECORD=0 turns recording off
 #   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661, cell-01 0.19)
 
 CALLER_PWD=$PWD
@@ -86,12 +87,13 @@ actor_common() {
   return 0
 }
 
-# Recording flags for one cell job in RECORD_ARGS: a private dataset <RECORD_REPO>_<name>,
-# or none when RECORD=0 or RECORD_REPO is unset.
+# Recording flags for one cell job in RECORD_ARGS: a dataset <RECORD_REPO>_<name>, public
+# unless RECORD_PUBLIC=0, or none when RECORD=0 or RECORD_REPO is unset.
 record_args() {  # <name>
   RECORD_ARGS=()
   [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ] || return 0
   RECORD_ARGS=(--record-dataset --record-dataset-repo-id "${RECORD_REPO}_$1")
+  [ "${RECORD_PUBLIC:-1}" = 0 ] || RECORD_ARGS+=(--record-public)
 }
 
 # Scene variation of the ID condition: the rail is drawn per episode around 0.7 (0.65-0.75).

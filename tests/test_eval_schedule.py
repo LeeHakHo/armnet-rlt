@@ -43,3 +43,21 @@ def test_tally_counts_rollouts_per_condition_and_seed(tmp_path) -> None:
         capture_output=True, text=True, check=True,
     ).stdout.split("\n")
     assert out[:4] == ["4", "id 1042 2 1 1", "ood-hard 2042 1 1 0", "all -1 1 1 0"]
+
+
+def test_record_args_follow_record_settings() -> None:
+    import subprocess
+    from pathlib import Path
+
+    lib = Path(__file__).resolve().parents[1] / "scripts" / "lib.sh"
+
+    def args(env: str) -> str:
+        return subprocess.run(
+            ["bash", "-c", f'export {env}; . "{lib}" >/dev/null; record_args run_x; echo "${{RECORD_ARGS[*]}}"'],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    assert args("RECORD_REPO=u/armnet") == "--record-dataset --record-dataset-repo-id u/armnet_run_x --record-public"
+    assert args("RECORD_REPO=u/armnet RECORD_PUBLIC=0") == "--record-dataset --record-dataset-repo-id u/armnet_run_x"
+    assert args("RECORD_REPO=u/armnet RECORD=0") == ""
+    assert args("RECORD_REPO=") == ""

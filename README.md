@@ -63,7 +63,7 @@ cell job that sets the rail, the light and the top camera tilt per episode
 `pretrained_model` directory and prints success per condition and the ID and OOD
 totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skips
 conditions already there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
-Every training and evaluation episode is recorded to a private dataset under your Hugging Face account (`RECORD_REPO`, set by `scripts/setup.sh`; `RECORD=0` turns it off).
+Every training and evaluation episode is recorded, with a label per episode (`meta/armnet_rollouts.jsonl`: success, condition, seed, rail, light, tilt, duration), to a public dataset under your Hugging Face account (`RECORD_REPO`, set by `scripts/setup.sh`; `RECORD_PUBLIC=0` keeps it private, `RECORD=0` turns recording off).
 
 ### Changing the models
 
@@ -394,7 +394,7 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | `CELL`, `GPU` | Cell and local GPU index for `scripts/run.sh` and `scripts/eval.sh` |
 | `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of ngrok; ports in `scripts/lib.sh` |
 | `WANDB_PROJECT` | Weights & Biases project for the learners (optional) |
-| `RECORD_REPO`, `RECORD` | Training and evaluation episodes (top, front and wrist video) are recorded as private Hugging Face datasets `<RECORD_REPO>_<run>_...`; `scripts/setup.sh` sets `RECORD_REPO=<your user>/armnet`, `RECORD=0` turns recording off |
+| `RECORD_REPO`, `RECORD_PUBLIC`, `RECORD` | Training and evaluation episodes (top, front and wrist video, one label per episode) are recorded as public Hugging Face datasets `<RECORD_REPO>_<run>_...`; `scripts/setup.sh` sets `RECORD_REPO=<your user>/armnet`, `RECORD_PUBLIC=0` keeps them private, `RECORD=0` turns recording off |
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `RLT_AUTH_SECRET` secret |
 | `RLT_DATA_ROOT` | Local learner data root (default `./experiment-data`) |
 | `RLT_CELL_CAMERA_AIM` | Camera aim per cell; the scripts default to `cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19`, which centre the busybox in the top view |
