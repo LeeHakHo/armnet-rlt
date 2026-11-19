@@ -110,11 +110,14 @@ def finish_dataset(
     telemetry: Any = None,
     public: bool = False,
     episode_labels: list[dict[str, Any]] | None = None,
+    episode_frame_times: list[list[float]] | None = None,
 ) -> str | None:
     """Discard an interrupted episode, finalize, and optionally upload.
 
     ``episode_labels`` (one dict per saved episode, in episode order) is written to
-    ``meta/armnet_rollouts.jsonl`` next to the dataset and uploaded with it.
+    ``meta/armnet_rollouts.jsonl`` and ``episode_frame_times`` (per episode, each frame's
+    time in seconds since the episode's first frame) to ``meta/armnet_frame_times.jsonl``,
+    next to the dataset and uploaded with it.
     """
     frame_writer.flush()
     if dataset.has_pending_frames():
@@ -126,26 +129,34 @@ def finish_dataset(
     if telemetry is not None:
         telemetry.close()
     dataset.finalize()
-    labels_path = None
+    sidecars = []
     if episode_labels is not None:
-        labels_path = Path(dataset.root) / "meta" / "armnet_rollouts.jsonl"
-        labels_path.parent.mkdir(parents=True, exist_ok=True)
-        labels_path.write_text(
-            "".join(json.dumps(row, default=str) + "\n" for row in episode_labels)
-        )
+        sidecars.append(("armnet_rollouts.jsonl", [json.dumps(row, default=str) for row in episode_labels]))
+    if episode_frame_times is not None:
+        sidecars.append(("armnet_frame_times.jsonl", [
+            json.dumps({"episode_index": i, "frame_times_s": times})
+            for i, times in enumerate(episode_frame_times)
+        ]))
+    paths = []
+    for name, lines in sidecars:
+        path = Path(dataset.root) / "meta" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(line + "\n" for line in lines))
+        paths.append(path)
     if not push_to_hub:
         return None
     ctx.report_progress(f"uploading RLT eval dataset to HuggingFace: {repo_id}")
     dataset.push_to_hub(private=not public)
-    if labels_path is not None:
+    if paths:
         from huggingface_hub import HfApi
 
-        HfApi().upload_file(
-            path_or_fileobj=str(labels_path),
-            path_in_repo="meta/armnet_rollouts.jsonl",
-            repo_id=repo_id,
-            repo_type="dataset",
-        )
+        for path in paths:
+            HfApi().upload_file(
+                path_or_fileobj=str(path),
+                path_in_repo=f"meta/{path.name}",
+                repo_id=repo_id,
+                repo_type="dataset",
+            )
     url = f"https://huggingface.co/datasets/{repo_id}"
     ctx.report_progress(f"RLT eval dataset uploaded: {url}")
     return url
