@@ -194,10 +194,13 @@ def score(args: argparse.Namespace) -> None:
             api.merge_pull_request(LEADERBOARD, pr.num, repo_type="dataset")
     entries = []
     # Submissions without a date (older submit scripts) take their file's commit date.
-    dates = {item.path: item.last_commit.date.strftime("%Y-%m-%d")
-             for item in api.list_repo_tree(LEADERBOARD, path_in_repo="submissions", recursive=True, expand=True, repo_type="dataset")
-             if getattr(item, "last_commit", None)}
-    for f in list_repo_files(LEADERBOARD, repo_type="dataset"):
+    files = list_repo_files(LEADERBOARD, repo_type="dataset")
+    dates = {}
+    if any(f.startswith("submissions/") for f in files):
+        dates = {item.path: item.last_commit.date.strftime("%Y-%m-%d")
+                 for item in api.list_repo_tree(LEADERBOARD, path_in_repo="submissions", recursive=True, expand=True, repo_type="dataset")
+                 if getattr(item, "last_commit", None)}
+    for f in files:
         if f.startswith("submissions/") and f.endswith(".json"):
             sub = json.loads(Path(hf_hub_download(LEADERBOARD, f, repo_type="dataset")).read_text())
             sub.setdefault("date", dates.get(f, ""))
