@@ -65,6 +65,12 @@ totals. Results go to `experiment-data/eval/<label>/results.jsonl`; a rerun skip
 conditions already there. `WANDB_PROJECT=<project>` logs learners to Weights & Biases (`wandb login` first).
 Every training and evaluation episode is recorded, with a label per episode (`meta/armnet_rollouts.jsonl`: success, condition, seed, rail, light, tilt, duration), to a public dataset under your Hugging Face account (`RECORD_REPO`, set by `scripts/setup.sh`; `RECORD_PUBLIC=0` keeps it private, `RECORD=0` turns recording off).
 
+To put a method on the [leaderboard](https://leehakho.github.io/armnet-rlt/#/leaderboard), run it on
+cell-01 and cell-03 with `--leaderboard "<method name>"` (and optionally `--leaderboard-code <url>`).
+After the last evaluation the run opens a pull request on the `AutoRLBench/armnet-leaderboard`
+dataset; the scorer recounts every checkpoint from the episode labels in the recorded datasets,
+checks the protocol and lists the method once both cells are in (`scripts/leaderboard.py`).
+
 ### Changing the models
 
 | What | Where |
