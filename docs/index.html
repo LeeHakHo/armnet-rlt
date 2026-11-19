@@ -169,11 +169,7 @@ details.fold.sub > figure { margin-top: 10px }
 .flow span { font-size: 13px; color: var(--muted) }
 @media (max-width: 720px) { .flow { grid-template-columns: 1fr } }
 .legend2 { font-size: 13px; color: var(--muted); margin-top: -6px }
-.terms { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; font-size: 14px }
-.terms dt { font-weight: 600 }
-.terms dd { margin: 0; color: var(--muted) }
-@media (max-width: 560px) { .terms { grid-template-columns: 1fr } .terms dd { margin-bottom: 6px } }
-
+@media (max-width: 560px) { 
 /* pages */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -28px }
 .tabs a { font: 500 14px var(--body); color: var(--muted); text-decoration: none; padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px }
@@ -401,17 +397,6 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
       </div>
       <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen.<br>DiT starts from 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
     </figure>
-  </div></details>
-
-  <details class="fold" id="terms"><summary><h2>Terms</h2><span class="muted small">episode, cell, checkpoint, ID / OOD, safety trip</span></summary><div class="fold-body">
-    <dl class="terms">
-      <dt>Episode</dt><dd>One attempt at the task, at most 30 s. The cell resets the scene before the next one.</dd>
-      <dt>Cell</dt><dd>A booth with an SO-101 arm, a busybox on a motorised rail, a light box and three cameras. We use cell-01 and cell-03.</dd>
-      <dt>Checkpoint</dt><dd>The policy saved after every 100 training episodes; each is tested on 60 episodes.</dd>
-      <dt>ID / OOD</dt><dd>In-distribution test scenes match training; out-of-distribution scenes move the rail, dim the light and tilt the camera.</dd>
-      <dt>Safety trip</dt><dd>The arm drew too much current and the cell stopped it; it counts as a failure.</dd>
-      <dt>Seed</dt><dd>Fixes the random scene changes, so every method is tested on the same scenes.</dd>
-    </dl>
   </div></details>
 
   <details class="fold" id="v1"><summary><h2>Earlier results (v1 protocol)</h2><span class="muted small">one cell, 105 rollouts per method; not comparable with the leaderboard</span></summary><div class="fold-body">
