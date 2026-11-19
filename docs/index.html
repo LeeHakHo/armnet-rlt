@@ -134,6 +134,36 @@ dialog.player::backdrop { background: rgba(0, 0, 0, .75) }
 dialog.player video { width: 100%; display: block; border-radius: 6px; background: #000 }
 dialog.player .bar2 { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #fff; font-size: 13px; padding: 8px 2px }
 dialog.player button { font: 500 13px var(--body); color: #fff; background: transparent; border: 1px solid rgba(255, 255, 255, .5); border-radius: 4px; padding: 4px 10px; cursor: pointer }
+
+/* pages */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -28px }
+.tabs a { font: 500 14px var(--body); color: var(--muted); text-decoration: none; padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px }
+.tabs a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--fg) }
+.tabs a:hover { color: var(--fg) }
+.view { display: grid; gap: 52px }
+.view[hidden] { display: none }
+.check { display: inline-flex; gap: 8px; align-items: center; font-size: 13.5px; color: var(--muted) }
+.ci { display: block; font: 11px var(--mono); color: var(--muted) }
+.lb tbody tr.row { cursor: pointer }
+.lb tbody tr.row:hover td, .lb tbody tr.open td { background: var(--box) }
+#lb-detail { display: grid; gap: 12px }
+#lb-detail h3 { margin: 0; font: 600 17px var(--body) }
+.mini-curves { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px }
+.mini-curves svg { width: 100%; height: auto; display: block; min-width: 0 }
+.mini-curves svg text { fill: var(--muted); font: 11px var(--mono) }
+@media (max-width: 720px) { .mini-curves { grid-template-columns: 1fr } }
+#lb-chart text { fill: var(--muted); font: 11.5px var(--mono) }
+#lb-chart .lbl2 { fill: var(--fg); font: 600 12.5px var(--body) }
+.filters { display: flex; flex-wrap: wrap; gap: 10px }
+.filters label { display: grid; gap: 3px; font-size: 12px; color: var(--muted) }
+.filters select { font: 13px var(--body); padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--fg) }
+#rs-table td, #rs-table th { text-align: left }
+#rs-table td.h { text-align: right }
+.ok { color: #1f7a3f; font-weight: 600 } .no { color: var(--muted) } .trip { color: var(--dit); font-weight: 600 }
+.vbtn { font: 500 12px var(--body); border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 4px; padding: 3px 9px; cursor: pointer }
+.pager { display: flex; justify-content: center }
+.pager button, .btn { font: 500 13px var(--body); border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 5px; padding: 7px 14px; cursor: pointer; text-decoration: none; display: inline-block }
+.btn { background: var(--fg); color: var(--bg); border-color: var(--fg) }
 </style>
 </head>
 <body>
@@ -148,36 +178,20 @@ dialog.player button { font: 500 13px var(--body); color: #fff; background: tran
     <a class="qr" href="https://leehakho.github.io/armnet-rlt/" aria-label="QR code for this page"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 33 33" class="qr-svg"><path fill="#fff" d="M0 0h33v33h-33z"/><path class="qrline" stroke="#1d2a23" d="M2 2.5h7m1 0h2m3 0h1m3 0h2m3 0h7m-29 1h1m5 0h1m2 0h1m1 0h1m2 0h1m2 0h1m2 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m1 0h1m1 0h3m1 0h3m2 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m4 0h1m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h2m2 0h1m3 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h7m2 0h2m3 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-20 1h1m1 0h2m1 0h2m-16 1h1m1 0h1m3 0h2m5 0h3m4 0h1m2 0h1m2 0h1m1 0h1m-29 1h2m2 0h1m2 0h1m1 0h4m2 0h3m1 0h2m1 0h2m3 0h2m-29 1h2m4 0h1m1 0h1m3 0h4m1 0h10m1 0h1m-28 1h2m4 0h2m1 0h2m4 0h1m1 0h1m1 0h2m2 0h2m-25 1h3m1 0h2m2 0h6m1 0h1m2 0h1m2 0h2m4 0h1m-28 1h1m3 0h1m2 0h1m2 0h3m1 0h1m1 0h1m1 0h2m1 0h2m3 0h2m-28 1h2m3 0h2m3 0h2m2 0h2m2 0h1m1 0h1m2 0h1m3 0h1m-28 1h4m2 0h2m3 0h2m2 0h1m1 0h1m2 0h3m-24 1h2m1 0h2m1 0h1m4 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h2m4 0h1m-26 1h1m1 0h1m1 0h2m1 0h2m3 0h3m1 0h2m1 0h2m2 0h3m-29 1h3m1 0h3m2 0h2m2 0h3m3 0h1m1 0h1m2 0h2m2 0h1m-26 1h3m1 0h2m3 0h1m1 0h1m1 0h1m1 0h3m2 0h1m-24 1h2m3 0h2m1 0h1m1 0h1m1 0h5m2 0h7m1 0h1m-20 1h3m2 0h4m3 0h1m3 0h3m1 0h1m-29 1h7m1 0h2m2 0h1m2 0h4m1 0h1m1 0h1m1 0h1m3 0h1m-29 1h1m5 0h1m2 0h1m1 0h1m1 0h1m1 0h2m1 0h3m3 0h1m3 0h1m-29 1h1m1 0h3m1 0h1m4 0h3m2 0h1m2 0h7m2 0h1m-29 1h1m1 0h3m1 0h1m4 0h1m3 0h2m1 0h1m1 0h2m2 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m1 0h1m1 0h2m1 0h3m2 0h1m2 0h1m2 0h1m2 0h2m-29 1h1m5 0h1m4 0h1m2 0h1m1 0h1m3 0h3m2 0h1m-26 1h7m1 0h2m1 0h1m2 0h1m1 0h1m2 0h2m4 0h1m2 0h1"/></svg><span>scan to open</span></a>
   </header>
 
+  <nav class="tabs" aria-label="Pages">
+    <a href="#/" data-tab="home">Overview</a><a href="#/leaderboard" data-tab="leaderboard">Leaderboard</a><a href="#/results" data-tab="results">Results</a><a href="#/submit" data-tab="submit">Submit</a>
+  </nav>
+
+  <div class="view" data-view="home">
   <figure>
     <video src="demo-cell03.mp4" poster="demo-cell03.jpg" autoplay muted loop playsinline controls aria-label="The arm presses the green button on cell-03, seen from the top, front and wrist cameras" style="width:100%;height:auto;border-radius:6px;background:var(--box);display:block"></video>
     <figcaption>Example episode on cell-03, a second cell with the same setup. Real time; top, front and wrist cameras.</figcaption>
   </figure>
 
-  <section id="leaderboard">
+  <section>
     <h2>Leaderboard</h2>
-    <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes on each cell. It is scored after its last training episode on the <a href="#protocol">evaluation protocol</a>: 60 rollouts per cell, so 120 in all.</p>
-    <div class="tbl"><table class="lb">
-      <thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD-easy / 30</th><th>OOD-hard / 30</th><th>OOD / 60</th><th>Total / 120</th><th>Safety trips</th></tr></thead>
-      <tbody>
-        <tr class="c-dsrl"><td class="rank">1</td><td class="m"><span class="dot"></span>DSRL <span class="cellsplit">π0.5 + SAC noise actor</span></td>
-          <td class="h">42 <span class="muted">(70%)</span><span class="cellsplit">27 · 15</span></td>
-          <td class="h">2<span class="cellsplit">2 · 0</span></td>
-          <td class="h">2<span class="cellsplit">1 · 1</span></td>
-          <td class="h">4 <span class="muted">(7%)</span><span class="cellsplit">3 · 1</span></td>
-          <td class="h"><b>46</b> <span class="muted">(38%)</span><span class="cellsplit">30 · 16</span></td>
-          <td class="h">0</td></tr>
-        <tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="6" style="text-align:left">train with <code>scripts/run.sh</code>; the same script evaluates it</td></tr>
-      </tbody>
-    </table></div>
-    <p class="cap">Small numbers: cell-01 · cell-03. Ranked by total successes. Iterative DiT and RLT are being re-run on this protocol; their earlier results are <a href="#v1">below</a>.</p>
-    <div class="tbl"><table>
-      <thead><tr><th>DSRL during training</th><th>100 episodes</th><th>200</th><th>300</th><th>400</th></tr></thead>
-      <tbody>
-        <tr><td>ID / 60</td><td class="h">31</td><td class="h">39</td><td class="h">40</td><td class="h">42</td></tr>
-        <tr><td>OOD / 60</td><td class="h">16</td><td class="h">7</td><td class="h">8</td><td class="h">4</td></tr>
-      </tbody>
-    </table></div>
-    <p class="cap">Both cells summed. Training only sees ID scenes: ID success rises while OOD success falls.</p>
+    <div class="tbl"><table class="lb" id="lb-mini"></table></div>
+    <p class="cap">Top entries on the current protocol. <a href="#/leaderboard">Full leaderboard</a> with confidence intervals and per-cell results · <a href="#/results">every evaluation rollout</a> · <a href="#/submit">submit your method</a>.</p>
   </section>
 
   <section>
@@ -231,7 +245,7 @@ dialog.player button { font: 500 13px var(--body); color: #fff; background: tran
   </section>
 
   <section>
-    <h2>How to use</h2>
+    <h2 id="howto">How to use</h2>
     <ol class="steps">
       <li><b>Set up once</b><pre>git clone https://github.com/LeeHakHo/armnet-rlt &amp;&amp; cd armnet-rlt
 scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging Face token, then installs the environments, creates the secrets, downloads the base model and builds the actor image.</p></li>
@@ -375,6 +389,48 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     </table></div>
     <p class="cap">One RTX A6000 per run. Robot time is time spent inside episodes; the rest is resets and scene changes. Not counted: π0.5 fine-tuning, DiT pretraining, and evaluation (about 1.5 h of robot time per checkpoint).</p>
   </section>
+  </div>
+  <div class="view" data-view="leaderboard" hidden>
+    <section>
+      <h2>Leaderboard</h2>
+      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base, then is scored on the <a href="#/" data-goto="protocol">evaluation protocol</a>: 30 ID + 30 OOD rollouts per cell, 120 in all. Ranked by total successes.</p>
+      <label class="check"><input type="checkbox" id="lb-open"> Open-source methods only</label>
+      <div class="tbl"><table class="lb" id="lb-full"></table></div>
+      <p class="cap">Small numbers: cell-01 · cell-03. Brackets: 95% Wilson interval of the success rate. Click a method for its per-cell results and training curve.</p>
+      <figure>
+        <div class="fig"><svg id="lb-chart" viewBox="0 0 900 220" role="img" aria-label="Success rate of each method with 95% intervals, for ID, OOD and total"></svg></div>
+        <figcaption>Success rate with 95% Wilson intervals. Overlapping intervals mean the difference is within sampling noise at this number of rollouts.</figcaption>
+      </figure>
+      <div id="lb-detail"></div>
+      <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. Iterative DiT and RLT are being re-run on this protocol; their earlier results are on the <a href="#/" data-goto="v1">overview</a>.</p>
+    </section>
+  </div>
+
+  <div class="view" data-view="results" hidden>
+    <section>
+      <h2>Evaluation rollouts</h2>
+      <p class="cap">Every evaluation rollout behind the leaderboard, at each checkpoint (100–400 training episodes). Filter, then open a row to watch it when the evaluation was recorded.</p>
+      <div class="filters" id="rs-filters"></div>
+      <p class="cap" id="rs-summary"></p>
+      <div class="tbl"><table id="rs-table"></table></div>
+      <div class="pager"><button id="rs-more">Show more</button></div>
+    </section>
+  </div>
+
+  <div class="view" data-view="submit" hidden>
+    <section>
+      <h2>Submit your method</h2>
+      <ol class="steps">
+        <li><b>Set up and train on each cell</b><pre>scripts/setup.sh
+CELL=cell-01 scripts/run.sh &lt;method&gt; --run-id &lt;name&gt;-cell-01
+CELL=cell-03 scripts/run.sh &lt;method&gt; --run-id &lt;name&gt;-cell-03</pre><p class="note">400 training episodes per cell (the default). The run evaluates itself every 100 episodes on the protocol; the leaderboard uses the evaluation after episode 400. Your own policy: see <a href="#/" data-goto="howto">How to use</a>.</p></li>
+        <li><b>Check the results</b><pre>cat experiment-data/eval/&lt;name&gt;-cell-01-ep400/results.jsonl
+cat experiment-data/eval/&lt;name&gt;-cell-03-ep400/results.jsonl</pre><p class="note">One row per condition and seed. Each row has the checkpoint, rollouts, successes and safety trips.</p></li>
+        <li><b>Open a submission</b><p><a class="btn" href="https://github.com/LeeHakHo/armnet-rlt/issues/new?title=Leaderboard%20submission%3A%20%3Cmethod%3E&amp;body=Method%3A%0ACode%3A%0AStarting%20checkpoint%3A%0ATraining%20episodes%20per%20cell%3A%20400%0A%0Acell-01%20results.jsonl%3A%0A%60%60%60%0A%0A%60%60%60%0Acell-03%20results.jsonl%3A%0A%60%60%60%0A%0A%60%60%60%0A">Open a GitHub issue</a></p><p class="note">Paste both results.jsonl files and link your code. We check them against the cell job logs on the Armnet orchestrator before listing the method.</p></li>
+      </ol>
+      <p class="cap">Rules: same task, cells and protocol; at most 400 training episodes per cell; no training on evaluation rollouts. Extra offline data (demonstrations, reward models) is allowed but must be stated in the submission and is shown on the leaderboard.</p>
+    </section>
+  </div>
 </div>
 
 <script>
@@ -446,15 +502,168 @@ for (const [id, m] of [["x-hours", "hours"], ["x-eps", "eps"]])
 buildResults(); drawCurve();
 
 const player = document.getElementById("player"), pv = document.getElementById("player-video");
+document.body.appendChild(player);
+function play(title, src) {
+  document.getElementById("player-title").textContent = title;
+  pv.src = src; player.showModal(); pv.play();
+}
 for (const b of document.querySelectorAll(".setting")) {
   if (!b.dataset.video) { b.disabled = true; continue; }
   b.querySelector(".soon").remove();
   if (b.dataset.poster) b.querySelector(".thumb").insertAdjacentHTML("afterbegin", `<img src="${b.dataset.poster}" alt="">`);
-  b.addEventListener("click", () => {
-    document.getElementById("player-title").textContent = b.dataset.title;
-    pv.src = b.dataset.video; player.showModal(); pv.play();
-  });
+  b.addEventListener("click", () => play(b.dataset.title, b.dataset.video));
 }
+
+/* pages */
+function route() {
+  const name = (location.hash.match(/^#\/([a-z]*)/) || [])[1] || "home";
+  for (const v of document.querySelectorAll(".view")) v.hidden = v.dataset.view !== name;
+  for (const a of document.querySelectorAll(".tabs a")) {
+    if (a.dataset.tab === name) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+  if (name === "home" && route.goto) { const el = document.getElementById(route.goto); if (el) el.scrollIntoView(); route.goto = null; }
+  else window.scrollTo(0, 0);
+}
+document.addEventListener("click", e => {
+  const a = e.target.closest("a[data-goto]");
+  if (!a) return;
+  route.goto = a.dataset.goto;
+  if (location.hash === "#/" || location.hash === "") { e.preventDefault(); route(); }
+});
+window.addEventListener("hashchange", route);
+route();
+
+/* leaderboard */
+const COLOR = { dsrl: "var(--dsrl)", rlt: "var(--rlt)", dit: "var(--dit)" };
+const color = k => COLOR[k] || COLOR[k.split("-")[0]] || "var(--fg)";
+function wilson(k, n) {
+  if (!n) return [0, 0];
+  const z = 1.96, p = k / n, d = 1 + z * z / n;
+  const c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
+  return [Math.max(0, c - h), Math.min(1, c + h)];
+}
+const pct = x => Math.round(x * 100);
+const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
+const ood = c => add(c["ood-easy"], c["ood-hard"]);
+const tot = c => add(c.id, ood(c));
+function score(e) {
+  const cells = Object.keys(e.cells).sort().map(k => e.cells[k]);
+  const sum = f => cells.reduce((a, c) => add(a, f(c)), [0, 0]);
+  return { id: sum(c => c.id), easy: sum(c => c["ood-easy"]), hard: sum(c => c["ood-hard"]), ood: sum(ood), total: sum(tot),
+    trips: cells.reduce((a, c) => a + c.trips, 0), split: f => cells.map(c => f(c)[0]).join(" · ") };
+}
+function cellTd([k, n], split, ci) {
+  const [lo, hi] = wilson(k, n);
+  return `<td class="h">${k} <span class="muted">(${pct(k / n)}%)</span>${ci ? `<span class="ci">[${pct(lo)}–${pct(hi)}%]</span>` : ""}<span class="cellsplit">${split}</span></td>`;
+}
+let BOARD = [];
+function drawBoard() {
+  const open = document.getElementById("lb-open").checked;
+  const rows = BOARD.filter(e => !open || e.open_source).map(e => [e, score(e)]).sort((a, b) => b[1].total[0] - a[1].total[0]);
+  const name = e => `<span class="dot" style="--c:${color(e.key)}"></span>${e.name}<span class="cellsplit">${e.detail}</span>`;
+  document.getElementById("lb-full").innerHTML =
+    `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD-easy / 30</th><th>OOD-hard / 30</th><th>OOD / 60</th><th>Total / 120</th><th>Safety trips</th></tr></thead><tbody>`
+    + rows.map(([e, s], i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>`
+      + cellTd(s.id, s.split(c => c.id), true) + cellTd(s.easy, s.split(c => c["ood-easy"]), true) + cellTd(s.hard, s.split(c => c["ood-hard"]), true)
+      + cellTd(s.ood, s.split(ood), true) + cellTd(s.total, s.split(tot), true) + `<td class="h">${s.trips}</td></tr>`).join("")
+    + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="6" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
+  document.getElementById("lb-mini").innerHTML =
+    `<thead><tr><th>#</th><th>Method</th><th>ID / 60</th><th>OOD / 60</th><th>Total / 120</th></tr></thead><tbody>`
+    + rows.slice(0, 5).map(([e, s], i) => `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>`
+      + cellTd(s.id, s.split(c => c.id)) + cellTd(s.ood, s.split(ood)) + cellTd(s.total, s.split(tot)) + `</tr>`).join("") + `</tbody>`;
+  for (const tr of document.querySelectorAll("#lb-full tr.row"))
+    tr.addEventListener("click", () => detail(tr.dataset.key));
+  drawChart(rows);
+  if (rows.length) detail(rows[0][0].key);
+}
+function drawChart(rows) {
+  const W = 900, L = 200, R = 20, rowH = 22, groups = ["ID", "OOD", "Total"];
+  const H = 30 + rows.length * (groups.length * rowH + 14);
+  const X = v => L + (W - L - R) * v;
+  let s = "", y = 30;
+  for (let p = 0; p <= 1.0001; p += 0.25)
+    s += `<line x1="${X(p)}" x2="${X(p)}" y1="16" y2="${H - 6}" stroke="var(--grid)"/><text x="${X(p)}" y="11" text-anchor="middle">${pct(p)}%</text>`;
+  for (const [e, sc] of rows) {
+    [sc.id, sc.ood, sc.total].forEach(([k, n], g) => {
+      const [lo, hi] = wilson(k, n), cy = y + g * rowH, c = color(e.key);
+      s += `<text class="lbl2" x="8" y="${cy + 4}">${g ? "" : e.name}</text><text x="${L - 10}" y="${cy + 4}" text-anchor="end">${groups[g]} ${k}/${n}</text>`
+        + `<path d="M${X(lo)},${cy - 5}V${cy + 5}M${X(lo)},${cy}H${X(hi)}M${X(hi)},${cy - 5}V${cy + 5}" stroke="${c}" stroke-width="2" fill="none"/>`
+        + `<circle cx="${X(k / n)}" cy="${cy}" r="5" fill="${c}"><title>${e.name} ${groups[g]}: ${pct(k / n)}% [${pct(lo)}–${pct(hi)}%]</title></circle>`;
+    });
+    y += groups.length * rowH + 14;
+  }
+  const svg = document.getElementById("lb-chart");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = s;
+}
+function curveSvg(e, cell) {
+  const pts = Object.entries(e.curve[cell]).map(([ep, c]) => [+ep, c.id[0] / c.id[1], ood(c)[0] / ood(c)[1]]);
+  const W = 420, H = 180, L = 40, R = 30, T = 24, B = 30, xmax = Math.max(400, ...pts.map(p => p[0]));
+  const X = v => L + (W - L - R) * v / xmax, Y = v => T + (H - T - B) * (1 - v);
+  let s = `<text x="${L}" y="13" style="font-weight:600;fill:var(--fg)">${cell}</text>`;
+  for (let p = 0; p <= 1.0001; p += 0.5) s += `<line x1="${L}" x2="${W - R}" y1="${Y(p)}" y2="${Y(p)}" stroke="var(--grid)"/><text x="${L - 6}" y="${Y(p) + 4}" text-anchor="end">${pct(p)}%</text>`;
+  for (const p of pts) s += `<text x="${X(p[0])}" y="${H - 10}" text-anchor="middle">${p[0]}</text>`;
+  for (const [i, lab, dash] of [[1, "ID", ""], [2, "OOD", "5 4"]]) {
+    s += `<path d="${pts.map((p, j) => `${j ? "L" : "M"}${X(p[0])},${Y(p[i])}`).join("")}" fill="none" stroke="${color(e.key)}" stroke-width="2" stroke-dasharray="${dash}"/>`;
+    const last = pts[pts.length - 1];
+    s += `<text x="${X(last[0]) + 8}" y="${Y(last[i]) + 4}">${lab}</text>`;
+    for (const p of pts) s += `<circle cx="${X(p[0])}" cy="${Y(p[i])}" r="3.5" fill="var(--surface)" stroke="${color(e.key)}" stroke-width="2"><title>${lab} after ${p[0]} episodes: ${pct(p[i])}%</title></circle>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${e.name} on ${cell}: ID and OOD success after each 100 training episodes">${s}</svg>`;
+}
+function detail(key) {
+  const e = BOARD.find(x => x.key === key), box = document.getElementById("lb-detail");
+  for (const tr of document.querySelectorAll("#lb-full tr.row")) tr.classList.toggle("open", tr.dataset.key === key);
+  const cells = Object.keys(e.curve).sort();
+  const eps = [...new Set(cells.flatMap(c => Object.keys(e.curve[c])))].sort((a, b) => a - b);
+  const fmt = c => c ? `${c.id[0]} / ${ood(c)[0]}` : "–";
+  box.innerHTML = `<h3>${e.name} <span class="muted small">${e.detail}${e.code ? ` · <a href="${e.code}">code</a>` : ""}</span></h3>`
+    + `<div class="mini-curves fig">${cells.map(c => curveSvg(e, c)).join("")}</div>`
+    + `<div class="tbl"><table><thead><tr><th>ID / OOD successes (of 30 each)</th>${eps.map(x => `<th>${x} episodes</th>`).join("")}</tr></thead><tbody>`
+    + cells.map(c => `<tr><td>${c}</td>${eps.map(x => `<td class="h">${fmt(e.curve[c][x])}</td>`).join("")}</tr>`).join("")
+    + `</tbody></table></div><p class="cap">Solid: ID, dashed: OOD. The leaderboard scores the evaluation after episode ${e.scored_at}. <a href="#/results" data-method="${e.key}">See its rollouts</a>.</p>`;
+}
+document.getElementById("lb-open").addEventListener("change", drawBoard);
+
+/* results browser */
+let ROLLS = [], shown = 50;
+const FILTERS = [["method", "Method"], ["cell", "Cell"], ["episodes", "Training episodes"], ["condition", "Condition"], ["seed", "Seed"], ["result", "Result"]];
+const resultOf = r => r.outcome === "safety_trip" ? "safety trip" : r.success ? "success" : "failure";
+const valueOf = (r, k) => String(k === "result" ? resultOf(r) : r[k]);
+function buildFilters() {
+  const box = document.getElementById("rs-filters");
+  box.innerHTML = FILTERS.map(([k, label]) => {
+    const vals = [...new Set(ROLLS.map(r => valueOf(r, k)))].sort((a, b) => isNaN(a) ? (a > b ? 1 : -1) : a - b);
+    return `<label>${label}<select data-k="${k}"><option value="">all</option>${vals.map(v => `<option>${v}</option>`).join("")}</select></label>`;
+  }).join("");
+  for (const s of box.querySelectorAll("select")) s.addEventListener("change", () => { shown = 50; drawRolls(); });
+}
+function drawRolls() {
+  const sel = Object.fromEntries([...document.querySelectorAll("#rs-filters select")].map(s => [s.dataset.k, s.value]));
+  const rows = ROLLS.filter(r => FILTERS.every(([k]) => !sel[k] || valueOf(r, k) === sel[k]));
+  const k = rows.filter(r => r.success).length, [lo, hi] = wilson(k, rows.length);
+  document.getElementById("rs-summary").textContent = rows.length
+    ? `${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%, 95% interval ${pct(lo)}–${pct(hi)}%) · ${rows.filter(r => r.video).length} with video`
+    : "No rollouts match.";
+  const nameOf = key => (BOARD.find(e => e.key === key) || {}).name || key;
+  document.getElementById("rs-table").innerHTML =
+    `<thead><tr><th>Method</th><th>Cell</th><th>Episodes</th><th>Condition</th><th>Seed</th><th>Rail</th><th>Light</th><th>Top tilt</th><th>Result</th><th>Time</th><th>Video</th></tr></thead><tbody>`
+    + rows.slice(0, shown).map(r => `<tr><td>${nameOf(r.method)}</td><td>${r.cell}</td><td class="h">${r.episodes}</td><td>${r.condition}</td><td class="h">${r.seed}</td>`
+      + `<td class="h">${r.rail.toFixed(3)}</td><td class="h">${r.light}%</td><td class="h">${r.tilt == null ? "–" : r.tilt}</td>`
+      + `<td class="${r.outcome === "safety_trip" ? "trip" : r.success ? "ok" : "no"}">${resultOf(r)}</td><td class="h">${r.duration_s.toFixed(1)} s</td>`
+      + `<td>${r.video ? `<button class="vbtn" data-v="${r.video}" data-t="${nameOf(r.method)} · ${r.cell} · ${r.condition} · ${resultOf(r)}">Play</button>` : `<span class="muted">–</span>`}</td></tr>`).join("") + `</tbody>`;
+  document.getElementById("rs-more").hidden = rows.length <= shown;
+  for (const b of document.querySelectorAll("#rs-table .vbtn")) b.addEventListener("click", () => play(b.dataset.t, b.dataset.v));
+}
+document.getElementById("rs-more").addEventListener("click", () => { shown += 100; drawRolls(); });
+document.addEventListener("click", e => {
+  const a = e.target.closest("a[data-method]");
+  const s = a && document.querySelector('#rs-filters select[data-k="method"]');
+  if (s) { s.value = a.dataset.method; shown = 50; drawRolls(); }
+});
+
+Promise.all([fetch("data/leaderboard.json").then(r => r.json()), fetch("data/rollouts.json").then(r => r.json())])
+  .then(([board, rolls]) => { BOARD = board; ROLLS = rolls; drawBoard(); buildFilters(); drawRolls(); })
+  .catch(() => { document.getElementById("lb-mini").innerHTML = `<tbody><tr><td>Could not load the leaderboard data.</td></tr></tbody>`; });
 const closePlayer = () => { pv.pause(); player.close(); };
 document.getElementById("player-close").addEventListener("click", closePlayer);
 player.addEventListener("click", e => { if (e.target === player) closePlayer(); });
