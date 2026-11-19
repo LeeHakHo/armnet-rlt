@@ -890,30 +890,24 @@ def record_rollout_frame(
 ) -> None:
     """Write one control tick to the eval dataset and the telemetry sidecar.
 
-    The dataset keeps real time: a tick that starts more than one period after the
-    previous one (the loop waits for the next action chunk) is written as many frames as
-    periods have passed, so the video shows the arm holding still instead of skipping.
+    One frame per tick. The loop is not evenly spaced (it waits for each new action
+    chunk), so the time of every frame since the episode's first tick is kept on the
+    writer (``frame_times``) and saved with the dataset (meta/armnet_frame_times.jsonl).
     """
     if frame_writer is None:
         return
-    # [episode start, frames written], kept on the writer and reset at each episode's first
-    # tick. Times are taken here: an episode's first loop tick can start before the scene
-    # reset that precedes it.
     now = time.perf_counter()
-    clock = getattr(frame_writer, "real_time_clock", None)
-    if frame_index == 0 or clock is None:
-        clock = [now, 0]
-        frame_writer.real_time_clock = clock
-    due = int((now - clock[0]) / period_s + 1e-6) + 1
-    copies = max(1, due - clock[1])
-    for _ in range(copies):
-        frame_writer.submit_observation(raw_obs, actual_action, task=task)
-        ctx.cell.record_frame()
-    clock[1] += copies
+    if frame_index == 0 or getattr(frame_writer, "episode_start", None) is None:
+        frame_writer.episode_start = now
+        frame_writer.frame_times = []
+    frame_writer.frame_times.append(round(now - frame_writer.episode_start, 4))
+    frame_writer.submit_observation(raw_obs, actual_action, task=task)
+    ctx.cell.record_frame()
     if telemetry is not None:
         telemetry.submit_frame(
             frame_index=frame_index,
-            dataset_timestamp_s=(clock[1] - 1) * period_s,
+            dataset_timestamp_s=frame_index
+            / max(1, int(_field(cfg, "command_fps", 20))),
             action=requested_action,
             client_clipped_action=actual_action,
             observation=raw_obs,
@@ -931,6 +925,7 @@ def finish_rollout_recording(
     telemetry: Any,
     eval_repo_id: str | None,
     episode_labels: list[dict[str, Any]] | None = None,
+    episode_frame_times: list[list[float]] | None = None,
 ) -> str | None:
     """Finalize the eval dataset and push it unless ``no_push_to_hub`` is set;
     public when the job's ``record_public`` arg is set."""
@@ -948,6 +943,7 @@ def finish_rollout_recording(
         telemetry=telemetry,
         public=as_bool(_field(args, "record_public", False)),
         episode_labels=episode_labels,
+        episode_frame_times=episode_frame_times,
     )
 
 
@@ -1112,6 +1108,7 @@ def run_actor(
     cell_id = str(getattr(getattr(ctx, "cell", None), "cell_id", "") or "")
     per_rollout: list[dict[str, Any]] = []
     episode_labels: list[dict[str, Any]] = []
+    episode_frame_times: list[list[float]] = []
     transitions: list[_ChunkTransition] = []
     previous: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None
     chunk: torch.Tensor | None = None
@@ -1406,6 +1403,7 @@ def run_actor(
                         ticks=command_ticks,
                     ):
                         episode_labels.append(rollout_record)
+                        episode_frame_times.append(list(getattr(frame_writer, "frame_times", [])))
                 if getattr(transport, "failed", False):
                     raise ConnectionError(
                         "the learner connection is gone; this episode and "
@@ -1627,7 +1625,8 @@ def run_actor(
         try:
             operator.stop()
             eval_dataset_url = finish_rollout_recording(
-                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels
+                ctx, eval_dataset, frame_writer, telemetry, eval_repo_id, episode_labels,
+                episode_frame_times,
             )
         finally:
             transport.close()
