@@ -110,6 +110,7 @@ img, video { max-width: 100% }
 
 /* leaderboard */
 .lb td.m { font-weight: 600 }
+.lb th:nth-child(2), .lb td:nth-child(2) { text-align: left }
 .lb td.rank { font: 600 14px var(--mono); color: var(--muted); width: 1% }
 .lb tr.you td { color: var(--muted); font-style: italic }
 .lb .cellsplit { display: block; font: 11.5px var(--mono); color: var(--muted); font-weight: 400 }
@@ -169,12 +170,14 @@ details.fold.sub > figure { margin-top: 10px }
 .flow span { font-size: 13px; color: var(--muted) }
 @media (max-width: 720px) { .flow { grid-template-columns: 1fr } }
 .legend2 { font-size: 13px; color: var(--muted); margin-top: -6px }
-@media (max-width: 560px) { 
 /* pages */
-.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -20px }
-.tabs a { font: 500 14px var(--body); color: var(--fg); text-decoration: none; padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface) }
-.tabs a[aria-current="page"] { color: var(--bg); background: var(--fg); border-color: var(--fg) }
-.tabs a:hover:not([aria-current]) { border-color: var(--muted) }
+.tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: -20px }
+.tabs a { display: grid; justify-items: center; gap: 6px; padding: 14px 8px 12px; font: 500 13.5px var(--body); color: var(--muted); text-decoration: none; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); transition: border-color .15s, color .15s, background .15s }
+.tabs a svg { width: 26px; height: 26px }
+.tabs a span { white-space: nowrap }
+.tabs a:hover { color: var(--fg); border-color: var(--muted) }
+.tabs a[aria-current="page"] { color: var(--dsrl); border-color: var(--dsrl); background: color-mix(in srgb, var(--dsrl) 7%, var(--surface)) }
+@media (max-width: 560px) { .tabs { gap: 6px } .tabs a { font-size: 11.5px; padding: 10px 2px; text-align: center } .tabs a span { white-space: normal } .tabs a svg { width: 22px; height: 22px } }
 .view { display: grid; gap: 52px }
 .view[hidden] { display: none }
 .check { display: inline-flex; gap: 8px; align-items: center; font-size: 13.5px; color: var(--muted) }
@@ -212,10 +215,10 @@ details.fold.sub > figure { margin-top: 10px }
   </header>
 
   <nav class="tabs" aria-label="Pages">
-    <a href="#/" data-tab="home">Overview</a>
-    <a href="#/leaderboard" data-tab="leaderboard">Leaderboard</a>
-    <a href="#/results" data-tab="results">All results</a>
-    <a href="#/submit" data-tab="submit">Submit a method</a>
+    <a href="#/" data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg><span>Overview</span></a>
+    <a href="#/leaderboard" data-tab="leaderboard"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4"/><path d="M12 13v4M8 20h8M10 17h4"/></svg><span>Leaderboard</span></a>
+    <a href="#/results" data-tab="results"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9.5v5l4-2.5z"/></svg><span>All results</span></a>
+    <a href="#/submit" data-tab="submit"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 15v4h14v-4"/></svg><span>Submit a method</span></a>
   </nav>
 
   <div class="view" data-view="home">
@@ -233,7 +236,7 @@ details.fold.sub > figure { margin-top: 10px }
     <h2>Leaderboard</h2>
     <div class="tbl"><table class="lb" id="lb-mini"></table></div>
     <p class="legend2"><b>ID</b> = test scenes like the ones the robot trained in. <b>OOD</b> = harder scenes: the busybox moved outside the training range, dimmer light and a tilted camera. Each number is how many of 60 test episodes pressed the button; higher is better.</p>
-    <p class="cap">Top entries on the current protocol. <a href="#/leaderboard">Full leaderboard</a> with confidence intervals and per-cell results · <a href="#/results">every evaluation rollout</a> · <a href="#/submit">submit your method</a>.</p>
+    <p class="cap">Top entries on the current protocol. <a href="#/leaderboard">Full leaderboard</a> with per-cell curves and every checkpoint · <a href="#/results">every evaluation rollout</a> · <a href="#/submit">submit your method</a>.</p>
   </section>
 
   <details class="fold"><summary><h2>How the system runs</h2><span class="muted small">the cell runs the actor; inference and training run on your GPU</span></summary><div class="fold-body">
