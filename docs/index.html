@@ -474,14 +474,12 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
     <section>
       <h2>Submit your method</h2>
       <ol class="steps">
-        <li><b>Set up and train on each cell</b><pre>scripts/setup.sh
-CELL=cell-01 scripts/run.sh &lt;method&gt; --run-id &lt;name&gt;-cell-01
-CELL=cell-03 scripts/run.sh &lt;method&gt; --run-id &lt;name&gt;-cell-03</pre><p class="note">400 training episodes per cell (the default). The run evaluates itself every 100 episodes on the protocol; the leaderboard uses the evaluation after episode 400. Your own policy: see <a href="#/" data-goto="howto">How to use</a>.</p></li>
-        <li><b>Check the results</b><pre>cat experiment-data/eval/&lt;name&gt;-cell-01-ep400/results.jsonl
-cat experiment-data/eval/&lt;name&gt;-cell-03-ep400/results.jsonl</pre><p class="note">One row per condition and seed. Each row has the checkpoint, rollouts, successes and safety trips.</p></li>
-        <li><b>Open a submission</b><p><a class="btn" href="https://github.com/LeeHakHo/armnet-rlt/issues/new?title=Leaderboard%20submission%3A%20%3Cmethod%3E&amp;body=Method%3A%0ACode%3A%0AStarting%20checkpoint%3A%0ATraining%20episodes%20per%20cell%3A%20400%0A%0Acell-01%20results.jsonl%3A%0A%60%60%60%0A%0A%60%60%60%0Acell-03%20results.jsonl%3A%0A%60%60%60%0A%0A%60%60%60%0A">Open a GitHub issue</a></p><p class="note">Paste both results.jsonl files and link your code. We check them against the cell job logs on the Armnet orchestrator before listing the method.</p></li>
+        <li><b>Set up once</b><pre>scripts/setup.sh</pre><p class="note">Also sets <code>RECORD_REPO=&lt;your Hugging Face user&gt;/armnet</code>: every training and test episode is recorded, with all three cameras and a label per episode, as a public dataset under your account.</p></li>
+        <li><b>Train and submit on both cells</b><pre>CELL=cell-01 scripts/run.sh &lt;method&gt; --leaderboard "My Method" --leaderboard-code &lt;repo url&gt;
+CELL=cell-03 scripts/run.sh &lt;method&gt; --leaderboard "My Method" --leaderboard-code &lt;repo url&gt;</pre><p class="note">Each run trains for 400 episodes and is tested after every 100. After the last test it opens a pull request on <a href="https://huggingface.co/datasets/AutoRLBench/armnet-leaderboard">AutoRLBench/armnet-leaderboard</a> listing its recordings. Your own policy: see <a href="#/" data-goto="howto">How to use</a>.</p></li>
+        <li><b>Scored automatically</b><p class="note" style="opacity:1">The scorer recounts every test from the episode labels in your recordings, checks the cell, the seeds and the number of episodes, and merges the pull request. Your method appears once both cells are in; its episodes and videos appear under All results.</p></li>
       </ol>
-      <p class="cap">Rules: same task, cells and protocol; at most 400 training episodes per cell; no training on evaluation rollouts. Extra offline data (demonstrations, reward models) is allowed but must be stated in the submission and is shown on the leaderboard.</p>
+      <p class="cap">Rules: same task, cells and protocol; at most 400 training episodes per cell; no training on test episodes. Extra offline data (demonstrations, reward models) is allowed; say so in <code>--leaderboard-notes</code>. Success is decided by the busybox and every episode is on video, so anyone can check a result.</p>
     </section>
   </div>
 </div>
@@ -732,9 +730,13 @@ document.addEventListener("click", e => {
   if (s) { s.value = a.dataset.method; drawRolls(); }
 });
 
-// Bump with every data format change, so a page and its data are always read together.
-const DATA_V = "2";
-Promise.all([fetch(`data/leaderboard.json?v=${DATA_V}`).then(r => r.json()), fetch(`data/rollouts.json?v=${DATA_V}`).then(r => r.json())])
+// The scorer (scripts/leaderboard.py) publishes the data to the leaderboard dataset; the copy
+// in docs/data is the fallback. Bump DATA_V with every data format change.
+const DATA_V = "3", LIVE = "https://huggingface.co/datasets/AutoRLBench/armnet-leaderboard/resolve/main/data/";
+const getJson = name => fetch(`${LIVE}${name}?v=${DATA_V}&t=${Math.floor(Date.now() / 300000)}`)
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .catch(() => fetch(`data/${name}?v=${DATA_V}`).then(r => r.json()));
+Promise.all([getJson("leaderboard.json"), getJson("rollouts.json")])
   .then(([board, rolls]) => { BOARD = board; ROLLS = rolls; drawBoard(); buildFilters(); drawRolls(); })
   .catch(() => { document.getElementById("lb-mini").innerHTML = `<tbody><tr><td>Could not load the leaderboard data.</td></tr></tbody>`; });
 const closePlayer = () => { pv.pause(); cv.pause(); player.close(); };
