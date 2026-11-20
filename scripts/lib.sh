@@ -167,6 +167,9 @@ resolve_model() {
 EVAL_SEEDS=${EVAL_SEEDS:-1042 2042 3042}
 EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
 EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-5}
+# EVAL_LIGHT=<percent> keeps every level at that light (only rail and camera change), e.g.
+# while the cameras' auto exposure makes dim scenes flicker.
+EVAL_LIGHT=${EVAL_LIGHT:-}
 EVAL_PIDS=()
 EVAL_JOB_LOG=""
 
@@ -248,6 +251,7 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
         ood-easy) brightness=15 ranges="[[0.60, 0.65], [0.75, 0.80]]" count=$ood tilt=0.2567 ;;
         ood-hard) brightness=5 ranges="[[0.60, 0.65], [0.75, 0.80]]" count=$ood tilt=0.3472 ;;
       esac
+      brightness=${EVAL_LIGHT:-$brightness}
       for seed in $EVAL_SEEDS; do
         entries="$entries${entries:+, }{\"condition\": \"$level\", \"seed\": $seed, \"count\": $count, \"brightness\": $brightness, \"rail_ranges\": $ranges$([ "$group" = all ] && [ -n "$tilt" ] && echo ", \"top_tilt\": $tilt" || true)}"
       done
