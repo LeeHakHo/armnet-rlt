@@ -1637,6 +1637,15 @@ def run_actor(
                 requested_action = add_action_noise(
                     requested_action, action_noise_std, action_noise_rng
                 )
+            # After frames were recorded during the policy request, the tick's own frame
+            # is read again before its command goes out: raw_obs predates those frames and
+            # would put an older image after newer ones.
+            frame_obs = raw_obs
+            if recording.pop("waited", False):
+                try:
+                    frame_obs = robot.get_observation()
+                except Exception:  # noqa: BLE001 - keep the observation the policy saw
+                    frame_obs = raw_obs
             action_started = time.perf_counter()
             try:
                 sent_action = robot.send_action(requested_action)
@@ -1669,14 +1678,6 @@ def run_actor(
                     variant=rerun_variant,
                     kind=KIND_RUNNING,
                 )
-            # After frames were recorded during the policy request, the tick's own frame
-            # is read now: raw_obs predates them and would put an older image after newer ones.
-            frame_obs = raw_obs
-            if recording.pop("waited", False):
-                try:
-                    frame_obs = robot.get_observation()
-                except Exception:  # noqa: BLE001 - keep the observation the policy saw
-                    frame_obs = raw_obs
             record_rollout_frame(
                 ctx,
                 cfg,
