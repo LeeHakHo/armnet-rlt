@@ -820,9 +820,10 @@ def _refine_chunk(
 
 
 def apply_camera_exposure(ctx: Any, robot: Any) -> None:
-    """Turns every camera's auto exposure off, keeping the exposure it has when the robot
-    connects (set for the job's starting light), and logs the controls before and after.
-    Auto exposure swings between near-black and near-white frames in dim light."""
+    """Logs each camera's exposure controls and, with the job arg ``camera_exposure`` set to
+    a number, turns auto exposure off and fixes the exposure to it (OpenCV units of the
+    camera's backend). The camera keeps that setting after the job."""
+    setting = _field(getattr(ctx, "args", {}), "camera_exposure", None)
     cameras = {name: getattr(camera, "videocapture", None)
                for name, camera in dict(getattr(robot, "cameras", {}) or {}).items()}
     if not any(capture is not None for capture in cameras.values()):
@@ -838,9 +839,11 @@ def apply_camera_exposure(ctx: Any, robot: Any) -> None:
             print(f"[rlt] camera {name}: no OpenCV capture to configure", flush=True)
             continue
         before = {key: capture.get(prop) for key, prop in props.items()}
-        capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # V4L2: 1 = manual
-        capture.set(cv2.CAP_PROP_EXPOSURE, before["exposure"])
-        after = {key: capture.get(prop) for key, prop in props.items()}
+        after = None
+        if setting not in (None, "", "auto"):
+            capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # V4L2: 1 = manual
+            capture.set(cv2.CAP_PROP_EXPOSURE, float(setting))
+            after = {key: capture.get(prop) for key, prop in props.items()}
         print("[rlt] camera exposure " + json.dumps({
             "camera": name, "backend": capture.getBackendName(), "before": before, "after": after,
         }), flush=True)
