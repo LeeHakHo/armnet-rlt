@@ -1492,6 +1492,7 @@ def run_actor(
                     tick=time.perf_counter(), action_write_s=0.0,
                 )
                 recording["frames"] += 1
+                recording["waited"] = True
 
             if chunk is None or chunk_index >= execute_len:
                 if dsrl:
@@ -1633,12 +1634,20 @@ def run_actor(
                     variant=rerun_variant,
                     kind=KIND_RUNNING,
                 )
+            # After frames were recorded during the policy request, the tick's own frame
+            # is read now: raw_obs predates them and would put an older image after newer ones.
+            frame_obs = raw_obs
+            if recording.pop("waited", False):
+                try:
+                    frame_obs = robot.get_observation()
+                except Exception:  # noqa: BLE001 - keep the observation the policy saw
+                    frame_obs = raw_obs
             record_rollout_frame(
                 ctx,
                 cfg,
                 frame_writer,
                 telemetry,
-                raw_obs=raw_obs,
+                raw_obs=frame_obs,
                 requested_action=requested_action,
                 actual_action=actual_action,
                 task=(
