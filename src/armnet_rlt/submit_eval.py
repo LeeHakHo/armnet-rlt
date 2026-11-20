@@ -184,11 +184,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Make the recorded dataset public instead of private",
     )
-    parser.add_argument(
-        "--camera-exposure",
-        help="Fix every camera's exposure to this value (OpenCV units) with auto exposure off; "
-        "default: leave the cameras' auto exposure on",
-    )
     parser.add_argument("--hf-user")
     parser.add_argument("--no-push-to-hub", action="store_true")
     parser.add_argument(
@@ -263,7 +258,6 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "record_dataset": bool(args.record_dataset),
         "record_public": bool(getattr(args, "record_public", False)),
-        "camera_exposure": getattr(args, "camera_exposure", None),
         "robot_telemetry": str(args.robot_telemetry),
         "robot_telemetry_strict": bool(args.robot_telemetry_strict),
         "use_rerun": rerun_job_enabled(args),
