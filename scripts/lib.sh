@@ -243,6 +243,9 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   # one job per level instead, each tilted once at its start.
   local groups=all
   [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood-easy ood-hard"
+  # EVAL_LEVELS="id" (or "ood-easy ood-hard") evaluates only those levels, one cell job each;
+  # the rest can be added to the same results.jsonl later.
+  [ -z "${EVAL_LEVELS:-}" ] || groups=$EVAL_LEVELS
   for group in $groups; do
     local entries="" seed level brightness ranges count tilt
     for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
