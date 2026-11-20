@@ -198,6 +198,7 @@ details.fold.sub > figure { margin-top: 10px }
 .filters label { display: grid; gap: 3px; font-size: 12px; color: var(--muted) }
 .filters select, .filters input { font: 13px var(--body); padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--fg) }
 .filters input { width: 160px }
+.back { font: 500 13px var(--body); border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 5px; padding: 6px 12px; cursor: pointer; margin-bottom: 10px }
 .browser { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 2.2fr); border: 1px solid var(--line); border-radius: 6px; background: var(--surface); min-height: 360px }
 .browser .pane { border-right: 1px solid var(--line); min-width: 0; display: flex; flex-direction: column }
 .browser .pane:last-child { border-right: 0 }
@@ -483,14 +484,16 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="results" hidden>
     <section>
       <h2>Evaluation rollouts</h2>
-      <p class="cap">Three columns: pick a method (with its tag), then one of its evaluations (a cell after 100, 200, 300 or 400 training episodes), then play any of that evaluation's test episodes.</p>
+      <p class="cap">One row per evaluation job: a method on one cell after 100, 200, 300 or 400 training episodes. Click a job to browse by method, evaluation and test episode, and play the episodes.</p>
       <div class="filters" id="rs-filters"></div>
       <p class="cap" id="rs-summary"></p>
+      <div class="tbl" id="rs-list"><table id="rs-table"></table></div>
+      <div id="rs-browse" hidden><button class="back" id="rs-back">← All evaluation jobs</button>
       <div class="browser" id="rs-browser">
         <div class="pane"><div class="pane-head">Method</div><div id="rs-methods"></div></div>
         <div class="pane"><div class="pane-head">Evaluation</div><div id="rs-evals"></div></div>
         <div class="pane wide"><div class="pane-head">Rollouts</div><div id="rs-rolls"></div></div>
-      </div>
+      </div></div>
     </section>
   </div>
 
@@ -722,7 +725,8 @@ function buildFilters() {
   for (const s of box.querySelectorAll("select")) s.addEventListener("change", drawRolls);
   document.getElementById("rs-search").addEventListener("input", drawRolls);
 }
-const PICK = { method: null, job: null };
+const PICK = { method: null, job: null, browse: false };
+document.getElementById("rs-back").addEventListener("click", () => { PICK.browse = false; drawRolls(); });
 function drawRolls() {
   const sel = Object.fromEntries([...document.querySelectorAll("#rs-filters select")].map(s => [s.dataset.k, s.value]));
   const q = ((document.getElementById("rs-search") || {}).value || "").trim().toLowerCase();
@@ -735,6 +739,24 @@ function drawRolls() {
   document.getElementById("rs-summary").textContent = rows.length
     ? `${methods.size} methods · ${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%). Pick a method, then an evaluation.`
     : "No rollouts match.";
+  document.getElementById("rs-list").hidden = PICK.browse;
+  document.getElementById("rs-browse").hidden = !PICK.browse;
+  if (!PICK.browse) {
+    document.getElementById("rs-summary").textContent = rows.length
+      ? `${group(rows, r => r.method + r.cell + r.episodes).size} evaluation jobs · ${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%). Click a job to browse its rollouts.`
+      : "No rollouts match.";
+    const jobs = [...group(rows, r => `${r.method}|${r.cell}|${r.episodes}`)];
+    document.getElementById("rs-table").innerHTML = `<thead><tr><th>Evaluation job</th><th>ID</th><th>OOD</th><th>Rollouts</th></tr></thead><tbody>`
+      + jobs.map(([key, rs]) => { const [, cell, eps] = key.split("|"); const tag = tagOfRow(rs[0]);
+          return `<tr class="job" data-key="${key}"><td><span class="caret">▸</span> <b>${nameOfRow(rs[0])}</b>${tag ? ` <span class="tagchip">${tag}</span>` : ""} · ${cell} · after ${eps} episodes</td>`
+            + `<td class="h">${count(rs, "ID")}</td><td class="h">${count(rs, "OOD")}</td><td class="muted">${rs.length} rollouts${rs.some(r => r.video) ? " · videos" : ""}</td></tr>`; }).join("")
+      + `</tbody>`;
+    for (const tr of document.querySelectorAll("#rs-table tr.job")) tr.addEventListener("click", () => {
+      const [method, cell, eps] = tr.dataset.key.split("|");
+      Object.assign(PICK, { browse: true, method, job: `${cell}|${eps}` }); drawRolls();
+    });
+    return;
+  }
   if (!methods.has(PICK.method)) { PICK.method = methods.size === 1 ? [...methods.keys()][0] : null; PICK.job = null; }
   const label = r => `<b>${nameOfRow(r)}</b>${tagOfRow(r) ? ` <span class="tagchip">${tagOfRow(r)}</span>` : ""}`;
   document.getElementById("rs-methods").innerHTML = [...methods].map(([key, rs]) =>
@@ -765,7 +787,7 @@ document.addEventListener("click", e => {
   const a = e.target.closest("a[data-method]");
   if (!a) return;
   const e2 = BOARD.find(x => x.key === a.dataset.method), q = document.getElementById("rs-search");
-  if (e2 && q) { q.value = ""; PICK.method = e2.key; PICK.job = null; drawRolls(); }
+  if (e2 && q) { q.value = ""; Object.assign(PICK, { browse: true, method: e2.key, job: null }); drawRolls(); }
 });
 
 // The scorer (scripts/leaderboard.py) publishes the data to the leaderboard dataset; the copy
