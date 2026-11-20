@@ -560,11 +560,11 @@ const player = document.getElementById("player"), pv = document.getElementById("
 document.body.appendChild(player);
 // Protocol videos: the ID rollout and one-factor variations of it (filled after recording).
 const SHOWCASE = {
-  id: "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/000.mp4",
-  rail: [["rail 0.62", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/001.mp4"], ["rail 0.78", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/002.mp4"]],
-  light: [["light 15 %", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/003.mp4"], ["light 5 %", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/004.mp4"]],
-  tilt: [["tilt 0.2567", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/005.mp4"], ["tilt 0.3472", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261119-v2/006.mp4"]],
-  poster: { id: "img/showcase-000.jpg", rail: "img/showcase-001.jpg", light: "img/showcase-004.jpg", tilt: "img/showcase-006.jpg" }
+  id: "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/000.mp4",
+  rail: [["rail 0.62", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/001.mp4"], ["rail 0.78", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/002.mp4"]],
+  light: [["light 15 %", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/003.mp4"], ["light 5 %", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/004.mp4"]],
+  tilt: [["tilt 0.2567", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/005.mp4"], ["tilt 0.3472", "https://huggingface.co/datasets/AutoRLBench/armnet-benchmark-rollouts/resolve/main/videos/showcase-c01-20261120/006.mp4"]],
+  poster: { id: "img/showcase-000.jpg?v=3", rail: "img/showcase-001.jpg?v=3", light: "img/showcase-004.jpg?v=3", tilt: "img/showcase-006.jpg?v=3" }
 };
 const cv = document.getElementById("cmp-video"), cmpB = document.getElementById("cmp-b"), levels = document.getElementById("cmp-levels");
 function play(title, src) {
