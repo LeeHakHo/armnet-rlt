@@ -33,7 +33,6 @@ from armnet_rlt.so101_actor import (
     add_action_noise,
     open_rollout_recording,
     parse_action_noise_std,
-    apply_camera_exposure,
     call_while_recording,
     record_rollout_frame,
     robot_action,
@@ -286,7 +285,6 @@ def run_lerobot_actor(
             robot.connect(calibrate=False)
         except TypeError:
             robot.connect()
-    apply_camera_exposure(ctx, robot)
 
     remote: Any = None
     policy = preprocessor = postprocessor = None
