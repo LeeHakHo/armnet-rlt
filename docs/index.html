@@ -484,11 +484,11 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="results" hidden>
     <section>
       <h2>Evaluation rollouts</h2>
-      <p class="cap">One row per evaluation job: a method on one cell after 100, 200, 300 or 400 training episodes. Click a job to browse by method, evaluation and test episode, and play the episodes.</p>
+      <p class="cap">One row per method, as on the leaderboard. Click a method to see its evaluations (a cell after 100, 200, 300 or 400 training episodes) and play their test episodes.</p>
       <div class="filters" id="rs-filters"></div>
       <p class="cap" id="rs-summary"></p>
       <div class="tbl" id="rs-list"><table id="rs-table"></table></div>
-      <div id="rs-browse" hidden><button class="back" id="rs-back">← All evaluation jobs</button>
+      <div id="rs-browse" hidden><button class="back" id="rs-back">← All methods</button>
       <div class="browser" id="rs-browser">
         <div class="pane"><div class="pane-head">Method</div><div id="rs-methods"></div></div>
         <div class="pane"><div class="pane-head">Evaluation</div><div id="rs-evals"></div></div>
@@ -743,17 +743,16 @@ function drawRolls() {
   document.getElementById("rs-browse").hidden = !PICK.browse;
   if (!PICK.browse) {
     document.getElementById("rs-summary").textContent = rows.length
-      ? `${group(rows, r => r.method + r.cell + r.episodes).size} evaluation jobs · ${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%). Click a job to browse its rollouts.`
+      ? `${methods.size} methods · ${group(rows, r => r.method + r.cell + r.episodes).size} evaluation jobs · ${rows.length} rollouts · ${k} successes (${pct(k / rows.length)}%). Click a method to browse its evaluations and rollouts.`
       : "No rollouts match.";
-    const jobs = [...group(rows, r => `${r.method}|${r.cell}|${r.episodes}`)];
-    document.getElementById("rs-table").innerHTML = `<thead><tr><th>Evaluation job</th><th>ID</th><th>OOD</th><th>Rollouts</th></tr></thead><tbody>`
-      + jobs.map(([key, rs]) => { const [, cell, eps] = key.split("|"); const tag = tagOfRow(rs[0]);
-          return `<tr class="job" data-key="${key}"><td><span class="caret">▸</span> <b>${nameOfRow(rs[0])}</b>${tag ? ` <span class="tagchip">${tag}</span>` : ""} · ${cell} · after ${eps} episodes</td>`
-            + `<td class="h">${count(rs, "ID")}</td><td class="h">${count(rs, "OOD")}</td><td class="muted">${rs.length} rollouts${rs.some(r => r.video) ? " · videos" : ""}</td></tr>`; }).join("")
+    document.getElementById("rs-table").innerHTML = `<thead><tr><th>Method</th><th>Tag</th><th>Cells</th><th>Evaluations</th><th>ID</th><th>OOD</th><th>Rollouts</th></tr></thead><tbody>`
+      + [...methods].map(([key, rs]) => { const tag = tagOfRow(rs[0]);
+          return `<tr class="job" data-key="${key}"><td><span class="caret">▸</span> <b>${nameOfRow(rs[0])}</b></td><td>${tag ? `<span class="tagchip">${tag}</span>` : `<span class="muted">–</span>`}</td>`
+            + `<td>${[...new Set(rs.map(r => r.cell))].sort().join(", ")}</td><td class="h">${group(rs, r => r.cell + r.episodes).size}</td>`
+            + `<td class="h">${count(rs, "ID")}</td><td class="h">${count(rs, "OOD")}</td><td class="muted">${rs.length}${rs.some(r => r.video) ? " · videos" : ""}</td></tr>`; }).join("")
       + `</tbody>`;
     for (const tr of document.querySelectorAll("#rs-table tr.job")) tr.addEventListener("click", () => {
-      const [method, cell, eps] = tr.dataset.key.split("|");
-      Object.assign(PICK, { browse: true, method, job: `${cell}|${eps}` }); drawRolls();
+      Object.assign(PICK, { browse: true, method: tr.dataset.key, job: null }); drawRolls();
     });
     return;
   }
