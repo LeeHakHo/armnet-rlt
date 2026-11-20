@@ -21,21 +21,16 @@ class Capture:
         return "V4L2"
 
 
-def test_fixed_exposure_turns_auto_off(monkeypatch, capsys) -> None:
+def test_auto_exposure_is_turned_off_at_the_current_value(monkeypatch, capsys) -> None:
     monkeypatch.setitem(sys.modules, "cv2", FAKE_CV2)
     top, front = Capture(), Capture()
+    front.props[15] = 90.0
     robot = SimpleNamespace(cameras={"top": SimpleNamespace(videocapture=top), "front": SimpleNamespace(videocapture=front)})
-    apply_camera_exposure(SimpleNamespace(args={"camera_exposure": "120"}), robot)
-    assert top.props[21] == 1 and top.props[15] == 120.0 and front.props[15] == 120.0
+    apply_camera_exposure(SimpleNamespace(args={}), robot)
+    assert top.props[21] == 1 and top.props[15] == 156.0
+    assert front.props[21] == 1 and front.props[15] == 90.0
     assert capsys.readouterr().out.count("[rlt] camera exposure") == 2
 
 
-def test_auto_leaves_the_cameras_alone(monkeypatch) -> None:
-    monkeypatch.setitem(sys.modules, "cv2", FAKE_CV2)
-    top = Capture()
-    apply_camera_exposure(SimpleNamespace(args={}), SimpleNamespace(cameras={"top": SimpleNamespace(videocapture=top)}))
-    assert top.props[21] == 3.0 and top.props[15] == 156.0
-
-
 def test_robots_without_opencv_cameras_are_skipped() -> None:
-    apply_camera_exposure(SimpleNamespace(args={"camera_exposure": "100"}), SimpleNamespace(cameras={}))
+    apply_camera_exposure(SimpleNamespace(args={}), SimpleNamespace(cameras={}))
