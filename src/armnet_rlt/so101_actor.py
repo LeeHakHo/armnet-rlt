@@ -819,6 +819,36 @@ def _refine_chunk(
     return action.reshape(predicted_len, action_dim).detach()
 
 
+def apply_camera_exposure(ctx: Any, robot: Any) -> None:
+    """Logs each camera's exposure controls and, with the job arg ``camera_exposure`` set to
+    a number, turns auto exposure off and fixes the exposure to it (OpenCV units of the
+    camera's backend). The camera keeps that setting after the job."""
+    setting = _field(getattr(ctx, "args", {}), "camera_exposure", None)
+    cameras = {name: getattr(camera, "videocapture", None)
+               for name, camera in dict(getattr(robot, "cameras", {}) or {}).items()}
+    if not any(capture is not None for capture in cameras.values()):
+        return
+    import cv2
+
+    props = {
+        "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE, "exposure": cv2.CAP_PROP_EXPOSURE,
+        "gain": cv2.CAP_PROP_GAIN, "brightness": cv2.CAP_PROP_BRIGHTNESS,
+    }
+    for name, capture in cameras.items():
+        if capture is None:
+            print(f"[rlt] camera {name}: no OpenCV capture to configure", flush=True)
+            continue
+        before = {key: capture.get(prop) for key, prop in props.items()}
+        after = None
+        if setting not in (None, "", "auto"):
+            capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # V4L2: 1 = manual
+            capture.set(cv2.CAP_PROP_EXPOSURE, float(setting))
+            after = {key: capture.get(prop) for key, prop in props.items()}
+        print("[rlt] camera exposure " + json.dumps({
+            "camera": name, "backend": capture.getBackendName(), "before": before, "after": after,
+        }), flush=True)
+
+
 def _close_robot_and_cell(robot: Any, cell: Any) -> None:
     try:
         try:
@@ -1040,6 +1070,7 @@ def run_actor(
             robot.connect(calibrate=False)
         except TypeError:
             robot.connect()
+    apply_camera_exposure(ctx, robot)
 
     try:
         if policy is None:
