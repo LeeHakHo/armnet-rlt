@@ -12,6 +12,9 @@
 #
 #   --episodes N           training episodes (400)
 #   --eval-every N         evaluate after every N training episodes (100); 0 disables
+#   --skip-eval            save the checkpoint at each of those points but do not evaluate
+#                          (they are listed in experiment-data/logs/<run id>/checkpoints.txt
+#                          for scripts/eval.sh later)
 #   --model <dir|HF repo>  starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl
 #                          (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken), a
 #                          LeRobot pretrained_model for dit (default: trained from the
@@ -41,10 +44,10 @@
 # Evaluations: experiment-data/eval/<run id>-ep<episodes>/results.jsonl.
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,41p' "$0"; exit 0 ;;
+case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,44p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
-RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
+SKIP_EVAL=0 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episodes) EPISODES=$2 ;; --eval-every) EVAL_EVERY=$2 ;;
@@ -53,6 +56,7 @@ while [ $# -gt 0 ]; do
     --resume) RUN=$2; RESUME=--resume ;;
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
     --reward-plugin) REWARD_PLUGIN=$2 ;;
+    --skip-eval) SKIP_EVAL=1; shift; continue ;;
     --leaderboard) BOARD_NAME=$2 ;; --leaderboard-tag) BOARD_TAG=$2 ;;
     --leaderboard-code) BOARD_CODE=$2 ;; --leaderboard-notes) BOARD_NOTES=$2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -64,6 +68,7 @@ actor_common
 [ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt and dsrl runs"
 [ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt and dsrl runs"
 [ -z "$BOARD_NAME" ] || [ -n "$CELL" ] || die "--leaderboard needs CELL"
+[ -z "$BOARD_NAME" ] || [ "$SKIP_EVAL" = 0 ] || die "--leaderboard needs the evaluations; drop --skip-eval"
 [ -z "$BOARD_NAME" ] || { [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ]; } \
   || die "--leaderboard needs recorded evaluations: set RECORD_REPO (scripts/setup.sh does)"
 RUN=${RUN:-$METHOD-$(date -u +%Y%m%d-%H%M%S)}
@@ -252,6 +257,10 @@ for MARK in $MARKS; do
   [ "$EVAL_EVERY" -gt 0 ] || break
   CKPT=$(checkpoint_at "$MARK")
   log "$MARK episodes: checkpoint $CKPT"
+  if [ "$SKIP_EVAL" = 1 ]; then
+    echo "$MARK $CKPT" >> "$LOGS/checkpoints.txt"
+    continue
+  fi
   stop_server
   if [ "$METHOD" = dit ]; then
     eval_checkpoint lerobot "$CKPT" "$RUN-ep$MARK" "eval:$RUN"
