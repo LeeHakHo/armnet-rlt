@@ -283,6 +283,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Make the recorded dataset public instead of private",
     )
+    parser.add_argument(
+        "--camera-exposure",
+        help="Fix every camera's exposure to this value (OpenCV units) with auto exposure off; "
+        "default: leave the cameras' auto exposure on",
+    )
     parser.add_argument("--hf-user", help="HuggingFace username for generated dataset ids")
     parser.add_argument("--no-push-to-hub", action="store_true")
     parser.add_argument(
@@ -388,6 +393,7 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
         "retry_after_round": bool(getattr(args, "retry_after_round", False)),
         "record_dataset": bool(getattr(args, "record_dataset", True)),
         "record_public": bool(getattr(args, "record_public", False)),
+        "camera_exposure": getattr(args, "camera_exposure", None),
         "robot_telemetry": str(getattr(args, "robot_telemetry", "full")),
         "robot_telemetry_strict": bool(
             getattr(args, "robot_telemetry_strict", False)
