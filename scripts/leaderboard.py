@@ -16,6 +16,11 @@ several entries, e.g. different versions or settings. A new submission with the 
 tag and cell replaces the earlier one. An entry is listed once it has every checkpoint on
 every leaderboard cell, with the date of its latest submission. ID and OOD each use the
 entry's best checkpoint, summed over the cells.
+
+A submission also reports the run's training rollouts: successes in each block of 100
+training episodes before a checkpoint, and the exploration noise scale they ran with (0 for
+a policy that trains without exploration noise). These come from the submitter's run
+(rollout_metrics.jsonl), not from recorded datasets.
 """
 
 from __future__ import annotations
@@ -66,6 +71,22 @@ def eval_datasets(run: str) -> dict[int, list[str]]:
     return found
 
 
+def training_curve(run: str) -> tuple[dict[str, list[int]], float] | None:
+    """Successes of each block of 100 training episodes ending at a checkpoint, and the
+    largest exploration noise scale of the run, from its rollout_metrics.jsonl."""
+    paths = sorted(DATA.glob(f"tasks/*/rlt_checkpoints/{run}/rollout_metrics.jsonl")) \
+        + sorted(DATA.glob(f"lerobot-sbc/{run}/rollout_metrics.jsonl"))
+    if not paths:
+        return None
+    rows = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
+    blocks = {}
+    for end in CHECKPOINTS:
+        block = rows[end - 100:end]
+        if block:
+            blocks[str(end)] = [sum(bool(r.get("success")) for r in block), len(block)]
+    return blocks, max(float(r.get("exploration_scale") or 0.0) for r in rows)
+
+
 def submit(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
@@ -83,6 +104,9 @@ def submit(args: argparse.Namespace) -> None:
         "code": args.code, "notes": args.notes, "cell": args.cell, "run": args.run,
         "evaluations": {str(c): datasets[c] for c in CHECKPOINTS},
     }
+    training = training_curve(args.run)
+    if training:
+        submission["training"], submission["training_exploration"] = training
     path = f"submissions/{entry_key(args.name, args.tag)}/{args.cell}.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         json.dump(submission, handle, indent=1)
@@ -161,8 +185,12 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
     for e in sorted(entries, key=lambda e: e.get("date") or ""):
         key = entry_key(e["name"], e.get("tag"))
         m = methods.setdefault(key, {"name": e["name"], "tag": e.get("tag") or "", "code": e.get("code"),
-                                     "notes": e.get("notes"), "cells": {}, "rows": {}, "date": ""})
+                                     "notes": e.get("notes"), "cells": {}, "rows": {}, "date": "", "training": {},
+                                     "exploration": None})
         m["cells"][e["cell"]] = e["evals"]
+        if e.get("training"):
+            m["training"][e["cell"]] = e["training"]
+            m["exploration"] = e.get("training_exploration")
         m["rows"][e["cell"]] = [{**r, "method": key, "name": e["name"], "tag": e.get("tag") or ""} for r in e["rows"]]
         m["date"] = max(m["date"], e.get("date") or "")
     board, rollouts = [], []
@@ -172,6 +200,9 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
             continue
         entry = {"key": key, "name": m["name"], "tag": m["tag"], "date": m["date"], "detail": m["notes"] or "", "open_source": bool(m["code"]),
                  "code": m["code"], "best": {}, "curve": {c: {str(k): v for k, v in m["cells"][c].items()} for c in sorted(m["cells"])}}
+        if m["training"]:
+            entry["training"] = {c: m["training"][c] for c in sorted(m["training"])}
+            entry["training_exploration"] = m["exploration"]
         for part, conds in (("id", ("id",)), ("ood", OOD)):
             total = lambda ep, i: sum(m["cells"][c][ep][x][i] for c in CELLS for x in conds)
             best = max(CHECKPOINTS, key=lambda ep: total(ep, 0))
