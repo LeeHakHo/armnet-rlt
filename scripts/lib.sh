@@ -15,7 +15,8 @@
 #                     label per episode (meta/armnet_rollouts.jsonl), as public LeRobot
 #                     datasets <prefix>_<run or label>_...; RECORD_PUBLIC=0 keeps them
 #                     private, RECORD=0 turns recording off
-#   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661, cell-01 0.19)
+#   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661; cell-01 pan
+#                     0.405, tilt 0.175, which gives the same top view of the busybox)
 #   RLT_CELL_RAIL     ID rail range per cell, <cell>=LOW,HIGH[;...] (default: cell-01
 #                     0.55,0.65; other cells 0.65-0.75); the OOD rail ranges move with it
 
@@ -32,7 +33,7 @@ if [ -f .env ]; then
   done < .env
 fi
 # Top-camera aim per cell that centres the busybox (set it to '' to keep each cell's own aim).
-export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19"}
+export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175"}
 # ID rail range per cell. At the same rail value cell-01's arm sits about 0.1 further along the
 # busybox than cell-03's, so its range is 0.1 lower.
 export RLT_CELL_RAIL=${RLT_CELL_RAIL-"cell-01=0.55,0.65"}
@@ -258,8 +259,18 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   id_tilt=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.tilt=[0-9.]+" | cut -d= -f2 || true)
   # One job for all three levels, tilting the top camera per episode; EVAL_ONE_JOB=0 runs
   # one job per level instead, each tilted once at its start.
+  # The OOD tilts sit 0.0906 and 0.1811 above the cell's ID tilt (0.2567 and 0.3472 on cell-03).
+  local id_pan easy_tilt=0.2567 hard_tilt=0.3472
+  id_pan=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.pan=[0-9.]+" | cut -d= -f2 || true)
+  if [ -n "$id_tilt" ]; then
+    easy_tilt=$(python3 -c "print(round($id_tilt + 0.0906, 4))")
+    hard_tilt=$(python3 -c "print(round($id_tilt + 0.1811, 4))")
+  fi
   local groups=all
   [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood-easy ood-hard"
+  # A per-episode tilt puts the pan back to its centre, so a cell aimed with a pan gets one
+  # job per level, each aimed (pan and tilt) at its start.
+  [ -z "$id_pan" ] || groups="id ood-easy ood-hard"
   # EVAL_LEVELS="id" (or "ood-easy ood-hard") evaluates only those levels, one cell job each;
   # the rest can be added to the same results.jsonl later.
   [ -z "${EVAL_LEVELS:-}" ] || groups=$EVAL_LEVELS
@@ -268,8 +279,8 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
       case "$level" in
         id) brightness=30 ranges=null count=$id tilt=$id_tilt ;;
-        ood-easy) brightness=15 ranges=$(ood_rails) count=$ood tilt=0.2567 ;;
-        ood-hard) brightness=5 ranges=$(ood_rails) count=$ood tilt=0.3472 ;;
+        ood-easy) brightness=15 ranges=$(ood_rails) count=$ood tilt=$easy_tilt ;;
+        ood-hard) brightness=5 ranges=$(ood_rails) count=$ood tilt=$hard_tilt ;;
       esac
       brightness=${EVAL_LIGHT:-$brightness}
       for seed in $EVAL_SEEDS; do
@@ -283,7 +294,7 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     else
       n=$((count * seeds)); conds=$group
       # Without per-episode tilt the job's own aim sets it.
-      local group_args=(--eval-schedule "[$entries]" $ID_ARGS ${tilt:+--armnet.camera-aim top.tilt=$tilt})
+      local group_args=(--eval-schedule "[$entries]" $ID_ARGS ${tilt:+--armnet.camera-aim ${id_pan:+top.pan=$id_pan,}top.tilt=$tilt})
     fi
     local missing=""
     for c in $conds; do grep -q "\"condition\": \"$c\"" "$out/results.jsonl" 2>/dev/null || missing="$missing $c"; done
