@@ -16,6 +16,8 @@
 #                     datasets <prefix>_<run or label>_...; RECORD_PUBLIC=0 keeps them
 #                     private, RECORD=0 turns recording off
 #   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661, cell-01 0.19)
+#   RLT_CELL_RAIL     ID rail range per cell, <cell>=LOW,HIGH[;...] (default: cell-01
+#                     0.55,0.65; other cells 0.65-0.75); the OOD rail ranges move with it
 
 CALLER_PWD=$PWD
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,6 +33,9 @@ if [ -f .env ]; then
 fi
 # Top-camera aim per cell that centres the busybox (set it to '' to keep each cell's own aim).
 export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19"}
+# ID rail range per cell. At the same rail value cell-01's arm sits about 0.1 further along the
+# busybox than cell-03's, so its range is 0.1 lower.
+export RLT_CELL_RAIL=${RLT_CELL_RAIL-"cell-01=0.55,0.65"}
 # Policy servers register under the config name plus this, so runs on other ports do not
 # pick up each other's server.
 export RLT_POLICY_INSTANCE=${RLT_POLICY_INSTANCE:-${POLICY_PORT:-50052}}
@@ -98,6 +103,14 @@ record_args() {  # <name>
 
 # Scene variation of the ID condition: the rail is drawn per episode around 0.7 (0.65-0.75).
 ID_ARGS="--armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras --variation-curriculum --variation-scale-start 0.2 --variation-scale-min 0.2 --variation-scale-max 0.2 --variation-frontier-fraction 0"
+# A cell in RLT_CELL_RAIL draws its rail uniformly from its own range instead (training and ID
+# evaluation); RAIL_SHIFT is that range's centre minus 0.7, applied to the OOD rail ranges.
+CELL_RAIL=$(echo "${RLT_CELL_RAIL:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | cut -d= -f2 || true)
+RAIL_SHIFT=0
+if [ -n "$CELL_RAIL" ]; then
+  ID_ARGS="$ID_ARGS --variation-rail-range $CELL_RAIL"
+  RAIL_SHIFT=$(python3 -c "import sys; lo, hi = map(float, sys.argv[1].split(',')); print(round((lo + hi) / 2 - 0.7, 4))" "$CELL_RAIL")
+fi
 
 # 0 when CELL is available (or no CELL is set).
 cell_free() {
@@ -220,6 +233,10 @@ for c, (n, s, t) in counts.items():
 #   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
 # Results: experiment-data/eval/<label>/results.jsonl, one row per condition; a group whose
 # conditions are all there is skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
+ood_rails() {  # OOD rail ranges (0.60-0.65 and 0.75-0.80) moved by RAIL_SHIFT
+  python3 -c "import sys; s = float(sys.argv[1]); print([[round(a + s, 4), round(b + s, 4)] for a, b in ((0.60, 0.65), (0.75, 0.80))])" "$RAIL_SHIFT"
+}
+
 eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server ps key ev group n conds
   local id=$EVAL_ID_ROLLOUTS ood=$EVAL_OOD_ROLLOUTS
@@ -251,8 +268,8 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
       case "$level" in
         id) brightness=30 ranges=null count=$id tilt=$id_tilt ;;
-        ood-easy) brightness=15 ranges="[[0.60, 0.65], [0.75, 0.80]]" count=$ood tilt=0.2567 ;;
-        ood-hard) brightness=5 ranges="[[0.60, 0.65], [0.75, 0.80]]" count=$ood tilt=0.3472 ;;
+        ood-easy) brightness=15 ranges=$(ood_rails) count=$ood tilt=0.2567 ;;
+        ood-hard) brightness=5 ranges=$(ood_rails) count=$ood tilt=0.3472 ;;
       esac
       brightness=${EVAL_LIGHT:-$brightness}
       for seed in $EVAL_SEEDS; do
