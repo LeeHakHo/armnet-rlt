@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Evaluates one checkpoint on a cell. For each of the scene seeds 1042, 2042 and 3042: 10 ID
-# rollouts, 5 OOD-easy (rail outside the ID range, brightness 40, top tilt 0.2567) and 5
-# OOD-hard (rail outside the ID range, brightness 20, top tilt 0.3472); 30 ID and 30 OOD in
+# rollouts and 10 OOD (rail outside the ID range, top camera tilted 0.1358 above the cell's
+# ID tilt, light 40 % for five and 20 % for five); 30 ID and 30 OOD in
 # all, deterministic, with the same scenes for every policy. A safety trip counts as a
 # failed rollout. Conditions already in results.jsonl are skipped, so an interrupted
 # evaluation continues where it stopped. scripts/run.sh runs the same protocol during
@@ -15,7 +15,7 @@
 #   --model <dir|HF repo>  rlt/dsrl: the π0.5 base the run trained on (default as run.sh)
 #   --label NAME           results go to experiment-data/eval/<NAME>/results.jsonl
 # Environment: EVAL_SEEDS ("1042 2042 3042"), EVAL_ID_ROLLOUTS (10 per seed),
-# EVAL_OOD_ROLLOUTS (5 per seed for each of OOD-easy and OOD-hard). Rollouts are recorded
+# EVAL_OOD_ROLLOUTS (10 per seed, half at 40 % and half at 20 %). Rollouts are recorded
 # publicly to RECORD_REPO (see scripts/lib.sh); RECORD=0 turns that off.
 set -euo pipefail
 TARGET=${1:-}

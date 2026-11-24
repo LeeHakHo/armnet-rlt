@@ -174,15 +174,16 @@ resolve_model() {
 }
 
 # Evaluation protocol, per scene seed in EVAL_SEEDS (1042 2042 3042): EVAL_ID_ROLLOUTS (10)
-# ID rollouts and EVAL_OOD_ROLLOUTS (5) each of OOD-easy and OOD-hard, so 30 ID and 30 OOD
-# in all. OOD-easy stacks a rail outside the ID range (0.60-0.65 or 0.75-0.80), brightness 40
-# and top tilt 0.2567; OOD-hard the same rail ranges, brightness 20 and tilt 0.3472 (the
-# lightbox flickers below 15 % on cell-03 and 18 % on cell-01, so 20-40 % around the ID 30 %
-# is the range both cells hold steady). Rollouts
+# ID rollouts and EVAL_OOD_ROLLOUTS (10) OOD rollouts, so 30 ID and 30 OOD
+# in all. OOD stacks a rail outside the ID range (0.60-0.65 or 0.75-0.80), the top camera
+# tilted 0.1358 above the cell's ID tilt (0.3019 on cell-03) and the light at 40 % for half
+# of each seed's episodes and 20 % for the other half (the lightbox flickers below 15 % on
+# cell-03 and 18 % on cell-01, so 20-40 % around the ID 30 % is the range both cells hold
+# steady). Rollouts
 # are deterministic and a safety trip is a failure.
 EVAL_SEEDS=${EVAL_SEEDS:-1042 2042 3042}
 EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
-EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-5}
+EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-10}
 # EVAL_LIGHT=<percent> keeps every level at that light (only rail and camera change), e.g.
 # while the cameras' auto exposure makes dim scenes flicker.
 EVAL_LIGHT=${EVAL_LIGHT:-}
@@ -261,37 +262,39 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   id_tilt=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.tilt=[0-9.]+" | cut -d= -f2 || true)
   # One job for all three levels, tilting the top camera per episode; EVAL_ONE_JOB=0 runs
   # one job per level instead, each tilted once at its start.
-  # The OOD tilts sit 0.0906 and 0.1811 above the cell's ID tilt (0.2567 and 0.3472 on cell-03).
-  local id_pan easy_tilt=0.2567 hard_tilt=0.3472
+  # The OOD tilt sits 0.1358 above the cell's ID tilt (0.3019 on cell-03).
+  local id_pan ood_tilt=0.3019
   id_pan=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.pan=[0-9.]+" | cut -d= -f2 || true)
   if [ -n "$id_tilt" ]; then
-    easy_tilt=$(python3 -c "print(round($id_tilt + 0.0906, 4))")
-    hard_tilt=$(python3 -c "print(round($id_tilt + 0.1811, 4))")
+    ood_tilt=$(python3 -c "print(round($id_tilt + 0.1358, 4))")
   fi
   local groups=all
-  [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood-easy ood-hard"
+  [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood"
   # A per-episode tilt puts the pan back to its centre, so a cell aimed with a pan gets one
   # job per level, each aimed (pan and tilt) at its start.
-  [ -z "$id_pan" ] || groups="id ood-easy ood-hard"
-  # EVAL_LEVELS="id" (or "ood-easy ood-hard") evaluates only those levels, one cell job each;
+  [ -z "$id_pan" ] || groups="id ood"
+  # EVAL_LEVELS="id" (or "ood") evaluates only that level, one cell job each;
   # the rest can be added to the same results.jsonl later.
   [ -z "${EVAL_LEVELS:-}" ] || groups=$EVAL_LEVELS
   for group in $groups; do
     local entries="" seed level brightness ranges count tilt
-    for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
+    for level in $([ "$group" = all ] && echo id ood || echo "$group"); do
+      # Each seed's OOD episodes: the first half at 40 %, the rest at 20 %.
       case "$level" in
-        id) brightness=30 ranges=null count=$id tilt=$id_tilt ;;
-        ood-easy) brightness=40 ranges=$(ood_rails) count=$ood tilt=$easy_tilt ;;
-        ood-hard) brightness=20 ranges=$(ood_rails) count=$ood tilt=$hard_tilt ;;
+        id) lights="30:$id" ranges=null count=$id tilt=$id_tilt ;;
+        ood) lights="40:$(((ood + 1) / 2)) 20:$((ood / 2))" ranges=$(ood_rails) count=$ood tilt=$ood_tilt ;;
       esac
-      brightness=${EVAL_LIGHT:-$brightness}
       for seed in $EVAL_SEEDS; do
-        entries="$entries${entries:+, }{\"condition\": \"$level\", \"seed\": $seed, \"count\": $count, \"brightness\": $brightness, \"rail_ranges\": $ranges$([ "$group" = all ] && [ -n "$tilt" ] && echo ", \"top_tilt\": $tilt" || true)}"
+        for part in $lights; do
+          brightness=${EVAL_LIGHT:-${part%%:*}}
+          [ "${part##*:}" -gt 0 ] || continue
+          entries="$entries${entries:+, }{\"condition\": \"$level\", \"seed\": $seed, \"count\": ${part##*:}, \"brightness\": $brightness, \"rail_ranges\": $ranges$([ "$group" = all ] && [ -n "$tilt" ] && echo ", \"top_tilt\": $tilt" || true)}"
+        done
       done
     done
     local seeds; seeds=$(echo $EVAL_SEEDS | wc -w)
     if [ "$group" = all ]; then
-      n=$(((id + 2 * ood) * seeds)); conds="id ood-easy ood-hard"
+      n=$(((id + ood) * seeds)); conds="id ood"
       local group_args=(--eval-schedule "[$entries]" $ID_ARGS)
     else
       n=$((count * seeds)); conds=$group
