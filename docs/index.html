@@ -12,6 +12,7 @@
 :root {
   --bg: #fbfcfb; --surface: #ffffff; --fg: #1d2a23; --muted: #5a6a61; --line: #d5ddd6; --grid: #e6ece6; --box: #eaf0ea;
   --dit: #c8414f; --rlt: #b07800; --dsrl: #1d5fc4;
+  --c-id: #2a78d6; --c-ood: #eb6834; --c-train: #1baf7a;
   --heat: 29, 95, 196;
   --display: "Newsreader", Georgia, "Times New Roman", serif;
   --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -33,6 +34,8 @@ section { display: grid; gap: 16px }
 .small { font-size: 13px }
 .cap { font-size: 13px; color: var(--muted); text-wrap: pretty }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 0; background: var(--c) }
+.key { color: var(--fg); font-weight: 600; white-space: nowrap }
+.key::before { content: ""; display: inline-block; width: 14px; height: 3px; border-radius: 2px; background: var(--k); vertical-align: middle; margin-right: 5px }
 .c-dit { --c: var(--dit) } .c-rlt { --c: var(--rlt) } .c-dsrl { --c: var(--dsrl) }
 
 .repo { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; font-size: 14px }
@@ -683,8 +686,8 @@ function curveSvg(e, cell) {
   let s = `<text x="${L}" y="13" style="font-weight:600;fill:var(--fg)">${cell}</text>`;
   for (let p = 0; p <= 1.0001; p += 0.5) s += `<line x1="${L}" x2="${W - R}" y1="${Y(p)}" y2="${Y(p)}" stroke="var(--grid)"/><text x="${L - 6}" y="${Y(p) + 4}" text-anchor="end">${pct(p)}%</text>`;
   for (const p of pts) s += `<text x="${X(p[0])}" y="${H - 10}" text-anchor="middle">${p[0]}</text>`;
-  const series = [[1, "ID", "", color(e.key)], [2, "OOD", "5 4", color(e.key)]];
-  if (pts.every(p => p[3] != null)) series.push([3, "train", "1 4", "var(--muted)"]);
+  const series = [[1, "ID", "", "var(--c-id)"], [2, "OOD", "5 4", "var(--c-ood)"]];
+  if (pts.every(p => p[3] != null)) series.push([3, "train", "1 4", "var(--c-train)"]);
   const labelY = [];
   for (const [i, lab, dash, stroke] of series) {
     s += `<path d="${pts.map((p, j) => `${j ? "L" : "M"}${X(p[0])},${Y(p[i])}`).join("")}" fill="none" stroke="${stroke}" stroke-width="2" stroke-dasharray="${dash}" stroke-linecap="round"/>`;
@@ -712,8 +715,8 @@ function detail(key) {
     + cells.map(c => `<tr><td>${c}</td>${eps.map(x => `<td class="h">${fmt(e.curve[c][x], c, x)}</td>`).join("")}</tr>`).join("")
     + (e.training ? `<tr><th>Training successes (of the 100 episodes before)</th>${eps.map(() => "<th></th>").join("")}</tr>`
       + cells.map(c => `<tr><td>${c}</td>${eps.map(x => { const v = (e.training[c] || {})[x]; return `<td class="h">${v ? `${v[0]} / ${v[1]}` : "–"}</td>`; }).join("")}</tr>`).join("") : "")
-    + `</tbody></table></div><p class="cap">Solid: ID, dashed: OOD (deterministic evaluations, 30 each). Bold: the checkpoints the leaderboard uses for ID and for OOD.`
-    + (e.training ? ` Dotted: success rate of the training rollouts in the 100 episodes before each checkpoint, reported by the submitter${e.training_exploration ? `, with exploration noise (scale ${e.training_exploration})` : ", without exploration noise"}; the policy keeps changing within those episodes, so read it as the run's trend, not as a score to compare methods by.` : "")
+    + `</tbody></table></div><p class="cap"><span class="key" style="--k: var(--c-id)">ID</span> solid, <span class="key" style="--k: var(--c-ood)">OOD</span> dashed (deterministic evaluations, 30 each). Bold: the checkpoints the leaderboard uses for ID and for OOD.`
+    + (e.training ? ` <span class="key" style="--k: var(--c-train)">Training</span> dotted: success rate of the training rollouts in the 100 episodes before each checkpoint, reported by the submitter${e.training_exploration ? `, with exploration noise (scale ${e.training_exploration})` : ", without exploration noise"}; the policy keeps changing within those episodes, so read it as the run's trend, not as a score to compare methods by.` : "")
     + ` <a href="#/results" data-method="${e.key}">See its rollouts</a>.</p>`;
 }
 document.getElementById("lb-open").addEventListener("change", drawBoard);
