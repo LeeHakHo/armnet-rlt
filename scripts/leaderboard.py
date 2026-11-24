@@ -313,7 +313,8 @@ def score(args: argparse.Namespace) -> None:
             for e in json.loads(Path(hf_hub_download(LEADERBOARD, f, repo_type="dataset")).read_text()):
                 entries.append({**e, "evals": {int(k): v for k, v in e["evals"].items()}})
     board, rollouts = build(entries)
-    if not args.dry_run:
+    # NO_CLIPS=1 publishes the counts now and leaves episode videos to a later run.
+    if not args.dry_run and os.environ.get("NO_CLIPS") != "1":
         existing = set(api.list_repo_files(CLIPS, repo_type="dataset"))
         urls: dict[str, dict[int, str]] = {}
         for r in rollouts:
