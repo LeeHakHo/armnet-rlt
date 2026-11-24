@@ -193,6 +193,8 @@ details.fold.sub > figure { margin-top: 10px }
 .lb tbody tr.row:hover td, .lb tbody tr.open td { background: var(--box) }
 #lb-detail { display: grid; gap: 12px }
 #lb-detail h3 { margin: 0; font: 600 17px var(--body) }
+.curve-legend { display: flex; gap: 18px; font-size: 12.5px; color: var(--fg); margin: 6px 0 4px }
+.curve-legend span { display: inline-flex; align-items: center; gap: 6px }
 .mini-curves { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px }
 .mini-curves svg { width: 100%; height: auto; display: block; min-width: 0 }
 .mini-curves svg text { fill: var(--muted); font: 11px var(--mono) }
@@ -710,6 +712,8 @@ function detail(key) {
   const mark = (v, at, x) => at == x ? `<b>${v}</b>` : v;
   const fmt = (c, cell, x) => c ? `${mark(c.id[0], e.best.id[2], x)} / ${mark(ood(c)[0], e.best.ood[2], x)}` : "–";
   box.innerHTML = `<h3>${e.name}${e.tag ? ` <span class="tagchip">${e.tag}</span>` : ""} <span class="muted small">${e.detail}${e.code ? ` · <a href="${e.code}">code</a>` : ""}</span></h3>`
+    + `<div class="curve-legend">${[["ID", "var(--c-id)", ""], ["OOD", "var(--c-ood)", "5 4"], ...(e.training ? [["Training", "var(--c-train)", "1 4"]] : [])]
+        .map(([lab, col, dash]) => `<span><svg width="26" height="10" aria-hidden="true"><line x1="1" y1="5" x2="25" y2="5" stroke="${col}" stroke-width="2" stroke-dasharray="${dash}" stroke-linecap="round"/></svg>${lab}</span>`).join("")}</div>`
     + `<div class="mini-curves fig">${cells.map(c => curveSvg(e, c)).join("")}</div>`
     + `<div class="tbl"><table><thead><tr><th>ID / OOD successes (of 30 each)</th>${eps.map(x => `<th>${x} episodes</th>`).join("")}</tr></thead><tbody>`
     + cells.map(c => `<tr><td>${c}</td>${eps.map(x => `<td class="h">${fmt(e.curve[c][x], c, x)}</td>`).join("")}</tr>`).join("")
