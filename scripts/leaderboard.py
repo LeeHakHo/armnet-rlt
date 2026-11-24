@@ -40,7 +40,8 @@ CELLS = ("cell-01", "cell-03")
 CHECKPOINTS = (100, 200, 300, 400)
 SEEDS = (1042, 2042, 3042)
 PER_SEED = {"id": 10, "ood": 10}
-OOD = ("ood-easy", "ood-hard")
+# One OOD level since 11-24; ood-easy and ood-hard are the two levels results had before.
+OOD = ("ood", "ood-easy", "ood-hard")
 DATA = Path(os.environ.get("RLT_DATA_ROOT") or Path(__file__).resolve().parents[1] / "experiment-data")
 
 
@@ -141,7 +142,7 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
         repos = submission["evaluations"].get(str(episodes)) or []
         if not repos:
             raise ValueError(f"no evaluation after {episodes} episodes")
-        counts = {"id": [0, 0], "ood-easy": [0, 0], "ood-hard": [0, 0], "trips": 0}
+        counts = {"id": [0, 0], "ood": [0, 0], "ood-easy": [0, 0], "ood-hard": [0, 0], "trips": 0}
         per_seed = Counter()
         for repo in repos:
             labelled, spans = labels(repo)
@@ -204,7 +205,7 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
             entry["training"] = {c: m["training"][c] for c in sorted(m["training"])}
             entry["training_exploration"] = m["exploration"]
         for part, conds in (("id", ("id",)), ("ood", OOD)):
-            total = lambda ep, i: sum(m["cells"][c][ep][x][i] for c in CELLS for x in conds)
+            total = lambda ep, i: sum(m["cells"][c][ep].get(x, [0, 0])[i] for c in CELLS for x in conds)
             best = max(CHECKPOINTS, key=lambda ep: total(ep, 0))
             entry["best"][part] = [total(best, 0), total(best, 1), best]
         board.append(entry)
