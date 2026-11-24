@@ -653,7 +653,7 @@ function wilson(k, n) {
 }
 const pct = x => Math.round(x * 100);
 const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
-const ood = c => add(c["ood-easy"], c["ood-hard"]);
+const ood = c => ["ood", "ood-easy", "ood-hard"].reduce((s, k) => c[k] ? add(s, c[k]) : s, [0, 0]);
 const tot = c => add(c.id, ood(c));
 function cellTd([k, n, ep]) {
   return `<td class="h">${k} <span class="muted">(${pct(k / n)}%)</span><span class="cellsplit">at ${ep} episodes</span></td>`;
