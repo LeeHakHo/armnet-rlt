@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Evaluates one checkpoint on a cell. For each of the scene seeds 1042, 2042 and 3042: 10 ID
-# rollouts, 5 OOD-easy (rail outside the ID range, brightness 15, top tilt 0.2567) and 5
-# OOD-hard (rail outside the ID range, brightness 5, top tilt 0.3472); 30 ID and 30 OOD in
+# rollouts, 5 OOD-easy (rail outside the ID range, brightness 40, top tilt 0.2567) and 5
+# OOD-hard (rail outside the ID range, brightness 20, top tilt 0.3472); 30 ID and 30 OOD in
 # all, deterministic, with the same scenes for every policy. A safety trip counts as a
 # failed rollout. Conditions already in results.jsonl are skipped, so an interrupted
 # evaluation continues where it stopped. scripts/run.sh runs the same protocol during

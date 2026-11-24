@@ -175,8 +175,10 @@ resolve_model() {
 
 # Evaluation protocol, per scene seed in EVAL_SEEDS (1042 2042 3042): EVAL_ID_ROLLOUTS (10)
 # ID rollouts and EVAL_OOD_ROLLOUTS (5) each of OOD-easy and OOD-hard, so 30 ID and 30 OOD
-# in all. OOD-easy stacks a rail outside the ID range (0.60-0.65 or 0.75-0.80), brightness 15
-# and top tilt 0.2567; OOD-hard the same rail ranges, brightness 5 and tilt 0.3472. Rollouts
+# in all. OOD-easy stacks a rail outside the ID range (0.60-0.65 or 0.75-0.80), brightness 40
+# and top tilt 0.2567; OOD-hard the same rail ranges, brightness 20 and tilt 0.3472 (the
+# lightbox flickers below 15 % on cell-03 and 18 % on cell-01, so 20-40 % around the ID 30 %
+# is the range both cells hold steady). Rollouts
 # are deterministic and a safety trip is a failure.
 EVAL_SEEDS=${EVAL_SEEDS:-1042 2042 3042}
 EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
@@ -279,8 +281,8 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     for level in $([ "$group" = all ] && echo id ood-easy ood-hard || echo "$group"); do
       case "$level" in
         id) brightness=30 ranges=null count=$id tilt=$id_tilt ;;
-        ood-easy) brightness=15 ranges=$(ood_rails) count=$ood tilt=$easy_tilt ;;
-        ood-hard) brightness=5 ranges=$(ood_rails) count=$ood tilt=$hard_tilt ;;
+        ood-easy) brightness=40 ranges=$(ood_rails) count=$ood tilt=$easy_tilt ;;
+        ood-hard) brightness=20 ranges=$(ood_rails) count=$ood tilt=$hard_tilt ;;
       esac
       brightness=${EVAL_LIGHT:-$brightness}
       for seed in $EVAL_SEEDS; do
