@@ -48,8 +48,7 @@ def _prefixes() -> list[tuple[str, str]]:
 
 
 def volume_path(local: str | os.PathLike[str]) -> str | None:
-    """Path in the volume of a local data or checkpoint path, or of a container path
-    under /data; None outside them."""
+    """Volume path of a local data or checkpoint path, or of a container path under /data."""
     path = os.path.abspath(local)
     for prefix, volume in [*_prefixes(), (CONTAINER_DATA, "")]:
         if path == prefix or path.startswith(prefix + os.sep):
@@ -168,12 +167,12 @@ def supervise(
     poll_s: float = 2.0,
     commit_every_s: float = 15.0,
 ) -> dict[str, int]:
-    """Runs the processes until one exits, then stops the rest.
+    """Runs the processes until one exits, then stops the rest; returns their exit codes.
 
-    A process whose --public-endpoint is the placeholder ``modal`` gets a Modal TLS tunnel
-    to its --port; ``modal:<port>`` gives it the tunnel to <port>, one per port. The rendezvous entries the processes write to ``rendezvous_dir`` are copied to
-    the Modal Dict under their key; ``call_key`` lists them and turns ready once every
-    tunnelled process has registered. Returns each process's exit code.
+    ``--public-endpoint modal`` gets a Modal TLS tunnel to the process's --port,
+    ``modal:<port>`` the tunnel to <port>. Rendezvous entries in ``rendezvous_dir`` are
+    mirrored to the Modal Dict; ``call_key`` lists them and is ready once every tunnelled
+    process has registered.
     """
     rendezvous_dir.mkdir(parents=True, exist_ok=True)
     for stale in rendezvous_dir.glob("*.json"):
@@ -448,7 +447,6 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "run" and args.argv[:1] == ["--"]:
         args.argv = args.argv[1:]
     args.handler(args)
-
 
 
 if __name__ == "__main__":
