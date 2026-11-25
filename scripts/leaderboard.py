@@ -232,7 +232,8 @@ def clips(repo: str, existing: set[str]) -> dict[int, str]:
     todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
     if not todo:
         return urls
-    root = Path(snapshot_download(repo, repo_type="dataset"))
+    # Only meta and videos (the plugin files are a few per episode and not needed here).
+    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=["meta/**", "videos/**"], max_workers=4))
     times_file = root / "meta/armnet_frame_times.jsonl"
     frame_times = {}
     if times_file.exists():
