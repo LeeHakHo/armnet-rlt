@@ -255,7 +255,7 @@ table.rolls td.h { text-align: right }
 
   <div class="view" data-view="home">
   <ol class="flow" aria-label="How the benchmark works">
-    <li><b>1 · Pick a method</b><span>a baseline (DSRL, RLT, DiT) or your own policy</span></li>
+    <li><b>1 · Pick a method</b><span>a baseline (DSRL, DSRL + Robometer, RLT, DiT) or your own policy</span></li>
     <li><b>2 · Train on a real arm</b><span>your GPU learns; a robot cell runs 400 episodes of the task over the internet</span></li>
     <li><b>3 · Get scored</b><span>fixed test scenes, the same for everyone; results and videos go on the leaderboard</span></li>
   </ol>
@@ -433,7 +433,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
           <text x="520" y="414" text-anchor="middle" style="fill: var(--fg); font: 600 20px var(--display)">Yours!</text>
         </svg>
       </div>
-      <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen.<br>DiT starts from 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
+      <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen; DSRL + Robometer adds a reward model tuned on the 39 demonstrations.<br>DiT starts from those 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
     </figure>
   </div></details>
 
@@ -476,13 +476,13 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="leaderboard" hidden>
     <section>
       <h2>Leaderboard</h2>
-      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base and is evaluated on the <a href="#/" data-goto="protocol">evaluation protocol</a> (30 ID + 30 OOD rollouts) after every 100 episodes. ID and OOD each use the method's best of the four checkpoints, summed over both cells (60 rollouts each); the small line under each number is that checkpoint. Ranked by ID + OOD.</p>
+      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell (the π0.5-based ones from the same base) and is evaluated on the <a href="#/" data-goto="protocol">evaluation protocol</a> (30 ID + 30 OOD rollouts) after every 100 episodes. ID and OOD each use the method's best of the four checkpoints, summed over both cells (60 rollouts each); the small line under each number is that checkpoint. Ranked by ID + OOD.</p>
       <label class="check"><input type="checkbox" id="lb-open"> Only methods with public code</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
       <p class="legend2"><b>ID</b> = test scenes like the ones the robot trained in. <b>OOD</b> = harder scenes: the busybox moved outside the training range, brighter or dimmer light and a tilted camera. Each number is how many of 60 test episodes pressed the button; higher is better.</p>
       <p class="cap">Tag tells entries of the same method apart (versions or settings); Date is the latest submission. Click a method for its per-cell curves and every evaluation.</p>
       <div id="lb-detail"></div>
-      <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. Iterative DiT and RLT are being re-run on this protocol; their earlier results are on the <a href="#/" data-goto="v1">overview</a>.</p>
+      <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. The baselines ran once per method and cell; RLT's residual scale, exploration and trip penalty were tuned on earlier runs, the others use their defaults. Results from the first protocol are on the <a href="#/" data-goto="v1">overview</a>.</p>
     </section>
   </div>
 
