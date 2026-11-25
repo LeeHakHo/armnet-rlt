@@ -242,3 +242,79 @@ def test_pixel_sac_trains_on_images_and_serves_without_the_base(installed) -> No
     # Within action_scale state stds of the current joints.
     bound = 0.3 * 20.0 + 1e-4
     assert np.abs(result.chunk - seen.state[None]).max() <= bound
+
+
+def test_the_online_learner_trains_a_plugin_and_checkpoints_by_episode(
+    installed, tmp_path, monkeypatch
+) -> None:
+    import json
+    import pickle
+    import types
+    from queue import Queue
+
+    from armnet_rlt import learner
+
+    lerobot = types.ModuleType("lerobot")
+    transport = types.ModuleType("lerobot.transport")
+    utils = types.ModuleType("lerobot.transport.utils")
+    utils.bytes_to_transitions = pickle.loads
+    utils.bytes_to_python_object = pickle.loads
+    utils.state_to_bytes = pickle.dumps
+    for name, module in {
+        "lerobot": lerobot, "lerobot.transport": transport, "lerobot.transport.utils": utils,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    queues = {"transitions": Queue(), "interactions": Queue(), "parameters": Queue(maxsize=1)}
+    for index in range(2):
+        queues["transitions"].put(pickle.dumps(_wire_episode(base=False, images=True, length=4)))
+        queues["interactions"].put(
+            pickle.dumps({"session_id": "cell", "session_rollout_index": index + 1, "success": True})
+        )
+
+    class Server:
+        def stop(self, _grace):
+            pass
+
+    def start(config, algorithm, shutdown_event, *, learner_step, **_kwargs):
+        learner._push_weights(queues["parameters"], algorithm, learner_step=learner_step)
+        return Server(), queues["transitions"], queues["interactions"], queues["parameters"]
+
+    monkeypatch.setattr(learner, "_start_online_transport", start)
+    monotonic = iter(range(0, 10**6, 5))
+    monkeypatch.setattr(learner.time, "monotonic", lambda: float(next(monotonic)))
+    monkeypatch.setattr(learner.time, "sleep", lambda _seconds: None)
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "norm_stats.json").write_text(json.dumps(
+        {"state": {"mean": [0.0] * 6, "std": [20.0] * 6},
+         "actions": {"mean": [0.0] * 6, "std": [1.0] * 6}}
+    ))
+    (assets / "norm_stats_actions_per_timestep.json").write_text(json.dumps(
+        {"actions": {"mean": [[0.0] * 6] * 30, "std": [[1.0] * 6] * 30}}
+    ))
+    config = _config("pixel_sac", hidden=16, features=8)
+    config.assets_dir = assets
+    config.output_dir = tmp_path / "runs"
+    config.run_id = "pixel"
+    config.batch_size = 4
+    config.online_step_before_learning = 1
+    config.online_steps = 1000
+
+    summary = learner.run_learner(config, max_episodes=2, checkpoint_every_episodes=1)
+
+    assert summary["algorithm"] == "pixel_sac" and summary["episodes_total"] == 2
+    assert summary["completed_steps"] == 8  # one update per transition
+    run_dir = tmp_path / "runs" / "pixel"
+    marks = [json.loads(line) for line in (run_dir / "episode_checkpoints.jsonl").open()]
+    assert [mark["episodes"] for mark in marks] == [2]
+    checkpoint = torch.load(summary["checkpoint_path"], weights_only=False)
+    assert checkpoint["algorithm"] == "pixel_sac"
+    assert set(checkpoint["algorithm_state"]) >= {"actor", "critic", "log_alpha"}
+    assert json.loads(checkpoint["actor_meta"])["spec"]["image_size"] == [96, 96]
+    pushed = pickle.loads(queues["parameters"].get_nowait())
+    assert json.loads(pushed["actor_meta"])["algorithm"] == "pixel_sac"
+    replay = torch.load(run_dir / "online_replay_buffer.pt", weights_only=False)["transitions"]
+    assert replay[0]["images"]["top"].shape == (96, 96, 3)
+    assert replay[0]["next_images"] is replay[1]["images"]

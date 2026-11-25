@@ -453,21 +453,22 @@ def choose_noise(
     when ``exploration_std`` is 0, otherwise a sample from the actor's Gaussian
     with its standard deviation scaled by ``exploration_std``; the actor's rows
     are repeated over the chunk and clipped to the bound."""
-    token = torch.as_tensor(rl_token, dtype=torch.float32).reshape(1, -1)
-    state = torch.as_tensor(proprioception, dtype=torch.float32).reshape(1, -1)
+    device = actor.noise_bound.device
+    token = torch.as_tensor(rl_token, dtype=torch.float32).reshape(1, -1).to(device)
+    state = torch.as_tensor(proprioception, dtype=torch.float32).reshape(1, -1).to(device)
     with torch.inference_mode():
         if exploration_std > 0:
             mean, log_std = actor.distribution(token, state)
             epsilon = torch.as_tensor(
                 rng.standard_normal(tuple(mean.shape)), dtype=torch.float32
-            )
+            ).to(device)
             normalized, _ = squash_gaussian(
                 mean, log_std + math.log(exploration_std), epsilon
             )
         else:
             _, normalized = actor(token, state)
         chunk = actor.unnormalize_action(actor.chunk_noise(normalized))
-    noise = chunk.numpy().reshape(actor.noise_len, actor.per_step_action_dim)
+    noise = chunk.cpu().numpy().reshape(actor.noise_len, actor.per_step_action_dim)
     return np.clip(noise, -noise_bound, noise_bound).astype(np.float32)
 
 

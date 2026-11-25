@@ -140,3 +140,22 @@ def test_learner_serves_a_given_certificate_without_a_name_override(
     assert cfg.actor_learner.tls_server_cert_path == str(certificate)
     assert cfg.actor_learner.server_bind_host == "0.0.0.0"
 
+
+
+def test_online_and_policy_server_take_any_algorithm_name() -> None:
+    parser = local_app._parser()
+    online = parser.parse_args(
+        ["online", "--algorithm", "residual_td3", "--algorithm-option", "hidden=32",
+         "--algorithm-option", "label=wide", "--algorithm-option", "scales=[0.1, 0.2]"]
+    )
+    assert online.algorithm == "residual_td3"
+    assert local_app._algorithm_options(online.algorithm_option) == {
+        "hidden": 32, "label": "wide", "scales": [0.1, 0.2]
+    }
+    with pytest.raises(SystemExit):
+        local_app._algorithm_options(["hidden"])
+    server = parser.parse_args(
+        ["policy-server", "--algorithm", "pixel_sac", "--actor-checkpoint", "frozen.pt"]
+    )
+    assert server.algorithm == "pixel_sac" and server.checkpoint == ""
+    assert server.actor_checkpoint == "frozen.pt" and server.actor_device == "cuda"
