@@ -263,6 +263,12 @@ def _apply_curriculum_variation(
         if entry.get("top_tilt") is not None:
             record["top_tilt_steps"] = aim_top_tilt(ctx.cell, float(entry["top_tilt"]))
             record["top_tilt"] = float(entry["top_tilt"])
+    # Top-camera aim of the job (--armnet.camera-aim) unless the entry set it.
+    job_args = getattr(ctx, "args", None)
+    job_top = ((job_args.get("camera_aim") if hasattr(job_args, "get") else None) or {}).get("top") or {}
+    for axis in ("pan", "tilt"):
+        if f"top_{axis}" not in record and job_top.get(axis) is not None:
+            record[f"top_{axis}"] = float(job_top[axis])
     record["curriculum"] = curriculum.metadata(
         frontier_axis=frontier_axis
     )
