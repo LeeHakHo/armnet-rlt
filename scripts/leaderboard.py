@@ -144,6 +144,15 @@ def labels(repo: str) -> tuple[list[dict], list[dict]]:
     return rows, spans
 
 
+def evaluation_episodes(rows: list[dict], episodes: int) -> list[tuple[int, dict]]:
+    """(episode index, label) of the evaluation after ``episodes`` training episodes: every
+    episode of a one-job dataset, or the matching phase "eval" labels of a run's dataset."""
+    indexed = [(int(r.get("episode_index", i)), r) for i, r in enumerate(rows)]
+    if not any("phase" in r for r in rows):
+        return indexed
+    return [(i, r) for i, r in indexed if r.get("phase") == "eval" and r.get("checkpoint_episodes") == episodes]
+
+
 def check(submission: dict) -> tuple[dict, list[dict]]:
     """Counts per checkpoint and one row per rollout; raises ValueError when the
     submission does not follow the protocol."""
@@ -158,7 +167,8 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
         per_seed = Counter()
         for repo in repos:
             labelled, spans = labels(repo)
-            for i, r in enumerate(labelled):
+            spans = {int(s.get("episode_index", j)): s for j, s in enumerate(spans)}
+            for i, r in evaluation_episodes(labelled, episodes):
                 v = r.get("variation") or {}
                 cond = v.get("condition")
                 if cond not in counts or v.get("seed") not in SEEDS:
@@ -170,7 +180,7 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
                 counts["trips"] += r.get("outcome") == "safety_trip"
                 per_seed[(v["seed"], "id" if cond == "id" else "ood")] += 1
                 video = None
-                if i < len(spans):
+                if i in spans:
                     s = spans[i]
                     key = "videos/observation.images.top"
                     video = (f"https://huggingface.co/datasets/{repo}/resolve/main/{key}/"
@@ -227,25 +237,31 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
 CLIPS = os.environ.get("CLIPS_REPO", "AutoRLBench/armnet-benchmark-rollouts")
 
 
-def clips(repo: str, existing: set[str]) -> dict[int, str]:
+def clips(repo: str, existing: set[str], episodes: set[int] | None = None) -> dict[int, str]:
     """One video per episode of a recorded dataset: the episode only, top above front and
     wrist (640x540), in real time. The recording has one frame per control tick at a
     nominal fps; each frame is shown for its real duration from meta/armnet_frame_times.jsonl,
     so the arm holds still while the loop waits for an action chunk (without that file the
     clip is stretched evenly to the episode's duration). Uploads the missing ones to the
-    public CLIPS dataset and returns {episode index: URL}."""
+    public CLIPS dataset and returns {episode index: URL}, for ``episodes`` only when given."""
     import subprocess
 
     from huggingface_hub import HfApi, snapshot_download
 
     prefix = f"clips/v2/{repo.replace('/', '__')}/"
-    rows, spans = labels(repo)
-    urls = {i: f"https://huggingface.co/datasets/{CLIPS}/resolve/main/{prefix}{i:03d}.mp4" for i in range(min(len(rows), len(spans)))}
+    labelled, span_rows = labels(repo)
+    rows = {int(r.get("episode_index", i)): r for i, r in enumerate(labelled)}
+    spans = {int(s.get("episode_index", i)): s for i, s in enumerate(span_rows)}
+    urls = {i: f"https://huggingface.co/datasets/{CLIPS}/resolve/main/{prefix}{i:03d}.mp4"
+            for i in sorted(rows.keys() & spans.keys()) if episodes is None or i in episodes}
     todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
     if not todo:
         return urls
-    # Only meta and videos; the plugin files are not needed.
-    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=["meta/**", "videos/**"], max_workers=4))
+    # Only meta and the video files of these episodes.
+    files = {f"videos/observation.images.{view}/chunk-{int(spans[i][f'videos/observation.images.{view}/chunk_index']):03d}/"
+             f"file-{int(spans[i][f'videos/observation.images.{view}/file_index']):03d}.mp4"
+             for i in todo for view in ("top", "front", "wrist")}
+    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=["meta/**", *sorted(files)], max_workers=4))
     times_file = root / "meta/armnet_frame_times.jsonl"
     frame_times = {}
     if times_file.exists():
@@ -332,10 +348,14 @@ def score(args: argparse.Namespace) -> None:
     if not args.dry_run and os.environ.get("NO_CLIPS") != "1":
         existing = set(api.list_repo_files(CLIPS, repo_type="dataset"))
         urls: dict[str, dict[int, str]] = {}
+        wanted: dict[str, set[int]] = {}
+        for r in rollouts:
+            if r.get("dataset"):
+                wanted.setdefault(r["dataset"], set()).add(r["dataset_episode"])
         for r in rollouts:
             if r.get("dataset"):
                 if r["dataset"] not in urls:
-                    urls[r["dataset"]] = clips(r["dataset"], existing)
+                    urls[r["dataset"]] = clips(r["dataset"], existing, wanted[r["dataset"]])
                 r["video"] = urls[r["dataset"]].get(r["dataset_episode"], r.get("video"))
     print(f"{len(board)} methods listed, {len(rollouts)} rollouts")
     if args.dry_run:
