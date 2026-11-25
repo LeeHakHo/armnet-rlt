@@ -56,6 +56,10 @@ def fake_learner(port: int):
         for request in requests:
             yield request[::-1]
 
+    def sleep(request, context):
+        time.sleep(float(request))
+        return b"slept"
+
     def fail(request, context):
         context.abort(grpc.StatusCode.FAILED_PRECONDITION, "not now")
 
@@ -65,6 +69,7 @@ def fake_learner(port: int):
         "SendTransitions": grpc.stream_unary_rpc_method_handler(send_transitions),
         "Echo": grpc.stream_stream_rpc_method_handler(echo),
         "Fail": grpc.unary_unary_rpc_method_handler(fail),
+        "Sleep": grpc.unary_unary_rpc_method_handler(sleep),
     }
     server = grpc.server(
         ThreadPoolExecutor(max_workers=8), interceptors=(_make_auth_interceptor(grpc, TOKEN),)
@@ -225,6 +230,72 @@ def test_evaluation_server_replaces_the_training_server_behind_the_running_front
         # The learner stream was not interrupted.
         rest = list(stream)
         assert rest[-1] == b"params-199" and len(rest) == 199
+
+
+def test_calls_without_a_deadline_have_none_upstream(ports) -> None:
+    """The cell's learner channel calls StreamParameters and the client streams without
+    a deadline; the front passed gRPC's 'no deadline' (about 9.2e18 s) on as a timeout,
+    which failed at once with DEADLINE_EXCEEDED."""
+    from armnet_rlt.so101_actor import _grpc_channel
+
+    with fake_learner(ports["learner"]), front(ports):
+        channel = _grpc_channel("127.0.0.1", ports["front"], use_tls=False, token=TOKEN,
+                                retries=False, keepalive=True)
+        assert channel.unary_unary(f"{LEARNER}/Ready")(b"x") == b"ready:x"
+        assert list(channel.unary_stream(f"{LEARNER}/StreamParameters")(b"2")) == [b"params-0", b"params-1"]
+        assert channel.stream_unary(f"{LEARNER}/SendTransitions")(iter([b"a"])) == b"got-1"
+        # A caller's deadline still applies upstream.
+        assert channel.unary_unary(f"{LEARNER}/Sleep")(b"0.2", timeout=5) == b"slept"
+        with pytest.raises(grpc.RpcError) as error:
+            channel.unary_unary(f"{LEARNER}/Sleep")(b"2", timeout=0.3)
+        assert error.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+
+
+def test_the_cell_learner_transport_runs_through_the_front(ports) -> None:
+    """so101_actor.LearnerTransport, as the cell runs it, against the LeRobot learner
+    service behind the front: actor weights over 4 MB in, an episode out."""
+    pytest.importorskip("lerobot")
+    import threading
+    import types
+    from queue import Queue
+
+    from lerobot.rl.learner_service import LearnerService
+    from lerobot.transport import services_pb2_grpc
+    from lerobot.transport.utils import MAX_MESSAGE_SIZE
+
+    from armnet_rlt.so101_actor import LearnerTransport
+
+    shutdown = threading.Event()
+    parameters, transitions, interactions = Queue(maxsize=1), Queue(), Queue()
+    weights = np.random.default_rng(0).bytes(12 * 1024 * 1024)
+    parameters.put(weights)
+    service = LearnerService(shutdown_event=shutdown, parameters_queue=parameters, seconds_between_pushes=0.5,
+                             transition_queue=transitions, interaction_message_queue=interactions,
+                             queue_get_timeout=0.1)
+    server = grpc.server(
+        ThreadPoolExecutor(max_workers=8),
+        options=(("grpc.max_receive_message_length", MAX_MESSAGE_SIZE),
+                 ("grpc.max_send_message_length", MAX_MESSAGE_SIZE)),
+        interceptors=(_make_auth_interceptor(grpc, TOKEN),),
+    )
+    services_pb2_grpc.add_LearnerServiceServicer_to_server(service, server)
+    server.add_insecure_port(f"127.0.0.1:{ports['learner']}")
+    server.start()
+    cfg = types.SimpleNamespace(learner_host="127.0.0.1", learner_port=ports["front"], use_tls=False,
+                                auth_token=TOKEN, queue_get_timeout=0.1)
+    try:
+        with front(ports):
+            transport = LearnerTransport(cfg)
+            transport.start()
+            assert transport.wait_for_initial_parameters(timeout_s=30) == weights
+            transport.send_episode(b"transitions", b"interaction")
+            assert transitions.get(timeout=10) == b"transitions"
+            assert interactions.get(timeout=10) == b"interaction"
+            assert not transport.failed
+            transport.close()
+    finally:
+        shutdown.set()
+        server.stop(grace=0)
 
 
 def test_the_front_caps_messages_like_the_policy_server() -> None:

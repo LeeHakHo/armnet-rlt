@@ -13,6 +13,7 @@ from typing import Any
 
 POLICY_SERVICE = "armnet_rlt.RemotePolicy"
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+MAX_TIMEOUT_S = 365 * 24 * 3600.0
 UPSTREAM_OPTIONS = (
     ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES),
     ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
@@ -40,6 +41,13 @@ def _forwarded(metadata: Any) -> list[tuple[str, Any]]:
     ]
 
 
+def _timeout(context: Any) -> float | None:
+    """The caller's deadline as a timeout; None for a call without one (gRPC reports
+    about 9.2e18 s remaining)."""
+    remaining = context.time_remaining()
+    return None if remaining is None or remaining > MAX_TIMEOUT_S else remaining
+
+
 class _Router:
     """Generic handler that relays each call to its upstream channel."""
 
@@ -63,7 +71,7 @@ class _Router:
             if expected and dict(metadata or ()).get("authorization") != expected:
                 context.abort(grpc.StatusCode.UNAUTHENTICATED, "invalid or missing auth token")
             call = channel.stream_stream(method)(
-                requests, metadata=_forwarded(metadata), timeout=context.time_remaining()
+                requests, metadata=_forwarded(metadata), timeout=_timeout(context)
             )
             context.add_callback(call.cancel)
             try:
