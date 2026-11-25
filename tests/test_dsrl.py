@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 
 import numpy as np
@@ -16,13 +15,11 @@ from armnet_rlt.dsrl import (
     DSRLActor,
     DSRLCritic,
     DSRLPolicy,
-    actor_from_steering_payload,
     choose_noise,
     random_noise,
     relabel_episode,
     safety_trip_reward,
     squash_gaussian,
-    steering_payload,
 )
 
 
@@ -88,7 +85,7 @@ def test_dsrl_config_requires_full_chunk_noise_and_no_demos() -> None:
     with pytest.raises(ValueError, match="initial_steps"):
         _config(dsrl_initial_steps=-1)
     with pytest.raises(ValueError, match="algorithm"):
-        _config(algorithm="sac")
+        _config(algorithm="")
 
 
 def test_rlt_config_still_ties_execution_to_the_predicted_chunk() -> None:
@@ -175,8 +172,6 @@ def test_policy_losses_and_noise_have_expected_shapes() -> None:
     explored = policy.select_action(token, proprio, exploration_std=10.0)
     assert float(explored.abs().max()) <= 2.0
     assert not torch.allclose(explored, deterministic)
-    with pytest.raises(NotImplementedError):
-        policy.compute_loss_bc()
 
 
 def test_critic_target_has_no_entropy_term_and_bootstraps_through_truncation() -> None:
@@ -341,33 +336,42 @@ def test_relabel_episode_lowers_a_safety_trip_by_the_penalty() -> None:
     assert safety_trip_reward(gamma, 0.0) == pytest.approx(safety_trip_reward(gamma))
 
 
-def test_steering_payload_round_trips_through_numpy_arrays() -> None:
-    actor = DSRLActor(_network(), noise_bound=1.5, noise_steps=2)
-    actor.set_norm_stats(_norm_stats(), use_quantiles=True)
-    payload = steering_payload(
-        actor.state_dict(), network=_network(), noise_bound=1.5, noise_steps=2, learner_step=42
+def _payload(config: RLTConfig, actor_state: dict, step: int) -> dict:
+    from armnet_rlt.algorithm import AlgorithmSpec, actor_meta, actor_payload
+
+    return actor_payload(
+        actor_state, actor_meta(config.algorithm, AlgorithmSpec(), config), learner_step=step
     )
+
+
+def test_actor_payload_round_trips_through_numpy_arrays() -> None:
+    from armnet_rlt.algorithm import actor_from_payload
+    from armnet_rlt.algorithms.dsrl import DSRLAlgorithm, DSRLNoiseActor
+
+    config = _config(dsrl_noise_bound=1.5, dsrl_noise_steps=2, device="cpu")
+    actor = DSRLActor(config.network, noise_bound=1.5, noise_steps=2)
+    actor.set_norm_stats(_norm_stats(), use_quantiles=True)
+    payload = _payload(config, actor.state_dict(), 42)
     assert isinstance(payload["meta"], str)
     assert all(
         isinstance(value, np.ndarray)
         for key, value in payload.items()
         if key != "meta"
     )
-    restored, step = actor_from_steering_payload(payload)
+    restored, cls, _spec, step = actor_from_payload(payload)
+    assert cls is DSRLAlgorithm and isinstance(restored, DSRLNoiseActor)
     assert step == 42
     assert not restored.training
     assert float(restored.noise_bound) == 1.5
     assert restored.noise_steps == 2 and restored.noise_dim == 12
+    assert restored.execute_len == config.actions_to_execute
     token, proprio = torch.randn(1, 2048), torch.randn(1, 6)
     assert torch.allclose(actor(token, proprio)[1], restored(token, proprio)[1])
-    for version in (1, 2, 99):
+    for version in (3, 99):
         bad = dict(payload)
-        bad["meta"] = payload["meta"].replace('"schema_version": 3', f'"schema_version": {version}')
+        bad["meta"] = payload["meta"].replace('"schema_version": 4', f'"schema_version": {version}')
         with pytest.raises(ValueError, match="schema"):
-            actor_from_steering_payload(bad)
-    meta = json.loads(payload["meta"])
-    meta["network"].update(head="mean", num_modes=5, gmm_max_log_std=0.0)
-    assert actor_from_steering_payload({**payload, "meta": json.dumps(meta)})[0].noise_steps == 2
+            actor_from_payload(bad)
 
 
 def test_chosen_noise_follows_the_actor_and_repeats_over_the_chunk() -> None:
@@ -403,12 +407,13 @@ def test_chosen_noise_follows_the_actor_and_repeats_over_the_chunk() -> None:
 
 
 def test_sampled_noise_from_the_payload_actor_matches_the_learner_actor() -> None:
+    from armnet_rlt.algorithm import actor_from_payload
+
     torch.manual_seed(0)
-    actor = DSRLActor(_network(), noise_bound=2.5)
+    config = _config(dsrl_noise_bound=2.5, device="cpu")
+    actor = DSRLActor(config.network, noise_bound=2.5)
     actor.eval()
-    restored, _ = actor_from_steering_payload(
-        steering_payload(actor.state_dict(), network=_network(), noise_bound=2.5, learner_step=1)
-    )
+    restored, *_ = actor_from_payload(_payload(config, actor.state_dict(), 1))
     token, proprio = np.random.randn(2048).astype(np.float32), np.zeros(6, np.float32)
     first = choose_noise(
         actor, token, proprio, exploration_std=1.0, noise_bound=2.5, rng=np.random.default_rng(3)
@@ -463,18 +468,20 @@ def test_learner_config_applies_the_dsrl_settings(tmp_path) -> None:
 
 
 def test_dsrl_gradient_step_updates_every_module_and_schedules_utd_steps() -> None:
-    from armnet_rlt.learner import _schedule_online_updates, _train_step_dsrl
+    from armnet_rlt.algorithm import AlgorithmSpec, norm_stats_lists
+    from armnet_rlt.algorithms.dsrl import DSRLAlgorithm
+    from armnet_rlt.learner import _schedule_online_updates
 
     torch.manual_seed(0)
-    policy = DSRLPolicy(_config(dsrl_alpha_init=0.5))
-    policy.set_norm_stats(_norm_stats())
+    config = _config(dsrl_alpha_init=0.5, device="cpu", utd_ratio=30)
+    algorithm = DSRLAlgorithm(AlgorithmSpec(norm_stats=norm_stats_lists(_norm_stats())), config)
     batch = {
         "state": {
             "rl_token": torch.randn(4, 2048),
             "proprioception": torch.randn(4, 6),
             "reference_action": torch.randn(4, 18),
         },
-        "action": torch.rand(4, 18) * 4 - 2,
+        "action": torch.randn(4, 12),
         "reward": torch.tensor([-1.0, -1.0, 0.0, -1.0]),
         "next_state": {
             "rl_token": torch.randn(4, 2048),
@@ -482,25 +489,23 @@ def test_dsrl_gradient_step_updates_every_module_and_schedules_utd_steps() -> No
             "reference_action": torch.randn(4, 18),
         },
         "done": torch.tensor([0.0, 0.0, 1.0, 0.0]),
+        "extras": {"noise": torch.rand(4, 3, 6) * 4 - 2},
     }
+    policy = algorithm.policy
     before = {
         name: value.clone() for name, value in policy.state_dict().items()
         if value.dtype.is_floating_point
     }
-    critic_loss, actor_loss = _train_step_dsrl(
-        policy,
-        batch,
-        actor_optimizer=torch.optim.Adam(policy.actor.parameters(), lr=1e-3),
-        critic_optimizer=torch.optim.Adam(policy.critic_ensemble.parameters(), lr=1e-3),
-        temperature_optimizer=torch.optim.Adam(policy.temperature_parameters(), lr=1e-3),
-    )
-    assert math.isfinite(critic_loss) and math.isfinite(actor_loss)
+    metrics = algorithm.update(batch)
+    assert math.isfinite(metrics["critic_loss"]) and math.isfinite(metrics["actor_loss"])
+    assert {"alpha", "entropy", "actor_lr", "critic_lr"} <= set(metrics)
     after = policy.state_dict()
     changed = {name for name in before if not torch.equal(before[name], after[name])}
     assert any(name.startswith("actor.trunk") for name in changed)
     assert any(name.startswith("critic_ensemble") for name in changed)
     assert any(name.startswith("critic_target") for name in changed)
     assert "log_alpha" in changed
+    assert algorithm.updates_per_transition == 30
     assert _schedule_online_updates(0, 17, steps_per_transition=30) == 510
     assert _schedule_online_updates(5, 2) == 7
     with pytest.raises(ValueError):
@@ -508,12 +513,12 @@ def test_dsrl_gradient_step_updates_every_module_and_schedules_utd_steps() -> No
 
 
 def test_learner_steering_feed_builds_payloads_and_merges_partial_updates() -> None:
+    from armnet_rlt.algorithm import AlgorithmSpec, actor_from_payload, actor_meta
     from armnet_rlt.steering_feed import LearnerSteeringFeed
 
-    network = so101_network_config(
-        hidden_dims=(8,), reference_action_len=2, predicted_action_len=2
-    )
-    actor = DSRLActor(network, noise_bound=1.5, noise_steps=1)
+    config = _config(dsrl_noise_bound=1.5, device="cpu")
+    actor = DSRLActor(config.network, noise_bound=1.5, noise_steps=1)
+    meta = actor_meta("dsrl", AlgorithmSpec(), config)
     applied: list[dict] = []
     feed = LearnerSteeringFeed(
         applied.append,
@@ -521,51 +526,28 @@ def test_learner_steering_feed_builds_payloads_and_merges_partial_updates() -> N
         port=1,
         use_tls=False,
         token="",
-        network=network,
-        noise_steps=1,
         max_message_bytes=1 << 20,
     )
     full = {name: value.clone() for name, value in actor.state_dict().items()}
-    assert feed.apply_state({"policy": full, "learner_step": torch.tensor(30)}) == 30
-    rebuilt, step = actor_from_steering_payload(applied[-1])
+    with pytest.raises(ValueError, match="actor_meta"):
+        feed.apply_state({"policy": full, "learner_step": torch.tensor(29)})
+    assert feed.apply_state(
+        {"policy": full, "learner_step": torch.tensor(30), "actor_meta": meta}
+    ) == 30
+    rebuilt, _cls, _spec, step = actor_from_payload(applied[-1])
     assert step == 30 and float(rebuilt.noise_bound) == 1.5
     key = next(name for name in full if name.endswith("weight"))
     partial = {key: torch.full_like(full[key], 0.25)}
+    # A later message without actor_meta reuses the last one.
     feed.apply_state(
         {"policy": partial, "learner_step": torch.tensor(31), "partial": torch.tensor(True)}
     )
-    rebuilt, step = actor_from_steering_payload(applied[-1])
+    rebuilt, _cls, _spec, step = actor_from_payload(applied[-1])
     assert step == 31
     assert torch.equal(rebuilt.state_dict()[key], torch.full_like(full[key], 0.25))
     other = next(name for name in full if name != key and name != "noise_bound")
     assert torch.equal(rebuilt.state_dict()[other], full[other])
     assert feed.updates == 2
-
-
-def test_learner_steering_feed_takes_noise_steps_from_the_actor_weights() -> None:
-    from armnet_rlt.steering_feed import LearnerSteeringFeed
-
-    network = so101_network_config(
-        hidden_dims=(8,), reference_action_len=2, predicted_action_len=2
-    )
-    # The learner's two noise rows override the server's default of one.
-    actor = DSRLActor(network, noise_bound=1.5, noise_steps=2)
-    applied: list[dict] = []
-    feed = LearnerSteeringFeed(
-        applied.append,
-        host="127.0.0.1",
-        port=1,
-        use_tls=False,
-        token="",
-        network=network,
-        noise_steps=1,
-        max_message_bytes=1 << 20,
-    )
-    feed.apply_state({"policy": actor.state_dict(), "learner_step": torch.tensor(7)})
-    rebuilt, step = actor_from_steering_payload(applied[-1])
-    assert step == 7 and rebuilt.noise_steps == 2
-    assert rebuilt.mean_head.out_features == 2 * network.action_dim
-    assert feed._state_noise_steps() == 2
 
 
 def test_learner_steering_feed_hands_non_dsrl_weights_to_an_installer() -> None:

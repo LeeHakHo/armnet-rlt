@@ -18,15 +18,15 @@ from armnet_rlt.rerun_view import (
     start_live_view,
 )
 from armnet_rlt.resources import (
-    RENDEZVOUS_DICT,
     add_remote_policy_arguments,
     add_variation_curriculum_arguments,
     camera_aim_args,
     device_override_args,
-    local_rendezvous_path,
     preflight_device_overrides,
-    read_local_rendezvous,
+    read_rendezvous,
+    record_labels,
     remote_policy_job_args,
+    rendezvous_location,
     variation_curriculum_job_args,
     report_job_outcome,
     scheduled_cell,
@@ -89,6 +89,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Do not send successful LeRobot policy episodes to the learner",
     )
     parser.add_argument(
+        "--episode-frames",
+        action="store_true",
+        help="RLT/DSRL actor: send each episode's camera frames (one JPEG per view at "
+        "up to 16 evenly spaced policy calls) with its transitions, for a learner "
+        "--reward-plugin",
+    )
+    parser.add_argument(
         "--eval-only",
         action="store_true",
         help="LeRobot policy: send nothing to the learner, so the rollouts do not "
@@ -98,16 +105,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--learner-key",
         required=True,
-        help="<config-name>:<run-id> printed by the Modal or local learner",
+        help="<config-name>:<run-id> printed by the local learner",
     )
     parser.add_argument("--num-rollouts", type=int, default=40)
     parser.add_argument("--reference-action-len", type=int, default=30)
     parser.add_argument(
         "--algorithm",
-        choices=("rlt", "dsrl"),
         default="rlt",
-        help="Must match the learner: rlt refines the base chunk, dsrl steers "
-        "the base policy's noise through the policy server",
+        help="The learner's algorithm (rlt, dsrl or a plugin), recorded with the "
+        "job; the policy server runs its actor",
     )
     parser.add_argument(
         "--dsrl-noise-bound",
@@ -279,6 +285,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Explicit HuggingFace dataset repo id (defaults to eval_rlt_<task>_<timestamp>)",
     )
     parser.add_argument(
+        "--record-append",
+        action="store_true",
+        help="Append the episodes to the dataset --record-dataset-repo-id on the Hub "
+        "(created if missing) instead of creating it",
+    )
+    parser.add_argument(
+        "--record-label",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Field added to each episode's label in meta/armnet_rollouts.jsonl; repeatable",
+    )
+    parser.add_argument(
         "--record-public",
         action="store_true",
         help="Make the recorded dataset public instead of private",
@@ -323,23 +342,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def resolve_rendezvous(key: str) -> dict[str, Any]:
-    """Read one namespaced learner endpoint: a local learner's, else Modal's."""
-    entry = read_local_rendezvous(key)
-    if entry is None:
-        try:
-            import modal
-
-            entry = modal.Dict.from_name(RENDEZVOUS_DICT).get(key)
-        except Exception as exc:
-            raise RuntimeError(
-                f"No local learner at {local_rendezvous_path(key)} and Modal "
-                f"Dict {RENDEZVOUS_DICT!r} is unreachable: {exc}"
-            ) from exc
+    """Read one namespaced learner endpoint (local file, or the Modal Dict)."""
+    entry = read_rendezvous(key)
     if not entry:
         raise RuntimeError(
-            f"No learner registered at {local_rendezvous_path(key)} or in Modal "
-            f"Dict {RENDEZVOUS_DICT!r} at {key!r}. Start the learner and use "
-            "the key it prints."
+            f"No learner registered at {key!r} in {rendezvous_location(key)}. "
+            "Start the learner and use the key it prints."
         )
     required = {"host", "port", "use_tls", "config_name", "run_id"}
     missing = required.difference(entry)
@@ -349,7 +357,7 @@ def resolve_rendezvous(key: str) -> dict[str, Any]:
 
 
 def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str, Any]:
-    """Construct runtime args, rejecting accidental cross-task connections."""
+    """Actor job args; raises when the learner serves a different config."""
     if entry["config_name"] != args.config_name:
         raise ValueError(
             f"learner {args.learner_key!r} serves {entry['config_name']!r}, "
@@ -410,6 +418,8 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
             job_args["stream_episodes"] = False
         if getattr(args, "eval_only", False):
             job_args["eval_only"] = True
+    if getattr(args, "episode_frames", False):
+        job_args["episode_frames"] = True
     require_cell = str(getattr(args, "require_cell", "") or "").strip()
     if require_cell:
         job_args["require_cell"] = require_cell
@@ -475,6 +485,10 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
     job_args.update(variation_curriculum_job_args(args))
     if repo_id := getattr(args, "record_dataset_repo_id", None):
         job_args["record_dataset_repo_id"] = repo_id
+    if getattr(args, "record_append", False):
+        job_args["record_append"] = True
+    if labels := record_labels(getattr(args, "record_label", None)):
+        job_args["record_labels"] = labels
     if hf_user := getattr(args, "hf_user", None):
         job_args["hf_user"] = hf_user
     if bool(getattr(args, "no_push_to_hub", False)):

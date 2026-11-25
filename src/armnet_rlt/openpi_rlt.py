@@ -50,7 +50,7 @@ def _install_training_stubs() -> None:
     )
     stub("robocandywrapper.plugins.subtask", ("SubtaskPlugin",))
     stub("rewact_tools", ("PiStar0_6CumulativeRewardPlugin",))
-    # Avoid importing LeRobot's datasets stack through policy_config.
+    # Keeps policy_config from importing LeRobot's datasets stack.
     stub("openpi.training.data_loader", ())
 
 
@@ -79,12 +79,6 @@ class PolicyObservation:
 class PolicyOutput:
     action_chunk: np.ndarray
     rl_token: np.ndarray
-    # DSRL only: the base policy's initial noise, ``(action_horizon, action_dim)``
-    # in the base policy's normalized units, and the steering actor's learner step.
-    noise: np.ndarray | None = None
-    steering_step: int | None = None
-
-
 
 
 def build_policy_observation(
@@ -140,8 +134,8 @@ def find_assets_dir(checkpoint_dir: str | Path) -> Path:
 
 
 def load_norm_stats(checkpoint_dir: str | Path, data_config: Any = None) -> dict:
-    """Load OpenPI normalization statistics without importing OpenPI at module load."""
-
+    """OpenPI normalization stats from the checkpoint's assets, with per-timestep
+    action stats when the data config asks for them."""
     from openpi.shared import normalize
 
     assets = find_assets_dir(checkpoint_dir)
@@ -156,8 +150,7 @@ def load_norm_stats(checkpoint_dir: str | Path, data_config: Any = None) -> dict
 
 
 def uses_delta_actions(config: Any, data_config: Any) -> bool:
-    """Read delta semantics from the data-config factory that defines them."""
-
+    """Whether the config's data factory (or else the data config) uses delta actions."""
     factory = getattr(config, "data", None)
     if hasattr(factory, "use_delta_actions"):
         return bool(factory.use_delta_actions)
@@ -189,8 +182,6 @@ class OpenPIRLTPolicy:
         self._model = model if model is not None else getattr(policy, "_model", None)
         self.noise_action_dim = noise_action_dim
         self._noise_rng = np.random.default_rng(noise_seed)
-        self._steering: Any = None
-        self.steering_step: int | None = None
         self._prefix_fn: Any = None
         self._denoise_fn: Any = None
 
@@ -249,39 +240,9 @@ class OpenPIRLTPolicy:
             model=model,
         )
 
-    def infer(
-        self,
-        observation: PolicyObservation | dict[str, Any],
-        *,
-        exploration_std: float | None = None,
-        steer: bool = True,
-    ) -> PolicyOutput:
-        """Run one combined action/token forward pass.
-
-        With ``exploration_std`` the initial noise of the flow is chosen here
-        instead of sampled: the steering actor's output (or zero when ``steer``
-        is false) plus Gaussian exploration of that standard deviation, and the
-        result reports it as ``noise``.
-        """
-        if exploration_std is None:
-            return self.infer_batch([observation])[0]
-        return self._infer_with_noise(
-            observation, exploration_std=exploration_std, steer=steer
-        )
-
-    def set_steering(self, payload: dict[str, Any]) -> int | None:
-        """Install the DSRL actor that picks the flow's initial noise."""
-        from armnet_rlt.dsrl import actor_from_steering_payload
-
-        actor, step = actor_from_steering_payload(payload)
-        if actor.per_step_action_dim != self.noise_action_dim:
-            raise ValueError(
-                f"steering actor emits {actor.per_step_action_dim}-D noise rows, "
-                f"expected {self.noise_action_dim}"
-            )
-        self._steering = actor
-        self.steering_step = step
-        return step
+    def infer(self, observation: PolicyObservation | dict[str, Any]) -> PolicyOutput:
+        """Run one combined action/token forward pass."""
+        return self.infer_batch([observation])[0]
 
     def _transform_batch(
         self, observations: list[PolicyObservation | dict[str, Any]]
@@ -406,70 +367,40 @@ class OpenPIRLTPolicy:
             )
         return int(self._model.action_horizon), self.noise_action_dim
 
-    def _infer_with_noise(
-        self,
-        observation: PolicyObservation | dict[str, Any],
-        *,
-        exploration_std: float,
-        steer: bool,
-    ) -> PolicyOutput:
-        import jax.numpy as jnp
+    def prefix(self, observation: PolicyObservation | dict[str, Any]) -> tuple[Any, np.ndarray]:
+        """The prefix pass of one observation: a handle for ``denoise`` and
+        the RL token."""
         from openpi.models import model as model_module
 
-        from armnet_rlt.dsrl import choose_noise, random_noise
-
-        if steer and self._steering is None:
-            raise RuntimeError("no steering actor has been set on this policy")
-        if not np.isfinite(exploration_std) or exploration_std < 0:
-            raise ValueError("exploration_std must be finite and nonnegative")
-        prefix, denoise = self._split_sampler()
+        prefix, _ = self._split_sampler()
         batched = self._transform_batch([observation])
         model_obs = model_module.Observation.from_dict(batched)
         preprocessed, prefix_mask, kv_cache, tokens = prefix(model_obs)
         token = np.asarray(tokens[0], dtype=np.float32).reshape(-1)
+        return (batched, preprocessed, prefix_mask, kv_cache, token), token
+
+    def denoise(self, handle: Any, noise: np.ndarray | None) -> PolicyOutput:
+        """The chunk the flow makes from ``noise`` ``(horizon, noise_action_dim)``
+        (zero in the model's other action dimensions), or from standard
+        normal noise in every dimension when ``noise`` is None."""
+        import jax.numpy as jnp
+
+        _, denoise = self._split_sampler()
+        batched, preprocessed, prefix_mask, kv_cache, token = handle
         rows, columns = self.noise_shape()
-        proprioception = np.asarray(
-            observation.state
-            if isinstance(observation, PolicyObservation)
-            else observation["observation.state"],
-            dtype=np.float32,
-        )
-        if steer:
-            actor = self._steering
-            if (actor.noise_len, actor.per_step_action_dim) != (rows, columns):
-                raise ValueError(
-                    f"steering actor emits {(actor.noise_len, actor.per_step_action_dim)} "
-                    f"noise, the base policy takes {(rows, columns)}"
-                )
-            noise = choose_noise(
-                actor,
-                token,
-                proprioception,
-                exploration_std=exploration_std,
-                noise_bound=float(actor.noise_bound),
-                rng=self._noise_rng,
-            )
+        width = int(self._model.action_dim)
+        if noise is None:
+            full = self._noise_rng.standard_normal((1, rows, width)).astype(np.float32)
         else:
-            noise = random_noise(
-                (rows, columns),
-                exploration_std=exploration_std,
-                noise_bound=(
-                    float(self._steering.noise_bound)
-                    if self._steering is not None
-                    else float("inf")
-                ),
-                rng=self._noise_rng,
-            )
-        full = np.zeros((1, rows, int(self._model.action_dim)), dtype=np.float32)
-        full[0, :, :columns] = noise
+            noise = np.asarray(noise, dtype=np.float32)
+            if noise.shape != (rows, columns):
+                raise ValueError(
+                    f"noise has shape {noise.shape}, the base policy takes {(rows, columns)}"
+                )
+            full = np.zeros((1, rows, width), dtype=np.float32)
+            full[0, :, :columns] = noise
         actions = denoise(preprocessed, prefix_mask, kv_cache, jnp.asarray(full))
-        result = self._output(batched["state"][0], actions[0], token)
-        return PolicyOutput(
-            action_chunk=result.action_chunk,
-            rl_token=result.rl_token,
-            noise=noise,
-            steering_step=self.steering_step if steer else None,
-        )
+        return self._output(batched["state"][0], actions[0], token)
 
     def predict_with_rl_token(
         self, observation: PolicyObservation | dict[str, Any]
@@ -483,7 +414,3 @@ class OpenPIRLTPolicy:
         reset = getattr(self._policy, "reset", None)
         if callable(reset):
             reset()
-
-
-RLTokenExtractor = OpenPIRLTPolicy
-

@@ -1,4 +1,4 @@
-"""Names shared by the Modal learner, local learner and Armnet submitter."""
+"""Names shared by the learners, the policy server and the Armnet submitter."""
 
 from __future__ import annotations
 
@@ -6,18 +6,18 @@ import argparse
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 
-APP_NAME = "armnet-rlt-learner"
 LEARNER_PORT = 50051
-VOLUME_NAME = os.environ.get("RLT_MODAL_VOLUME", "pi0-rlt-data")
-VOLUME_MOUNT = PurePosixPath("/data")
-RENDEZVOUS_DICT = os.environ.get(
-    "RLT_MODAL_RENDEZVOUS", "armnet-rlt-rendezvous"
-)
-AUTH_SECRET_NAME = os.environ.get("RLT_MODAL_AUTH_SECRET", "armnet-rlt-auth")
+
+# Modal backend (BACKEND=modal in the scripts, RLT_BACKEND=modal here).
+MODAL_APP = os.environ.get("RLT_MODAL_APP", "armnet-rlt")
+MODAL_VOLUME = os.environ.get("RLT_MODAL_VOLUME", "armnet-rlt-data")
+MODAL_RENDEZVOUS = os.environ.get("RLT_MODAL_RENDEZVOUS", "armnet-rlt-rendezvous")
+MODAL_AUTH_SECRET = os.environ.get("RLT_MODAL_AUTH_SECRET", "armnet-rlt-auth")
+MODAL_HF_SECRET = os.environ.get("RLT_MODAL_HF_SECRET", "huggingface-secret")
 
 GREEN_BUTTON_CONFIG = "pi05_rlt_busybox_push_green_button"
 GREEN_BUTTON_CHECKPOINT = "pravsels/pi05_rlt_busybox_push_green_button"
@@ -29,13 +29,13 @@ MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
 
 
 def local_data_root() -> Path:
-    """Directory a learner on this machine uses in place of the Modal volume."""
+    """Directory a learner on this machine writes its data under."""
     default = Path(__file__).resolve().parents[2] / "experiment-data"
     return Path(os.environ.get("RLT_DATA_ROOT") or default).resolve()
 
 
 def task_paths(
-    config_name: str, root: str | os.PathLike[str] = VOLUME_MOUNT
+    config_name: str, root: str | os.PathLike[str]
 ) -> tuple[str, str, str]:
     """Return demo cache, stats directory and production output directory."""
     root = Path(root) / "tasks" / config_name
@@ -47,7 +47,7 @@ def task_paths(
 
 
 def rendezvous_key(config_name: str, run_id: str) -> str:
-    """Namespace endpoints so two learners cannot overwrite each other."""
+    """``<config>:<run_id>``, the key a learner registers its endpoint under."""
     clean_config = config_name.strip().replace("/", "-")
     clean_run = run_id.strip().replace("/", "-")
     if not clean_config or not clean_run:
@@ -56,8 +56,10 @@ def rendezvous_key(config_name: str, run_id: str) -> str:
 
 
 def local_rendezvous_path(key: str) -> Path:
-    """File a learner on this machine registers its endpoint in."""
-    return local_data_root() / "rendezvous" / f"{key.replace(':', '__')}.json"
+    """File a learner on this machine registers its endpoint in, under
+    ``RLT_RENDEZVOUS_DIR`` or ``<data root>/rendezvous``."""
+    directory = os.environ.get("RLT_RENDEZVOUS_DIR") or local_data_root() / "rendezvous"
+    return Path(directory) / f"{key.replace(':', '__')}.json"
 
 
 def read_local_rendezvous(key: str) -> dict[str, Any] | None:
@@ -65,6 +67,26 @@ def read_local_rendezvous(key: str) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     return json.loads(path.read_text())
+
+
+def modal_backend() -> bool:
+    return os.environ.get("RLT_BACKEND", "local") == "modal"
+
+
+def read_rendezvous(key: str) -> dict[str, Any] | None:
+    """Endpoint registered under ``key``: in the Modal Dict with RLT_BACKEND=modal,
+    else in the local rendezvous file."""
+    if not modal_backend():
+        return read_local_rendezvous(key)
+    import modal
+
+    return modal.Dict.from_name(MODAL_RENDEZVOUS).get(key)
+
+
+def rendezvous_location(key: str) -> str:
+    if modal_backend():
+        return f"Modal Dict {MODAL_RENDEZVOUS!r}"
+    return str(local_rendezvous_path(key))
 
 
 def policy_rendezvous_key(config_name: str) -> str:
@@ -101,10 +123,10 @@ def remote_policy_job_args(
 ) -> dict[str, Any]:
     """Job args pointing the cell at the local policy server for ``config_name``."""
     key = policy_rendezvous_key(config_name)
-    entry = read_local_rendezvous(key)
+    entry = read_rendezvous(key)
     if entry is None:
         raise RuntimeError(
-            f"No policy server registered at {local_rendezvous_path(key)}. "
+            f"No policy server registered at {key!r} in {rendezvous_location(key)}. "
             "Start `rlt-local policy-server` first."
         )
     if entry.get("config_name") != config_name:
@@ -119,6 +141,20 @@ def remote_policy_job_args(
         "remote_policy_timeout_s": float(timeout_s),
         "remote_policy_image_codec": image_codec,
     }
+
+
+def record_labels(values: list[str] | None) -> dict[str, Any]:
+    """``KEY=VALUE`` pairs; a value is read as JSON when it parses."""
+    labels: dict[str, Any] = {}
+    for item in values or ():
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise ValueError(f"--record-label must be KEY=VALUE, got {item!r}")
+        try:
+            labels[key] = json.loads(value)
+        except json.JSONDecodeError:
+            labels[key] = value
+    return labels
 
 
 def scheduled_cell(require_cell: str) -> str | None:

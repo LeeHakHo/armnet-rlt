@@ -1,10 +1,9 @@
-"""Learner configuration shared by the Modal and local entrypoints."""
+"""Learner configuration for the local entrypoints."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import replace
-from pathlib import Path
 
 from armnet_rlt.config import (
     BISO101_JERK_JOINT_WEIGHTS,
@@ -55,8 +54,6 @@ def learner_config(
     q_loss_normalization: bool = False,
     discount: float | None = None,
     num_critics: int | None = None,
-    bc_deviation_max: float = 0.0,
-    bc_deviation_weight: float = 1.0,
     actor_lr: float = 0.0,
     actor_lr_min: float = 0.0,
     save_freq: int | None = None,
@@ -72,6 +69,7 @@ def learner_config(
     critic_action_residual: bool = False,
     critic_action_gain: float = 10.0,
     safety_trip_penalty: float | None = None,
+    algorithm_options: dict[str, object] | None = None,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
@@ -97,6 +95,19 @@ def learner_config(
             "online_step_before_learning": 1,
             "online_buffer_capacity": max(1, 2 * online_steps // utd_ratio),
         }
+    elif algorithm != "rlt":
+        # A plugin: the chunk it executes is the predicted chunk; demonstrations
+        # only for one that uses them.
+        from armnet_rlt.algorithm import has_pretraining, load_algorithm
+
+        plugin = load_algorithm(algorithm)
+        network, jerk = network_for(
+            embodiment, reference_action_len=30, predicted_action_len=actions_to_execute
+        )
+        if not (plugin.uses_demos and has_pretraining(plugin)):
+            max_demo_pretrain_steps = 0
+        if not plugin.uses_demos:
+            online_batch_fraction = 1.0
     elif residual_actor or critic_action_residual:
         network = replace(
             network,
@@ -107,6 +118,7 @@ def learner_config(
         )
     kwargs = {
         "algorithm": algorithm,
+        "algorithm_options": dict(algorithm_options or {}),
         "dsrl_noise_bound": dsrl_noise_bound,
         "dsrl_noise_steps": dsrl_noise_steps,
         "dsrl_target_entropy": dsrl_target_entropy,
@@ -127,8 +139,6 @@ def learner_config(
         "policy_uses_delta_actions": True,
         "online_batch_fraction": online_batch_fraction,
         "q_loss_normalization": q_loss_normalization,
-        "bc_deviation_max": bc_deviation_max,
-        "bc_deviation_weight": bc_deviation_weight,
         "safety_trip_penalty": safety_trip_penalty,
     }
     if discount is not None:
@@ -144,21 +154,3 @@ def learner_config(
         kwargs["actor_lr_min"] = actor_lr_min if actor_lr_min > 0 else actor_lr / 4
     return RLTConfig(**kwargs)
 
-
-def resolve_init_checkpoint(
-    config: RLTConfig, init_run_id: str, init_step: int = 0
-) -> Path | None:
-    """Locate ``init_run_id``'s checkpoint at ``init_step``, or its latest."""
-    if not init_run_id:
-        return None
-    root = config.checkpoint_dir.parent / init_run_id
-    if init_step:
-        checkpoint = root / f"step_{init_step:06d}" / "checkpoint.pt"
-    else:
-        found = sorted(root.glob("step_*/checkpoint.pt"))
-        if not found:
-            raise FileNotFoundError(f"no checkpoint under {root}")
-        checkpoint = found[-1]
-    if not checkpoint.exists():
-        raise FileNotFoundError(str(checkpoint))
-    return checkpoint

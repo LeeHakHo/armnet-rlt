@@ -50,7 +50,6 @@ def _load_env() -> None:
 
 
 def _select_gpu(gpu: str) -> None:
-    # Set the GPU and JAX memory environment variables.
     if gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -223,40 +222,6 @@ def cmd_cache(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_bc_cache(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
-    from armnet_rlt.cache_builder import build_rollout_cache, manifest_sources
-
-    sources = manifest_sources(args.manifest)
-    total = sum(len(entry["episodes"]) for entry in sources)
-    print(f"[RLT bc] {len(sources)} datasets, {total} episodes -> {args.cache_name}")
-    build_rollout_cache(
-        sources=sources,
-        data_root=local_data_root(),
-        inference_batch_size=args.inference_batch_size,
-        prompt=args.prompt,
-        cache_name=args.cache_name,
-        checkpoint_repo=args.checkpoint or MULTITASK_CHECKPOINT,
-    )
-
-
-def cmd_bc(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
-    from armnet_rlt.learner import run_bc_training
-    from armnet_rlt.learner_config import resolve_init_checkpoint
-
-    ensure_norm_stats(args.config_name, args.checkpoint_repo)
-    cfg = _config(args, save_freq=args.save_freq)
-    cfg.demo_cache_path = str(Path(cfg.demo_cache_path).with_name(args.cache_name))
-    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
-    run_bc_training(
-        cfg,
-        steps=args.steps,
-        wandb_project=args.wandb_project or None,
-        init_checkpoint=init_checkpoint,
-    )
-
-
 def _learner_token() -> str:
     token = os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
     if not token:
@@ -274,7 +239,9 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
     transport.learner_port = args.port
     transport.policy_parameters_push_frequency = args.push_interval_s
     transport.auth_token = token
+    key = rendezvous_key(args.config_name, args.run_id)
     entry: dict[str, Any] = {
+        "key": key,
         "use_tls": True,
         "config_name": args.config_name,
         "run_id": args.run_id,
@@ -286,25 +253,23 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
     if _edge_terminates_tls(args):
         if tls_cert:
             raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
-        # Bind the cleartext port to localhost.
-        transport.server_bind_host = "127.0.0.1"
+        transport.server_bind_host = args.bind_host or "127.0.0.1"
         tls_label = "TLS at the edge"
     elif tls_cert:
         # Serve TLS with a certificate the cell already trusts.
-        transport.server_bind_host = args.bind_host
+        transport.server_bind_host = args.bind_host or "0.0.0.0"
         transport.tls_server_cert_path = tls_cert
         transport.tls_server_key_path = tls_key
         tls_label = f"TLS, {tls_cert}"
     else:
         certificate, key_path = ensure_tls_certificate(local_data_root() / "tls")
-        transport.server_bind_host = args.bind_host
+        transport.server_bind_host = args.bind_host or "0.0.0.0"
         transport.tls_server_cert_path = str(certificate)
         transport.tls_server_key_path = str(key_path)
         entry["tls_server_name"] = TLS_SERVER_NAME
         entry["tls_root_cert_pem"] = certificate.read_text()
         tls_label = "TLS, self-signed"
 
-    key = rendezvous_key(args.config_name, args.run_id)
     entry_path = local_rendezvous_path(key)
     with _public_endpoint(args) as (host, port):
         entry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +297,7 @@ def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
         args.checkpoint, args.config_name, default_prompt=args.prompt
     )
     height, width = IMAGE_RESOLUTION
-    # Compile the sampler and the DSRL prefix/denoise path before serving.
+    # Compile the sampler and the split prefix/denoise path before serving.
     warm_observation = PolicyObservation(
         state=np.zeros(6, dtype=np.float32),
         images={
@@ -342,8 +307,45 @@ def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
         prompt=args.prompt,
     )
     policy.infer(warm_observation)
-    policy.infer(warm_observation, exploration_std=1.0, steer=False)
+    handle, _token = policy.prefix(warm_observation)
+    policy.denoise(handle, None)
     return policy, (height, width)
+
+
+def _rl_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
+    """π0.5 (unless the algorithm does without it) and the algorithm's actor,
+    from --actor-checkpoint, the learner feed or the cell."""
+    import torch
+
+    from armnet_rlt.algorithm import load_algorithm
+    from armnet_rlt.frozen import frozen_actor_payload, load_frozen_checkpoint
+    from armnet_rlt.policy_actor import AlgorithmPolicy
+
+    frozen = load_frozen_checkpoint(args.actor_checkpoint) if args.actor_checkpoint else None
+    name = args.algorithm or (str(frozen["algorithm"]) if frozen else "")
+    if frozen and args.algorithm and str(frozen["algorithm"]) != args.algorithm:
+        raise SystemExit(
+            f"--actor-checkpoint holds a {frozen['algorithm']} actor, not {args.algorithm}"
+        )
+    uses_base = load_algorithm(name).uses_base if name else True
+    base = image_size = None
+    if uses_base:
+        if not args.checkpoint:
+            raise SystemExit("--checkpoint, the π0.5 checkpoint, is required")
+        base, image_size = _openpi_backend(args)
+    device = args.actor_device
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        device = "cpu"
+    source = "checkpoint" if frozen else "learner" if args.steering_from_learner else "client"
+    runner = AlgorithmPolicy(base, algorithm=name, device=device, actor_source=source)
+    if frozen is not None:
+        step = runner.install(frozen_actor_payload(frozen))
+        print(
+            f"[RLT] policy server runs the {frozen['algorithm']} actor of "
+            f"{args.actor_checkpoint} (learner step {step})",
+            flush=True,
+        )
+    return runner, tuple(image_size or runner.image_size)
 
 
 def _lerobot_backend(args: argparse.Namespace) -> Any:
@@ -358,6 +360,8 @@ def _lerobot_backend(args: argparse.Namespace) -> Any:
     )
     from armnet_rlt.lerobot_server import LeRobotPolicyBackend
 
+    if not args.checkpoint:
+        raise SystemExit("--policy-type lerobot needs --checkpoint")
     device = "cuda" if args.gpu != "cpu" and torch.cuda.is_available() else "cpu"
     policy, preprocessor, postprocessor = load_lerobot_policy(args.checkpoint, device)
     return LeRobotPolicyBackend(
@@ -384,15 +388,14 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         policy = _lerobot_backend(args)
         image_size = None
     else:
-        policy, image_size = _openpi_backend(args)
+        policy, image_size = _rl_backend(args)
     edge_tls = _edge_terminates_tls(args)
     own_tls = bool(args.tls_cert or args.tls_key)
     if own_tls and edge_tls:
         raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
-    bind_host = "127.0.0.1" if edge_tls else args.bind_host
+    bind_host = args.bind_host or ("127.0.0.1" if edge_tls else "0.0.0.0")
     key = policy_rendezvous_key(args.config_name)
     entry_path = local_rendezvous_path(key)
-    feed = None
     with serve(
         policy,
         bind=f"{bind_host}:{args.port}",
@@ -407,18 +410,11 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             from armnet_rlt.steering_feed import LearnerSteeringFeed
 
             learner_host, _, learner_port = args.steering_from_learner.rpartition(":")
+            feed_options: dict[str, Any] = {}
             if args.policy_type == "lerobot":
-                feed_options: dict[str, Any] = {
-                    "installer": lambda weights, step, partial: server.run_locked(
-                        policy.apply_weights, weights, step, partial
-                    )
-                }
-            else:
-                feed_config = _config(args, algorithm="dsrl")
-                feed_options = {
-                    "network": feed_config.network,
-                    "noise_steps": feed_config.dsrl_noise_steps,
-                }
+                feed_options["installer"] = lambda weights, step, partial: server.run_locked(
+                    policy.apply_weights, weights, step, partial
+                )
             feed = LearnerSteeringFeed(
                 server.apply_steering,
                 host=learner_host or "127.0.0.1",
@@ -439,12 +435,14 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         entry_path.write_text(
             json.dumps(
                 {
+                    "key": key,
                     "host": host,
                     "port": port,
                     "use_tls": edge_tls or own_tls,
                     "config_name": args.config_name,
                     "checkpoint": str(args.checkpoint),
                     "policy_type": args.policy_type,
+                    "algorithm": str(getattr(args, "algorithm", "") or ""),
                 },
                 indent=2,
             )
@@ -464,43 +462,6 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             pass
         finally:
             entry_path.unlink(missing_ok=True)
-
-
-def cmd_streaming_bc(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
-    token = _learner_token()
-    from armnet_rlt.learner import run_streaming_bc
-    from armnet_rlt.learner_config import resolve_init_checkpoint
-
-    ensure_norm_stats(args.config_name, args.checkpoint_repo)
-    cfg = _config(
-        args,
-        bc_deviation_max=args.bc_deviation_max,
-        bc_deviation_weight=args.bc_deviation_weight,
-        actor_lr=args.actor_lr,
-    )
-    if args.online_steps:
-        cfg.online_steps = args.online_steps
-    if args.cache_name:
-        cfg.demo_cache_path = str(
-            Path(cfg.demo_cache_path).with_name(args.cache_name)
-        )
-    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
-    with _serve(args, cfg, token):
-        run_streaming_bc(
-            cfg,
-            wandb_project=args.wandb_project or None,
-            min_success_transitions=args.min_success_transitions,
-            steps_per_transition=args.steps_per_transition,
-            init_checkpoint=init_checkpoint,
-            min_shaped_reward=args.min_shaped_reward,
-            base_batch_fraction=args.base_batch_fraction,
-            episodes_per_round=args.episodes_per_round,
-            steps_per_round=args.steps_per_round,
-            idle_timeout_s=args.idle_timeout_s,
-            idle_min_episodes=args.idle_min_episodes,
-            push_unchanged_weights=False,
-        )
 
 
 def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
@@ -582,6 +543,7 @@ def cmd_online(args: argparse.Namespace) -> None:
         critic_action_residual=args.critic_action_residual,
         critic_action_gain=args.critic_action_gain,
         safety_trip_penalty=args.safety_trip_penalty,
+        algorithm_options=_algorithm_options(args.algorithm_option),
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -593,7 +555,33 @@ def cmd_online(args: argparse.Namespace) -> None:
             idle_min_episodes=args.idle_min_episodes,
             max_episodes=args.max_episodes,
             checkpoint_every_episodes=args.checkpoint_every_episodes,
+            reward_plugin=_load_callable(args.reward_plugin) if args.reward_plugin else None,
         )
+
+
+def _algorithm_options(values: list[str] | None) -> dict[str, Any]:
+    """``KEY=VALUE`` pairs; a value is read as JSON when it parses, else kept
+    as a string."""
+    options: dict[str, Any] = {}
+    for item in values or ():
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--algorithm-option must be KEY=VALUE, got {item!r}")
+        try:
+            options[key] = json.loads(value)
+        except json.JSONDecodeError:
+            options[key] = value
+    return options
+
+
+def _load_callable(spec: str) -> Any:
+    """The function named by ``module:function``."""
+    import importlib
+
+    module, _, name = spec.partition(":")
+    if not module or not name:
+        raise SystemExit(f"--reward-plugin must be module:function, got {spec!r}")
+    return getattr(importlib.import_module(module), name)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -623,7 +611,11 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument(
             "--push-interval-s", type=float, default=5.0, help=push_help
         )
-        command.add_argument("--bind-host", default="0.0.0.0")
+        command.add_argument(
+            "--bind-host",
+            default="",
+            help="Listen address (default 0.0.0.0, or 127.0.0.1 with --public-endpoint-tls)",
+        )
         command.add_argument("--port", type=int, default=LEARNER_PORT)
         command.add_argument(
             "--tunnel",
@@ -668,70 +660,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     cache.add_argument("--dataset", default="", help="Overrides the preset")
     cache.add_argument("--prompt", default="", help="Overrides the preset")
-
-    bc_cache = add(
-        "bc-cache", cmd_bc_cache, "build a cache from recorded rollouts (needs OpenPI)"
-    )
-    bc_cache.add_argument(
-        "--manifest",
-        required=True,
-        help="JSON file with `datasets`, each holding `repo_id` and `episodes`",
-    )
-    bc_cache.add_argument("--inference-batch-size", type=int, default=4)
-    bc_cache.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
-    bc_cache.add_argument("--cache-name", default="rlt_bc_cache.pt")
-    bc_cache.add_argument(
-        "--checkpoint",
-        default="",
-        help="HuggingFace repo or local OpenPI checkpoint that encodes the "
-        "episodes (default: the config's checkpoint)",
-    )
-
-    bc = add("bc", cmd_bc, "train an actor by cloning a cache's recorded actions")
-    add_run(bc)
-    bc.add_argument("--steps", type=int, default=5_000)
-    bc.add_argument("--cache-name", default="rlt_bc_cache.pt")
-    bc.add_argument(
-        "--save-freq", type=int, default=None, help="Steps between checkpoints (config default 500)"
-    )
-    bc.add_argument(
-        "--init-run-id",
-        default="",
-        help="Start from this run's actor",
-    )
-    bc.add_argument("--init-step", type=int, default=0)
-
-    streaming = add(
-        "streaming-bc",
-        cmd_streaming_bc,
-        "serve a learner that clones the successes a live actor sends",
-    )
-    add_run(streaming)
-    streaming.add_argument(
-        "--cache-name",
-        default="",
-        help="Transition cache drawn with --base-batch-fraction (default: the "
-        "task's demo cache)",
-    )
-    streaming.add_argument("--min-success-transitions", type=int, default=32)
-    streaming.add_argument("--steps-per-transition", type=int, default=1)
-    streaming.add_argument("--online-steps", type=int, default=0)
-    streaming.add_argument("--init-run-id", default="")
-    streaming.add_argument("--init-step", type=int, default=0)
-    streaming.add_argument("--min-shaped-reward", type=float, default=0.0)
-    streaming.add_argument("--base-batch-fraction", type=float, default=0.0)
-    streaming.add_argument("--bc-deviation-max", type=float, default=0.0)
-    streaming.add_argument("--bc-deviation-weight", type=float, default=1.0)
-    streaming.add_argument("--episodes-per-round", default="0")
-    streaming.add_argument("--steps-per-round", type=int, default=0)
-    streaming.add_argument("--actor-lr", type=float, default=0.0)
-    streaming.add_argument("--idle-timeout-s", type=float, default=600.0)
-    streaming.add_argument("--idle-min-episodes", type=int, default=5)
-    add_transport(
-        streaming,
-        "Seconds between weight pushes while a round is training; a finished "
-        "round always pushes",
-    )
 
     lerobot_sbc = add(
         "lerobot-streaming-bc",
@@ -832,6 +760,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Stop after this many actor episodes (0: stop at --online-steps)",
     )
     online.add_argument(
+        "--reward-plugin",
+        default="",
+        help="module:function called with each episode's transitions and camera frames "
+        "(from an --episode-frames actor) to rewrite its rewards, e.g. "
+        "armnet_rlt.robometer_reward:shape",
+    )
+    online.add_argument(
         "--checkpoint-every-episodes",
         type=int,
         default=0,
@@ -841,10 +776,18 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument("--idle-min-episodes", type=int, default=5)
     online.add_argument(
         "--algorithm",
-        choices=("rlt", "dsrl"),
         default="rlt",
-        help="rlt refines the base chunk; dsrl steers the base policy's noise "
-        "(no demo pretraining, online transitions only)",
+        help="A registered RL algorithm: rlt refines the base chunk; dsrl steers "
+        "the base policy's noise (no demo pretraining, online transitions only); "
+        "an installed plugin's entry-point name; or module:Class",
+    )
+    online.add_argument(
+        "--algorithm-option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Option of a plugin algorithm (config.algorithm_options); repeatable, "
+        "values parsed as JSON where they parse",
     )
     online.add_argument(
         "--dsrl-noise-bound",
@@ -896,7 +839,7 @@ def _parser() -> argparse.ArgumentParser:
     policy_server = add(
         "policy-server",
         cmd_policy_server,
-        "serve OpenPI RLT inference to cell actors started with --remote-policy",
+        "serve π0.5 and an RL algorithm's actor to cell actors started with --remote-policy",
     )
     policy_server.add_argument("--config-name", default=MULTITASK_CONFIG)
     policy_server.add_argument(
@@ -908,9 +851,27 @@ def _parser() -> argparse.ArgumentParser:
     )
     policy_server.add_argument(
         "--checkpoint",
-        required=True,
-        help="Local OpenPI checkpoint directory, or a LeRobot pretrained_model "
-        "directory with --policy-type lerobot",
+        default="",
+        help="Local OpenPI checkpoint directory (not needed by an algorithm that "
+        "does not use π0.5), or a LeRobot pretrained_model directory with "
+        "--policy-type lerobot",
+    )
+    policy_server.add_argument(
+        "--algorithm",
+        default="",
+        help="The RL algorithm whose actor the server runs (rlt, dsrl, a plugin); "
+        "empty takes it from the actor the learner or the cell sends. Required "
+        "for an algorithm that does not use π0.5",
+    )
+    policy_server.add_argument(
+        "--actor-checkpoint",
+        default="",
+        help="Frozen actor (rlt-freeze-checkpoint output) to serve, for evaluation",
+    )
+    policy_server.add_argument(
+        "--actor-device",
+        default="cuda",
+        help="Torch device of the algorithm's actor (cpu when CUDA is missing)",
     )
     policy_server.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
     policy_server.add_argument(
@@ -932,7 +893,12 @@ def _parser() -> argparse.ArgumentParser:
         help="<height>x<width> the server resizes camera images to for a "
         "LeRobot policy; empty uses the policy config",
     )
-    policy_server.add_argument("--bind-host", default="0.0.0.0")
+    policy_server.add_argument(
+        "--bind-host",
+        default="",
+        help="Listen address (default 0.0.0.0, or 127.0.0.1 with --public-endpoint-tls "
+        "or an ngrok tunnel)",
+    )
     policy_server.add_argument("--port", type=int, default=LEARNER_PORT + 1)
     policy_server.add_argument(
         "--tunnel",
@@ -961,8 +927,8 @@ def _parser() -> argparse.ArgumentParser:
     policy_server.add_argument(
         "--steering-from-learner",
         default="",
-        help="<host>:<port> of the learner; the server installs the DSRL actor "
-        "or the checkpoint-eval weights from its parameter stream",
+        help="<host>:<port> of the learner; the server installs the algorithm's "
+        "actor or the checkpoint-eval weights from its parameter stream",
     )
     policy_server.add_argument(
         "--steering-learner-tls-name",

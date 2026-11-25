@@ -11,9 +11,10 @@ import numpy as np
 import pytest
 import torch
 
-from armnet_rlt import networks, so101_actor
+from armnet_rlt import so101_actor
 from armnet_rlt.openpi_rlt import MOTOR_NAMES
 from armnet_rlt.operator_control import CellOperatorControl
+from armnet_rlt.policy_actor import ChunkResult
 
 PREDICTED_LEN = 2
 ACTION_DIM = 6
@@ -81,37 +82,18 @@ class _Cell:
         pass
 
 
-class _Actor:
-    action_std = torch.ones(PREDICTED_LEN * ACTION_DIM)
-
-    def __init__(self, *_args, **_kwargs) -> None:
-        pass
-
-    def set_norm_stats(self, *_args, **_kwargs) -> None:
-        pass
-
-    def to(self, _device):
-        return self
-
-    def train(self):
-        return self
-
-    def __call__(self, *_args, **_kwargs):
-        return None, torch.zeros(1, PREDICTED_LEN * ACTION_DIM)
-
-    def unnormalize_action(self, value, _proprioception):
-        return value
-
-
 class _Policy:
-    norm_stats = None
-    use_quantile_norm = False
-    uses_delta_actions = False
+    actor_source = "learner"
 
-    def infer(self, _observation):
-        return SimpleNamespace(
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+
+    def act(self, _observation, **options):
+        self.requests.append(options)
+        return ChunkResult(
+            chunk=np.zeros((PREDICTED_LEN, ACTION_DIM), dtype=np.float32),
+            base_chunk=np.zeros((PREDICTED_LEN, ACTION_DIM), dtype=np.float32),
             rl_token=np.zeros(2048, dtype=np.float32),
-            action_chunk=np.zeros((PREDICTED_LEN, ACTION_DIM), dtype=np.float32),
         )
 
     def reset(self) -> None:
@@ -149,7 +131,6 @@ def run(monkeypatch):
     context.is_command_safety_violation = _is_command_safety_violation
     monkeypatch.setitem(sys.modules, "armnet_runtime", runtime)
     monkeypatch.setitem(sys.modules, "armnet_runtime.context", context)
-    monkeypatch.setattr(networks, "RLTActor", _Actor)
     monkeypatch.setattr(so101_actor, "_load_parameters", lambda _actor, _payload: 0)
     monkeypatch.setattr(so101_actor, "_serialize_episode", lambda *_a, **_k: None)
     monkeypatch.setattr(so101_actor, "_serialize_interaction", lambda record: record)

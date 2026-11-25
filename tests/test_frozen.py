@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-import pytest
 import torch
 
 from armnet_rlt.config import RLTConfig, so101_network_config
@@ -99,18 +98,6 @@ def test_frozen_dsrl_checkpoint_restores_its_noise_actor(tmp_path) -> None:
     assert float(actor.noise_bound) == 1.5
 
 
-def test_frozen_config_accepts_a_mean_head_and_rejects_others(tmp_path) -> None:
-    checkpoint = _learner_checkpoint()
-    checkpoint["config"]["network"].update(head="mean", num_modes=5, gmm_init_std=0.1)
-    artifact = freeze_learner_checkpoint(checkpoint)
-    restored = config_from_frozen_checkpoint(artifact)
-    assert restored.network.hidden_dims == (8,)
-
-    artifact["config"]["network"]["head"] = "gmm"
-    with pytest.raises(ValueError, match="head"):
-        config_from_frozen_checkpoint(artifact)
-
-
 def test_freeze_blanks_the_auth_token_of_older_checkpoints() -> None:
     checkpoint = _learner_checkpoint()
     checkpoint["config"]["actor_learner"]["auth_token"] = "learner-secret"
@@ -204,3 +191,58 @@ def test_paired_summary_reports_matched_delta() -> None:
     assert summary["frozen_rlt_only"] == 1
     assert summary["both_success"] == 1
     assert summary["delta_percentage_points"] == 50.0
+
+
+def test_a_frozen_learner_checkpoint_rebuilds_the_actor_in_the_policy_server(tmp_path) -> None:
+    from fakes import FakeBase, observation
+
+    from armnet_rlt.algorithm import AlgorithmSpec, actor_meta
+    from armnet_rlt.algorithms.rlt import RLTAlgorithm
+    from armnet_rlt.frozen import FROZEN_SCHEMA_VERSION, frozen_actor_payload
+    from armnet_rlt.policy_actor import AlgorithmPolicy
+
+    network = so101_network_config(
+        hidden_dims=(8,), reference_action_len=30, predicted_action_len=10
+    )
+    config = RLTConfig(
+        network=network, actions_to_execute=10, use_subsampling=False,
+        policy_uses_delta_actions=True, device="cpu",
+    )
+    algorithm = RLTAlgorithm(AlgorithmSpec(), config)
+    checkpoint = {
+        "step": 40,
+        "algorithm": "rlt",
+        "algorithm_state": algorithm.state_dict(),
+        "actor_state": algorithm.actor_state(),
+        "actor_meta": actor_meta("rlt", algorithm.spec, config),
+        "config": asdict(config),
+    }
+    path = tmp_path / "frozen_actor.pt"
+    torch.save(freeze_learner_checkpoint(checkpoint), path)
+    artifact = load_frozen_checkpoint(path)
+    assert artifact["schema_version"] == FROZEN_SCHEMA_VERSION
+    assert artifact["algorithm"] == "rlt"
+
+    runner = AlgorithmPolicy(FakeBase(), actor_source="checkpoint")
+    assert runner.install(frozen_actor_payload(artifact)) == 40
+    result = runner.act(observation(), explore=False)
+    assert result.chunk.shape == (10, 6) and result.actor_step == 40
+    for name, value in algorithm.actor_state().items():
+        assert torch.equal(runner.actor.state_dict()[name], value)
+
+
+def test_a_schema_1_frozen_actor_gets_its_actor_meta(tmp_path) -> None:
+    import json
+
+    artifact = freeze_learner_checkpoint(_learner_checkpoint())
+    artifact["schema_version"] = 1
+    del artifact["actor_meta"], artifact["algorithm"]
+    path = tmp_path / "old.pt"
+    torch.save(artifact, path)
+
+    loaded = load_frozen_checkpoint(path)
+
+    meta = json.loads(loaded["actor_meta"])
+    assert loaded["algorithm"] == "rlt" and meta["algorithm"] == "rlt"
+    assert meta["config"]["network"]["predicted_action_len"] == 3
+    assert meta["spec"]["delta_actions"] is True

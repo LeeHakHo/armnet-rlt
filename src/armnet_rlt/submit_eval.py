@@ -16,6 +16,7 @@ from armnet_rlt.resources import (
     camera_aim_args,
     device_override_args,
     preflight_device_overrides,
+    record_labels,
     remote_policy_job_args,
     report_job_outcome,
     scheduled_cell,
@@ -180,6 +181,19 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--record-dataset-repo-id")
     parser.add_argument(
+        "--record-append",
+        action="store_true",
+        help="Append the episodes to the dataset --record-dataset-repo-id on the Hub "
+        "(created if missing) instead of creating it",
+    )
+    parser.add_argument(
+        "--record-label",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Field added to each episode's label in meta/armnet_rollouts.jsonl; repeatable",
+    )
+    parser.add_argument(
         "--record-public",
         action="store_true",
         help="Make the recorded dataset public instead of private",
@@ -298,6 +312,10 @@ def build_job_args(args: argparse.Namespace) -> dict[str, Any]:
         job_args["episode_timeout_s"] = float(args.episode_timeout_s)
     if args.record_dataset_repo_id:
         job_args["record_dataset_repo_id"] = args.record_dataset_repo_id
+    if getattr(args, "record_append", False):
+        job_args["record_append"] = True
+    if labels := record_labels(getattr(args, "record_label", None)):
+        job_args["record_labels"] = labels
     if args.hf_user:
         job_args["hf_user"] = args.hf_user
     if args.no_push_to_hub:

@@ -2,16 +2,15 @@
 
 The actor maps the RL token and proprioception to the initial noise of the
 base policy's flow; the base policy turns that noise into the executed chunk.
-Transitions carry the chunk noise as ``action`` and the resulting chunk as
-``reference_action``. The learner is soft actor-critic.
+Transitions carry the chunk noise as the ``noise`` extra and the resulting
+chunk as ``reference_action``. The learner is soft actor-critic
+(``armnet_rlt.algorithms.dsrl``).
 """
 
 from __future__ import annotations
 
 import copy
-import json
 import math
-from dataclasses import asdict
 from typing import Any, Mapping
 
 import numpy as np
@@ -20,10 +19,8 @@ import torch.nn as nn
 from torch import Tensor
 
 from armnet_rlt.artifacts import NormStats
-from armnet_rlt.config import RLTConfig, RLTNetworkConfig, network_config_from_dict
+from armnet_rlt.config import RLTConfig, RLTNetworkConfig
 from armnet_rlt.networks import _norm, _register_norm_buffers, _set_state_buffers
-
-STEERING_SCHEMA_VERSION = 3
 
 LOG_STD_MIN = -20.0
 LOG_STD_MAX = 2.0
@@ -309,9 +306,6 @@ class DSRLPolicy(nn.Module):
         self.critic_ensemble.set_norm_stats(norm_stats, use_quantiles=use_quantiles)
         self.critic_target.set_norm_stats(norm_stats, use_quantiles=use_quantiles)
 
-    def compute_loss_bc(self, *args: Any, **kwargs: Any) -> Tensor:
-        raise NotImplementedError("DSRL has no demonstration behavior cloning")
-
     @torch.no_grad()
     def select_action(
         self,
@@ -446,50 +440,6 @@ def relabel_episode(
         transitions[-1]["done"] = torch.tensor(1.0, dtype=torch.float32)
 
 
-def steering_payload(
-    actor_state: Mapping[str, Any],
-    *,
-    network: RLTNetworkConfig,
-    noise_bound: float,
-    learner_step: int | None,
-    noise_steps: int = 1,
-) -> dict[str, Any]:
-    """Flat ``np.savez``-able description of a DSRL actor for a policy server."""
-    meta = {
-        "schema_version": STEERING_SCHEMA_VERSION,
-        "network": asdict(network),
-        "noise_bound": float(noise_bound),
-        "noise_steps": int(noise_steps),
-        "learner_step": learner_step,
-    }
-    payload: dict[str, Any] = {"meta": json.dumps(meta)}
-    for name, value in actor_state.items():
-        array = value.detach().cpu().numpy() if isinstance(value, Tensor) else np.asarray(value)
-        payload[f"param/{name}"] = array
-    return payload
-
-
-def actor_from_steering_payload(payload: Mapping[str, Any]) -> tuple[DSRLActor, int | None]:
-    """Rebuild the actor a ``steering_payload`` describes, in eval mode on CPU."""
-    meta = json.loads(str(payload["meta"]))
-    if meta.get("schema_version") != STEERING_SCHEMA_VERSION:
-        raise ValueError(f"unsupported steering schema {meta.get('schema_version')!r}")
-    actor = DSRLActor(
-        network_config_from_dict(meta["network"]),
-        noise_bound=float(meta["noise_bound"]),
-        noise_steps=int(meta["noise_steps"]),
-    )
-    state = {
-        key.removeprefix("param/"): torch.as_tensor(np.asarray(value))
-        for key, value in payload.items()
-        if key.startswith("param/")
-    }
-    actor.load_state_dict(state)
-    actor.eval()
-    step = meta.get("learner_step")
-    return actor, (int(step) if step is not None else None)
-
-
 def choose_noise(
     actor: DSRLActor,
     rl_token: np.ndarray,
@@ -503,21 +453,22 @@ def choose_noise(
     when ``exploration_std`` is 0, otherwise a sample from the actor's Gaussian
     with its standard deviation scaled by ``exploration_std``; the actor's rows
     are repeated over the chunk and clipped to the bound."""
-    token = torch.as_tensor(rl_token, dtype=torch.float32).reshape(1, -1)
-    state = torch.as_tensor(proprioception, dtype=torch.float32).reshape(1, -1)
+    device = actor.noise_bound.device
+    token = torch.as_tensor(rl_token, dtype=torch.float32).reshape(1, -1).to(device)
+    state = torch.as_tensor(proprioception, dtype=torch.float32).reshape(1, -1).to(device)
     with torch.inference_mode():
         if exploration_std > 0:
             mean, log_std = actor.distribution(token, state)
             epsilon = torch.as_tensor(
                 rng.standard_normal(tuple(mean.shape)), dtype=torch.float32
-            )
+            ).to(device)
             normalized, _ = squash_gaussian(
                 mean, log_std + math.log(exploration_std), epsilon
             )
         else:
             _, normalized = actor(token, state)
         chunk = actor.unnormalize_action(actor.chunk_noise(normalized))
-    noise = chunk.numpy().reshape(actor.noise_len, actor.per_step_action_dim)
+    noise = chunk.cpu().numpy().reshape(actor.noise_len, actor.per_step_action_dim)
     return np.clip(noise, -noise_bound, noise_bound).astype(np.float32)
 
 

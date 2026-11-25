@@ -38,7 +38,7 @@ def test_finish_dataset_writes_labels_and_pushes_public(tmp_path, monkeypatch) -
     assert url == "https://huggingface.co/datasets/u/armnet_x"
     assert dataset.pushed is False
     rows = [json.loads(l) for l in (tmp_path / "meta/armnet_rollouts.jsonl").read_text().splitlines()]
-    assert rows == labels
+    assert rows == [{"episode_index": i, **label} for i, label in enumerate(labels)]
     assert [u["path_in_repo"] for u in uploads] == ["meta/armnet_rollouts.jsonl", "meta/armnet_frame_times.jsonl"]
     times = [json.loads(l) for l in (tmp_path / "meta/armnet_frame_times.jsonl").read_text().splitlines()]
     assert times == [{"episode_index": 0, "frame_times_s": [0.0, 0.05]}, {"episode_index": 1, "frame_times_s": [0.0]}]

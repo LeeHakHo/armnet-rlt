@@ -4,9 +4,11 @@
 # 1. .env from .env.example, asking for ARMNET_API_KEY and HF_TOKEN
 # 2. uv sync and the three envs/ environments (learner, openpi, lerobot)
 # 3. the learner auth token and the two Armnet secrets
-# 4. the base π0.5 checkpoint (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken),
+# 4. the base π0.5 checkpoint (default AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k),
 #    its normalization stats and the RLT demo cache (needs a GPU; --skip-cache skips it)
 # 5. the actor image, written to .env as IMAGE_REF (needs Docker; --skip-image skips it)
+# BACKEND=modal: writes it to .env, builds no envs/, checks `modal setup`, creates the two
+# Modal secrets, deploys src/armnet_rlt/modal_app.py and runs step 4 on Modal.
 set -euo pipefail
 MODEL="" SKIP_IMAGE="" SKIP_CACHE=""
 while [ $# -gt 0 ]; do
@@ -39,56 +41,85 @@ ask() {  # <name> <prompt>
 log "1/5 .env"
 [ -f .env ] || cp .env.example .env
 UVRUN=(uv run --quiet --env-file .env)
+[ "$BACKEND" != modal ] || UVRUN+=(--extra modal)
 ask ARMNET_API_KEY "Armnet API key"
-ask HF_TOKEN "Hugging Face token (read access to AutoRLBench, write access to your account for the episode videos)"
+ask HF_TOKEN "Hugging Face token (write access to your namespace, pull requests on AutoRLBench/armnet-leaderboard)"
+# Secret names are per user; Armnet secrets are shared within a team.
 grep -q "^RLT_HF_SECRET=" .env || set_env RLT_HF_SECRET "$RLT_HF_SECRET"
 grep -q "^RLT_AUTH_SECRET=" .env || set_env RLT_AUTH_SECRET "$RLT_AUTH_SECRET"
+[ "$BACKEND" != modal ] || set_env BACKEND modal
 
 log "2/5 environments"
-uv sync --locked --quiet
-for env in learner openpi lerobot; do
-  [ -x "envs/venv-$env/bin/rlt-local" ] && continue
-  log "installing envs/venv-$env"
-  scripts/setup_local.sh "$env"
-done
-
-# Your LeRobot policies under plugins/ go into the lerobot environment.
-for plugin in plugins/lerobot_policy_*/; do
-  [ -f "$plugin/pyproject.toml" ] || continue
-  uv pip install --quiet --python envs/venv-lerobot --no-deps -e "$plugin"
-done
+if [ "$BACKEND" = modal ]; then
+  uv sync --locked --quiet --extra modal
+  "${UVRUN[@]}" modal token info >/dev/null 2>&1 || "${UVRUN[@]}" modal setup \
+    || die "Modal is not set up: run uv run --extra modal modal setup"
+else
+  uv sync --locked --quiet
+  for env in learner openpi lerobot; do
+    [ -x "envs/venv-$env/bin/rlt-local" ] && continue
+    log "installing envs/venv-$env"
+    scripts/setup_local.sh "$env"
+  done
+  scripts/install_plugins.sh
+fi
 
 log "3/5 secrets"
+# Existing secrets are never overwritten.
+SECRETS=$("${UVRUN[@]}" armnet secret list) || die "could not list Armnet secrets"
+has_secret() { grep -qx "$1" <<< "$SECRETS"; }
 if [ -z "${RLT_LEARNER_AUTH_TOKEN:-}" ]; then
+  has_secret "$RLT_AUTH_SECRET" && die "Armnet secret $RLT_AUTH_SECRET exists: put its token in .env as RLT_LEARNER_AUTH_TOKEN, or set RLT_AUTH_SECRET to a new name"
   TOKEN=$(openssl rand -hex 32)
   "${UVRUN[@]}" armnet secret create "$RLT_AUTH_SECRET" "$TOKEN"
   set_env RLT_LEARNER_AUTH_TOKEN "$TOKEN"
-  "${UVRUN[@]}" armnet secret create "$RLT_HF_SECRET" "$HF_TOKEN" \
-    || log "could not create $RLT_HF_SECRET; it may already exist"
 fi
-if [ -z "${PUBLIC_HOST:-}" ] && ! ngrok config check >/dev/null 2>&1; then
+if has_secret "$RLT_HF_SECRET"; then
+  log "using the existing Armnet secret $RLT_HF_SECRET"
+else
+  "${UVRUN[@]}" armnet secret create "$RLT_HF_SECRET" "$HF_TOKEN"
+fi
+if [ "$BACKEND" = modal ]; then
+  # RLT_LEARNER_AUTH_TOKEN (and WANDB_API_KEY) and HF_TOKEN for the Modal containers.
+  SECRET=$(mktemp); chmod 600 "$SECRET"
+  python3 -c 'import json, os, sys; print(json.dumps({k: os.environ[k] for k in sys.argv[1:] if os.environ.get(k)}))' \
+    RLT_LEARNER_AUTH_TOKEN WANDB_API_KEY > "$SECRET"
+  "${UVRUN[@]}" modal secret create --force "${RLT_MODAL_AUTH_SECRET:-armnet-rlt-auth}" --from-json "$SECRET" >/dev/null
+  python3 -c 'import json, os; print(json.dumps({"HF_TOKEN": os.environ["HF_TOKEN"]}))' > "$SECRET"
+  "${UVRUN[@]}" modal secret create --force "${RLT_MODAL_HF_SECRET:-huggingface-secret}" --from-json "$SECRET" >/dev/null
+  rm -f "$SECRET"
+  log "Modal secrets ${RLT_MODAL_AUTH_SECRET:-armnet-rlt-auth} and ${RLT_MODAL_HF_SECRET:-huggingface-secret}"
+elif [ -z "${PUBLIC_HOST:-}" ] && ! ngrok config check >/dev/null 2>&1; then
   log "ngrok is not configured: install it and run 'ngrok config add-authtoken <token>'"
   log "(or set PUBLIC_HOST, TLS_CERT and TLS_KEY in .env to use your own TLS ingress)"
 fi
 
 if ! grep -q "^RECORD_REPO=" .env; then
-  # Training and evaluation episodes are recorded as private datasets under your account.
-  HF_USER=$(HF_TOKEN=$HF_TOKEN "$LEARNER_BIN/hf" auth whoami 2>/dev/null | sed -nE 's/^user[=:] *([^ ]+).*/\1/p' | head -1 || true)
+  # Training and evaluation episodes are recorded as datasets under your account.
+  HF_USER=$(HF_TOKEN=$HF_TOKEN "${HF[@]}" auth whoami 2>/dev/null | sed -nE 's/^user[=:] *([^ ]+).*/\1/p' | head -1 || true)
   [ -n "$HF_USER" ] && set_env RECORD_REPO "$HF_USER/armnet" \
     || log "could not read your Hugging Face user; set RECORD_REPO=<user>/armnet in .env to record episodes"
 fi
 
 log "4/5 base checkpoint, normalization stats and demo cache"
+# Modal: runs the command in a container, its log on the volume at <log>.
+on_gpu() {  # <log> <argv...>
+  if [ "$BACKEND" = modal ]; then run_cmd rl "$@"; else shift; "$@"; fi
+}
+[ "$BACKEND" != modal ] || modal_deploy
 BASE=$(resolve_model "$MODEL")
 log "base checkpoint $BASE"
-[ -d "$DATA/tasks/$CONFIG/ckpt/assets" ] || $LEARNER_BIN/rlt-local assets --config-name "$CONFIG"
+data_exists "$DATA/tasks/$CONFIG/ckpt/assets" \
+  || on_gpu "$DATA/logs/setup-assets.log" $LEARNER_BIN/rlt-local assets --config-name "$CONFIG"
 CACHE=$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt
-if [ -f "$CACHE" ]; then
+if data_exists "$CACHE"; then
   log "demo cache $CACHE"
 elif [ -n "$SKIP_CACHE" ]; then
   log "skipping the demo cache; RLT then starts without demo pretraining"
 else
-  $OPENPI_BIN/rlt-local cache $GPU_ARG --preset multitask --checkpoint "$BASE"
+  # The 39 green-button demos (the same ones iterative DiT starts from) through the base.
+  on_gpu "$DATA/logs/setup-cache.log" $OPENPI_BIN/rlt-local cache $GPU_ARG --preset green-button \
+    --config-name "$CONFIG" --dataset AutoRLBench/busybox_push_green_button_426x240 --checkpoint "$BASE"
 fi
 
 log "5/5 actor image"
@@ -105,4 +136,4 @@ else
   set_env IMAGE_REF "$REF"
   log "image $REF"
 fi
-log "done. Next: CELL=<cell-id> scripts/run.sh dsrl"
+log "done. Next: CELL=cell-03 scripts/run.sh dsrl"

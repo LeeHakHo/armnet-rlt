@@ -1,0 +1,15 @@
+--- a/robometer/data/dataset_success_cutoff.txt
++++ b/robometer/data/dataset_success_cutoff.txt
+@@ -91,3 +91,4 @@ molmoact2_so100_101,0.94
+ molmoact2_yam_tiled,0.94
+ robocasa365_tiled,0.95
+ so101_busybox_push_green_button_lerobot_tiled,0.95
++so101_busybox_demo39_lerobot_tiled,0.9
+--- a/robometer/data/datasets/name_mapping.py
++++ b/robometer/data/datasets/name_mapping.py
+@@ -98,4 +98,5 @@ DS_SHORT_NAME_MAPPING = {
+     "jesbu1_molmoact2_yam_tiled_rfm_molmoact2_yam_tiled": "molmoact2_yam_tiled",
+     "jesbu1_robocasa365_tiled_rfm_robocasa365_tiled": "robocasa365_tiled",
+     "jesbu1_so101_busybox_push_green_button_tiled_so101_busybox_push_green_button_lerobot_tiled": "busybox_push_green_button",
++    "AutoRLBench_so101_busybox_demo39_tiled_so101_busybox_demo39_lerobot_tiled": "busybox_demo39",
+ }

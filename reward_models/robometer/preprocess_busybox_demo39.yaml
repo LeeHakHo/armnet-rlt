@@ -1,0 +1,20 @@
+# 39 busybox teleop demos, tiled (AutoRLBench/so101_busybox_demo39_tiled).
+train_datasets:
+  - "AutoRLBench/so101_busybox_demo39_tiled"
+train_subsets:
+  - ["so101_busybox_demo39_lerobot_tiled"]
+eval_datasets:
+  - "AutoRLBench/so101_busybox_demo39_tiled"
+eval_subsets:
+  - ["so101_busybox_demo39_lerobot_tiled"]
+max_frames_for_preprocessing: 64
+video_frame_sampling: "uniform"
+num_proc: 1
+num_threads: 8
+force_reprocess: false
+cache_dir: processed
+precompute_embeddings: false
+embeddings_cache_dir: "embeddings"
+dinov2_model: "facebook/dinov2-base"
+sentence_model: "sentence-transformers/all-MiniLM-L12-v2"
+embedding_batch_size: 64

@@ -1,0 +1,16 @@
+[project]
+name = "rl_algorithm_from_scratch"
+version = "0.1.0"
+description = "Example RL algorithm plugin for armnet-rlt without π0.5: a CNN on the cameras, SAC"
+requires-python = ">=3.12"
+
+# --algorithm pixel_sac
+[project.entry-points."armnet_rlt.algorithms"]
+pixel_sac = "rl_algorithm_from_scratch:PixelSAC"
+
+[build-system]
+requires = ["setuptools>=71"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["rl_algorithm_from_scratch"]

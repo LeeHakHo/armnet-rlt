@@ -12,6 +12,13 @@ dependencies = [
     "tqdm>=4.70.0",
 ]
 
+[project.optional-dependencies]
+# BACKEND=modal: uv sync --extra modal
+modal = [
+    "modal>=1.5.4",
+    "huggingface-hub>=1,<2",
+]
+
 [project.scripts]
 rlt-submit-actor = "armnet_rlt.submit_actor:main"
 rlt-freeze-checkpoint = "armnet_rlt.freeze_checkpoint:main"
@@ -28,7 +35,6 @@ dev = [
 ]
 submit = [
     "armnet-client[local,viz]==0.3.7",
-    "modal>=1.5.4",
     "python-dotenv>=1.2.3",
 ]
 

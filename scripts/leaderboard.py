@@ -16,6 +16,11 @@ several entries, e.g. different versions or settings. A new submission with the 
 tag and cell replaces the earlier one. An entry is listed once it has every checkpoint on
 every leaderboard cell, with the date of its latest submission. ID and OOD each use the
 entry's best checkpoint, summed over the cells.
+
+A submission also reports the run's training rollouts: successes in each block of 100
+training episodes before a checkpoint, and the exploration noise scale they ran with (0 for
+a policy that trains without exploration noise). These come from the submitter's run
+(rollout_metrics.jsonl), not from recorded datasets.
 """
 
 from __future__ import annotations
@@ -24,18 +29,37 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+
+def load_dotenv(path: Path) -> None:
+    """Sets the KEY=VALUE lines of path that the environment does not set."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        key, sep, value = line.strip().removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or key.startswith("#") or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 LEADERBOARD = os.environ.get("LEADERBOARD_REPO", "AutoRLBench/armnet-leaderboard")
 CELLS = ("cell-01", "cell-03")
 CHECKPOINTS = (100, 200, 300, 400)
 SEEDS = (1042, 2042, 3042)
 PER_SEED = {"id": 10, "ood": 10}
-OOD = ("ood-easy", "ood-hard")
+# Conditions counted as OOD; ood-easy and ood-hard are the OOD levels of earlier submissions.
+OOD = ("ood", "ood-easy", "ood-hard")
 DATA = Path(os.environ.get("RLT_DATA_ROOT") or Path(__file__).resolve().parents[1] / "experiment-data")
 
 
@@ -46,8 +70,6 @@ def slug(name: str) -> str:
 def entry_key(name: str, tag: str | None) -> str:
     return slug(name) + (f"--{slug(tag)}" if tag else "")
 
-
-# ----------------------------------------------------------------------------- submit
 
 def eval_datasets(run: str) -> dict[int, list[str]]:
     """Recorded evaluation datasets of each checkpoint of RUN, from its cell job logs."""
@@ -66,10 +88,24 @@ def eval_datasets(run: str) -> dict[int, list[str]]:
     return found
 
 
-def submit(args: argparse.Namespace) -> None:
-    from huggingface_hub import HfApi
+def training_curve(run: str) -> tuple[dict[str, list[int]], float] | None:
+    """Successes of each block of 100 training episodes ending at a checkpoint, and the
+    largest exploration noise scale of the run, from its rollout_metrics.jsonl."""
+    paths = sorted(DATA.glob(f"tasks/*/rlt_checkpoints/{run}/rollout_metrics.jsonl")) \
+        + sorted(DATA.glob(f"lerobot-sbc/{run}/rollout_metrics.jsonl"))
+    if not paths:
+        return None
+    rows = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
+    blocks = {}
+    for end in CHECKPOINTS:
+        block = rows[end - 100:end]
+        if block:
+            blocks[str(end)] = [sum(bool(r.get("success")) for r in block), len(block)]
+    return blocks, max(float(r.get("exploration_scale") or 0.0) for r in rows)
 
-    from huggingface_hub import repo_exists
+
+def submit(args: argparse.Namespace) -> None:
+    from huggingface_hub import HfApi, repo_exists
 
     datasets = {ep: [r for r in repos if repo_exists(r, repo_type="dataset")]
                 for ep, repos in eval_datasets(args.run).items()}
@@ -83,6 +119,9 @@ def submit(args: argparse.Namespace) -> None:
         "code": args.code, "notes": args.notes, "cell": args.cell, "run": args.run,
         "evaluations": {str(c): datasets[c] for c in CHECKPOINTS},
     }
+    training = training_curve(args.run)
+    if training:
+        submission["training"], submission["training_exploration"] = training
     path = f"submissions/{entry_key(args.name, args.tag)}/{args.cell}.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         json.dump(submission, handle, indent=1)
@@ -92,8 +131,6 @@ def submit(args: argparse.Namespace) -> None:
     )
     print(f"submitted {args.name} on {args.cell}: {commit.pr_url}")
 
-
-# ----------------------------------------------------------------------------- score
 
 def labels(repo: str) -> tuple[list[dict], list[dict]]:
     """Episode labels and episode video spans (meta/episodes) of a recorded dataset."""
@@ -107,6 +144,15 @@ def labels(repo: str) -> tuple[list[dict], list[dict]]:
     return rows, spans
 
 
+def evaluation_episodes(rows: list[dict], episodes: int) -> list[tuple[int, dict]]:
+    """(episode index, label) of the evaluation after ``episodes`` training episodes: every
+    episode of a one-job dataset, or the matching phase "eval" labels of a run's dataset."""
+    indexed = [(int(r.get("episode_index", i)), r) for i, r in enumerate(rows)]
+    if not any("phase" in r for r in rows):
+        return indexed
+    return [(i, r) for i, r in indexed if r.get("phase") == "eval" and r.get("checkpoint_episodes") == episodes]
+
+
 def check(submission: dict) -> tuple[dict, list[dict]]:
     """Counts per checkpoint and one row per rollout; raises ValueError when the
     submission does not follow the protocol."""
@@ -117,11 +163,12 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
         repos = submission["evaluations"].get(str(episodes)) or []
         if not repos:
             raise ValueError(f"no evaluation after {episodes} episodes")
-        counts = {"id": [0, 0], "ood-easy": [0, 0], "ood-hard": [0, 0], "trips": 0}
+        counts = {"id": [0, 0], "ood": [0, 0], "ood-easy": [0, 0], "ood-hard": [0, 0], "trips": 0}
         per_seed = Counter()
         for repo in repos:
             labelled, spans = labels(repo)
-            for i, r in enumerate(labelled):
+            spans = {int(s.get("episode_index", j)): s for j, s in enumerate(spans)}
+            for i, r in evaluation_episodes(labelled, episodes):
                 v = r.get("variation") or {}
                 cond = v.get("condition")
                 if cond not in counts or v.get("seed") not in SEEDS:
@@ -133,7 +180,7 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
                 counts["trips"] += r.get("outcome") == "safety_trip"
                 per_seed[(v["seed"], "id" if cond == "id" else "ood")] += 1
                 video = None
-                if i < len(spans):
+                if i in spans:
                     s = spans[i]
                     key = "videos/observation.images.top"
                     video = (f"https://huggingface.co/datasets/{repo}/resolve/main/{key}/"
@@ -161,8 +208,12 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
     for e in sorted(entries, key=lambda e: e.get("date") or ""):
         key = entry_key(e["name"], e.get("tag"))
         m = methods.setdefault(key, {"name": e["name"], "tag": e.get("tag") or "", "code": e.get("code"),
-                                     "notes": e.get("notes"), "cells": {}, "rows": {}, "date": ""})
+                                     "notes": e.get("notes"), "cells": {}, "rows": {}, "date": "", "training": {},
+                                     "exploration": None})
         m["cells"][e["cell"]] = e["evals"]
+        if e.get("training"):
+            m["training"][e["cell"]] = e["training"]
+            m["exploration"] = e.get("training_exploration")
         m["rows"][e["cell"]] = [{**r, "method": key, "name": e["name"], "tag": e.get("tag") or ""} for r in e["rows"]]
         m["date"] = max(m["date"], e.get("date") or "")
     board, rollouts = [], []
@@ -172,8 +223,11 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
             continue
         entry = {"key": key, "name": m["name"], "tag": m["tag"], "date": m["date"], "detail": m["notes"] or "", "open_source": bool(m["code"]),
                  "code": m["code"], "best": {}, "curve": {c: {str(k): v for k, v in m["cells"][c].items()} for c in sorted(m["cells"])}}
+        if m["training"]:
+            entry["training"] = {c: m["training"][c] for c in sorted(m["training"])}
+            entry["training_exploration"] = m["exploration"]
         for part, conds in (("id", ("id",)), ("ood", OOD)):
-            total = lambda ep, i: sum(m["cells"][c][ep][x][i] for c in CELLS for x in conds)
+            total = lambda ep, i: sum(m["cells"][c][ep].get(x, [0, 0])[i] for c in CELLS for x in conds)
             best = max(CHECKPOINTS, key=lambda ep: total(ep, 0))
             entry["best"][part] = [total(best, 0), total(best, 1), best]
         board.append(entry)
@@ -183,24 +237,31 @@ def build(entries: list[dict]) -> tuple[list[dict], list[dict]]:
 CLIPS = os.environ.get("CLIPS_REPO", "AutoRLBench/armnet-benchmark-rollouts")
 
 
-def clips(repo: str, existing: set[str]) -> dict[int, str]:
+def clips(repo: str, existing: set[str], episodes: set[int] | None = None) -> dict[int, str]:
     """One video per episode of a recorded dataset: the episode only, top above front and
     wrist (640x540), in real time. The recording has one frame per control tick at a
     nominal fps; each frame is shown for its real duration from meta/armnet_frame_times.jsonl,
     so the arm holds still while the loop waits for an action chunk (without that file the
     clip is stretched evenly to the episode's duration). Uploads the missing ones to the
-    public CLIPS dataset and returns {episode index: URL}."""
+    public CLIPS dataset and returns {episode index: URL}, for ``episodes`` only when given."""
     import subprocess
 
     from huggingface_hub import HfApi, snapshot_download
 
     prefix = f"clips/v2/{repo.replace('/', '__')}/"
-    rows, spans = labels(repo)
-    urls = {i: f"https://huggingface.co/datasets/{CLIPS}/resolve/main/{prefix}{i:03d}.mp4" for i in range(min(len(rows), len(spans)))}
+    labelled, span_rows = labels(repo)
+    rows = {int(r.get("episode_index", i)): r for i, r in enumerate(labelled)}
+    spans = {int(s.get("episode_index", i)): s for i, s in enumerate(span_rows)}
+    urls = {i: f"https://huggingface.co/datasets/{CLIPS}/resolve/main/{prefix}{i:03d}.mp4"
+            for i in sorted(rows.keys() & spans.keys()) if episodes is None or i in episodes}
     todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
     if not todo:
         return urls
-    root = Path(snapshot_download(repo, repo_type="dataset"))
+    # Only meta and the video files of these episodes.
+    files = {f"videos/observation.images.{view}/chunk-{int(spans[i][f'videos/observation.images.{view}/chunk_index']):03d}/"
+             f"file-{int(spans[i][f'videos/observation.images.{view}/file_index']):03d}.mp4"
+             for i in todo for view in ("top", "front", "wrist")}
+    root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=["meta/**", *sorted(files)], max_workers=4))
     times_file = root / "meta/armnet_frame_times.jsonl"
     frame_times = {}
     if times_file.exists():
@@ -236,10 +297,12 @@ def clips(repo: str, existing: set[str]) -> dict[int, str]:
                                    + f"file '{images[-1]}'\n")
                 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                                 "-vf", "fps=20", *encode, str(out)], check=True)
+                shutil.rmtree(frames)
             else:
                 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *parts, "-filter_complex",
                                 tile + f",setpts={stretch:.4f}*PTS,fps=20[v]", "-map", "[v]", *encode, str(out)], check=True)
-        HfApi().upload_folder(folder_path=tmp, repo_id=CLIPS, repo_type="dataset", commit_message=f"Episode videos of {repo}")
+        HfApi().upload_folder(folder_path=tmp, allow_patterns=[f"{prefix}*.mp4"], repo_id=CLIPS, repo_type="dataset",
+                              commit_message=f"Episode videos of {repo}")
     return urls
 
 
@@ -263,7 +326,7 @@ def score(args: argparse.Namespace) -> None:
         if not args.dry_run:
             api.merge_pull_request(LEADERBOARD, pr.num, repo_type="dataset")
     entries = []
-    # Submissions without a date (older submit scripts) take their file's commit date.
+    # A submission without a date takes its file's commit date.
     files = list_repo_files(LEADERBOARD, repo_type="dataset")
     dates = {}
     if any(f.startswith("submissions/") for f in files):
@@ -277,17 +340,22 @@ def score(args: argparse.Namespace) -> None:
             evals, rows = check(sub)
             entries.append({**sub, "evals": evals, "rows": rows})
         elif f.startswith("legacy/") and f.endswith(".json"):
-            # Results from before episode labels were recorded, added by the maintainers.
+            # Results without recorded episode labels, added by the maintainers.
             for e in json.loads(Path(hf_hub_download(LEADERBOARD, f, repo_type="dataset")).read_text()):
                 entries.append({**e, "evals": {int(k): v for k, v in e["evals"].items()}})
     board, rollouts = build(entries)
-    if not args.dry_run:
+    # NO_CLIPS=1 publishes the counts now and leaves episode videos to a later run.
+    if not args.dry_run and os.environ.get("NO_CLIPS") != "1":
         existing = set(api.list_repo_files(CLIPS, repo_type="dataset"))
         urls: dict[str, dict[int, str]] = {}
+        wanted: dict[str, set[int]] = {}
+        for r in rollouts:
+            if r.get("dataset"):
+                wanted.setdefault(r["dataset"], set()).add(r["dataset_episode"])
         for r in rollouts:
             if r.get("dataset"):
                 if r["dataset"] not in urls:
-                    urls[r["dataset"]] = clips(r["dataset"], existing)
+                    urls[r["dataset"]] = clips(r["dataset"], existing, wanted[r["dataset"]])
                 r["video"] = urls[r["dataset"]].get(r["dataset_episode"], r.get("video"))
     print(f"{len(board)} methods listed, {len(rollouts)} rollouts")
     if args.dry_run:

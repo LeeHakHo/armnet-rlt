@@ -6,7 +6,7 @@ import torch
 
 from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTConfig, RLTNetworkConfig, so101_network_config
-from armnet_rlt.learner import _q_stats
+from armnet_rlt.algorithms.rlt import q_stats
 from armnet_rlt.networks import RLTActor, RLTCritic
 from armnet_rlt.policy import RLTPolicy
 
@@ -193,7 +193,7 @@ def test_q_stats_runs_with_the_reference_relative_critic() -> None:
         "reward": torch.tensor([0.0, 0.0, 1.0, 1.0]),
     }
 
-    stats = _q_stats(policy, batch)
+    stats = q_stats(policy, batch)
 
-    assert np.isfinite(stats["learner/q_mean"])
-    assert np.isfinite(stats["learner/q_gap"])
+    assert np.isfinite(stats["q_mean"])
+    assert np.isfinite(stats["q_gap"])

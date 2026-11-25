@@ -1,7 +1,15 @@
 """Policy inference over gRPC: a policy server and cell-side clients.
 
-The server serves one ``PolicyBackend`` (OpenPI RLT or a LeRobot policy).
-Messages are ``np.savez`` archives loaded with ``allow_pickle=False``.
+The server serves one ``PolicyBackend``: π0.5 with an RL algorithm's actor
+(``OpenPIBackend``), or a LeRobot policy. Messages are ``np.savez`` archives
+loaded with ``allow_pickle=False``.
+
+An RL ``Infer`` request carries ``act`` with ``explore``, ``exploration_scale``,
+``exploration_correlation`` and ``base``; the reply has ``action_chunk`` (the
+chunk to execute), ``base_chunk`` and ``rl_token`` (when the algorithm uses
+π0.5), ``extra/<name>`` arrays, ``actor_step`` and ``needs_images``. A request
+without ``act`` gets π0.5's own chunk and RL token, as before the algorithm
+interface.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from armnet_rlt.openpi_rlt import PolicyObservation, PolicyOutput
+from armnet_rlt.policy_actor import AlgorithmPolicy, ChunkResult
 
 log = logging.getLogger(__name__)
 
@@ -41,17 +50,26 @@ def unpack(data: bytes) -> dict[str, np.ndarray]:
 
 
 def encode_image(image: np.ndarray, codec: str, jpeg_quality: int = 90) -> np.ndarray:
-    """Encode one HWC uint8 RGB image as a flat uint8 array."""
+    """Encode one HWC uint8 RGB image as a flat uint8 array (OpenCV, or
+    Pillow where OpenCV is not installed)."""
     if codec == "raw":
         return np.ascontiguousarray(image, dtype=np.uint8)
     if codec not in IMAGE_CODECS:
         raise ValueError(f"image codec must be one of {IMAGE_CODECS}, got {codec!r}")
-    import cv2
+    image = np.asarray(image, dtype=np.uint8)
+    try:
+        import cv2
+    except ModuleNotFoundError:
+        from PIL import Image
 
+        buffer = io.BytesIO()
+        options = {"quality": int(jpeg_quality)} if codec == "jpeg" else {}
+        Image.fromarray(image).save(buffer, format="JPEG" if codec == "jpeg" else "PNG", **options)
+        return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
     params = [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)] if codec == "jpeg" else []
     ok, encoded = cv2.imencode(
         ".jpg" if codec == "jpeg" else ".png",
-        cv2.cvtColor(np.asarray(image, dtype=np.uint8), cv2.COLOR_RGB2BGR),
+        cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
         params,
     )
     if not ok:
@@ -64,8 +82,13 @@ def decode_image(data: np.ndarray, codec: str) -> np.ndarray:
         return np.asarray(data, dtype=np.uint8)
     if codec not in IMAGE_CODECS:
         raise ValueError(f"image codec must be one of {IMAGE_CODECS}, got {codec!r}")
-    import cv2
+    try:
+        import cv2
+    except ModuleNotFoundError:
+        from PIL import Image
 
+        with Image.open(io.BytesIO(np.asarray(data, dtype=np.uint8).tobytes())) as image:
+            return np.asarray(image.convert("RGB"))
     image = cv2.imdecode(np.asarray(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"{codec} decoding failed")
@@ -73,7 +96,7 @@ def decode_image(data: np.ndarray, codec: str) -> np.ndarray:
 
 
 def resize_for_model(image: np.ndarray, height: int, width: int) -> np.ndarray:
-    """Resize one HWC uint8 image with OpenPI's ResizeImages function."""
+    """Resize one HWC uint8 image to ``height`` x ``width`` with padding, as OpenPI does."""
     image = np.asarray(image)
     if image.shape[:2] == (height, width) and image.dtype == np.uint8:
         return image
@@ -113,7 +136,8 @@ def unpack_norm_stats(arrays: dict[str, np.ndarray]) -> dict[str, RemoteNormStat
 class PolicyBackend:
     """What a policy server serves. ``info`` returns the arrays of the Info
     reply (``meta`` is a JSON string), ``infer`` answers one decoded request,
-    ``set_steering`` installs a DSRL actor and ``reset`` ends an episode."""
+    ``set_steering`` installs an actor (``algorithm.actor_payload``) and
+    ``reset`` ends an episode."""
 
     def info(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -138,29 +162,42 @@ def decode_images(arrays: dict[str, np.ndarray], codec: str) -> dict[str, np.nda
 
 
 class OpenPIBackend(PolicyBackend):
-    """Serve an ``OpenPIRLTPolicy``."""
+    """Serve an ``AlgorithmPolicy``, or an ``OpenPIRLTPolicy`` wrapped in one."""
 
     def __init__(
         self,
         policy: Any,
         *,
-        image_size: tuple[int, int],
+        image_size: tuple[int, int] | None = None,
         steering_from_learner: bool = False,
     ) -> None:
-        self._policy = policy
-        self._image_size = image_size
-        self.steering_from_learner = steering_from_learner
+        self._runner = (
+            policy
+            if isinstance(policy, AlgorithmPolicy)
+            else AlgorithmPolicy(
+                policy, actor_source="learner" if steering_from_learner else "client"
+            )
+        )
+        self._image_size = tuple(image_size or self._runner.image_size)
 
     def info(self) -> dict[str, Any]:
-        meta = {
-            "policy_type": "openpi",
-            "rl_token_dim": int(self._policy.rl_token_dim),
-            "use_quantile_norm": bool(self._policy.use_quantile_norm),
-            "uses_delta_actions": bool(self._policy.uses_delta_actions),
+        runner = self._runner
+        base = runner.base
+        meta: dict[str, Any] = {
+            "policy_type": "openpi" if base is not None else "rl",
+            **runner.info(),
             "image_size": list(self._image_size),
-            "steering_from_learner": bool(self.steering_from_learner),
+            "steering_from_learner": runner.actor_source != "client",
         }
-        return {"meta": json.dumps(meta), **pack_norm_stats(self._policy.norm_stats)}
+        arrays: dict[str, Any] = {}
+        if base is not None:
+            meta.update(
+                rl_token_dim=int(base.rl_token_dim),
+                use_quantile_norm=bool(base.use_quantile_norm),
+                uses_delta_actions=bool(base.uses_delta_actions),
+            )
+            arrays = pack_norm_stats(base.norm_stats)
+        return {"meta": json.dumps(meta), **arrays}
 
     def infer(self, arrays: dict[str, np.ndarray]) -> dict[str, Any]:
         observation = PolicyObservation(
@@ -168,26 +205,41 @@ class OpenPIBackend(PolicyBackend):
             images=decode_images(arrays, str(arrays["codec"])),
             prompt=str(arrays["prompt"]),
         )
-        options: dict[str, Any] = {}
-        if "exploration_std" in arrays:
-            options["exploration_std"] = float(arrays["exploration_std"])
-            options["steer"] = bool(arrays["steer"])
-        result = self._policy.infer(observation, **options)
+        if "act" not in arrays:
+            if "exploration_std" in arrays:
+                raise ValueError(
+                    "this policy server runs the algorithm's actor itself; "
+                    "rebuild the actor image"
+                )
+            if self._runner.base is None:
+                raise ValueError("this policy server has no π0.5")
+            plain = self._runner.base.infer(observation)
+            return {"action_chunk": plain.action_chunk, "rl_token": plain.rl_token}
+        result = self._runner.act(
+            observation,
+            explore=bool(arrays["explore"]),
+            exploration_scale=float(arrays["exploration_scale"]),
+            exploration_correlation=float(arrays["exploration_correlation"]),
+            base=bool(arrays["base"]),
+        )
         response: dict[str, Any] = {
-            "action_chunk": result.action_chunk,
-            "rl_token": result.rl_token,
+            "action_chunk": result.chunk,
+            "actor_step": -1 if result.actor_step is None else int(result.actor_step),
+            "needs_images": bool(result.needs_images),
         }
-        if result.noise is not None:
-            response["noise"] = result.noise
-        if result.steering_step is not None:
-            response["steering_step"] = result.steering_step
+        if result.base_chunk is not None:
+            response["base_chunk"] = result.base_chunk
+        if result.rl_token is not None:
+            response["rl_token"] = result.rl_token
+        for name, value in result.extras.items():
+            response[f"extra/{name}"] = value
         return response
 
     def set_steering(self, payload: dict[str, Any]) -> int | None:
-        return self._policy.set_steering(payload)
+        return self._runner.install(payload)
 
     def reset(self) -> None:
-        self._policy.reset()
+        self._runner.reset()
 
 
 class PolicyServer:
@@ -242,13 +294,13 @@ def serve(
     tls_key_path: str = "",
     steering_from_learner: bool = False,
 ) -> Iterator[Any]:
-    """Run a gRPC server on ``bind`` until the context exits.
+    """Run a gRPC policy server on ``bind`` until the context exits.
 
-    ``policy`` is a ``PolicyBackend`` or an ``OpenPIRLTPolicy`` (served at
-    ``image_size``). With ``tls_cert_path`` and ``tls_key_path`` the server
-    terminates TLS itself. ``steering_from_learner`` tells actors the server
-    installs the DSRL actor itself. The yielded server has ``apply_steering``
-    and ``run_locked`` for a learner feed."""
+    ``policy`` is a ``PolicyBackend``, an ``AlgorithmPolicy`` or an
+    ``OpenPIRLTPolicy`` (served at ``image_size``). With ``tls_cert_path`` and
+    ``tls_key_path`` the server terminates TLS. ``steering_from_learner`` tells
+    actors the server takes the actor from the learner. The yielded server has
+    ``apply_steering`` and ``run_locked`` for a learner feed."""
     import grpc
 
     if bool(tls_cert_path) != bool(tls_key_path):
@@ -259,7 +311,7 @@ def serve(
     if isinstance(policy, PolicyBackend):
         backend = policy
     else:
-        if image_size is None:
+        if image_size is None and not isinstance(policy, AlgorithmPolicy):
             raise ValueError("image_size is required to serve an OpenPI policy")
         backend = OpenPIBackend(
             policy, image_size=image_size, steering_from_learner=steering_from_learner
@@ -306,7 +358,7 @@ def serve(
 
 
 class RemoteOpenPIRLTPolicy:
-    """``OpenPIRLTPolicy`` interface backed by a policy server."""
+    """Client of a policy server that runs π0.5 and an RL algorithm's actor."""
 
     def __init__(
         self,
@@ -333,15 +385,21 @@ class RemoteOpenPIRLTPolicy:
         self.steering_step: int | None = None
         info = unpack(self._call("Info", b"", timeout_s=30.0))
         meta = json.loads(str(info["meta"]))
-        if meta.get("policy_type", "openpi") != "openpi":
+        if meta.get("policy_type", "openpi") not in {"openpi", "rl"}:
             raise RuntimeError(
                 f"the policy server serves a {meta.get('policy_type')} policy, "
                 "not OpenPI"
             )
         self.steering_from_learner = bool(meta.get("steering_from_learner", False))
-        self.rl_token_dim = int(meta["rl_token_dim"])
-        self.use_quantile_norm = bool(meta["use_quantile_norm"])
-        self.uses_delta_actions = bool(meta["uses_delta_actions"])
+        self.actor_source = str(
+            meta.get("actor_source", "learner" if self.steering_from_learner else "client")
+        )
+        self.algorithm = str(meta.get("algorithm", ""))
+        self.uses_base = bool(meta.get("uses_base", True))
+        self.needs_images = bool(meta.get("needs_images", False))
+        self.rl_token_dim = int(meta.get("rl_token_dim", 0))
+        self.use_quantile_norm = bool(meta.get("use_quantile_norm", True))
+        self.uses_delta_actions = meta.get("uses_delta_actions")
         self.norm_stats = unpack_norm_stats(info)
         self._image_size = tuple(int(v) for v in meta["image_size"])
         self._latencies_ms: list[float] = []
@@ -361,53 +419,68 @@ class RemoteOpenPIRLTPolicy:
                 log.warning("remote policy %s failed (%s); retrying", name, exc.code())
         raise AssertionError("unreachable")
 
-    def encode_observation(
-        self, observation: PolicyObservation, *, extra: dict[str, Any] | None = None
-    ) -> bytes:
+    def encode_images(self, observation: PolicyObservation) -> dict[str, np.ndarray]:
+        """The observation's images at the server's size, encoded with the codec."""
         height, width = self._image_size
+        return {
+            name: encode_image(
+                resize_for_model(image, height, width),
+                self._image_codec,
+                self._jpeg_quality,
+            )
+            for name, image in observation.images.items()
+        }
+
+    def encode_observation(
+        self,
+        observation: PolicyObservation,
+        *,
+        extra: dict[str, Any] | None = None,
+        images: dict[str, np.ndarray] | None = None,
+    ) -> bytes:
         arrays: dict[str, Any] = {
             "state": np.asarray(observation.state, dtype=np.float32),
             "prompt": observation.prompt,
             "codec": self._image_codec,
             **(extra or {}),
         }
-        for name, image in observation.images.items():
-            arrays[f"image/{name}"] = encode_image(
-                resize_for_model(image, height, width),
-                self._image_codec,
-                self._jpeg_quality,
-            )
+        encoded = self.encode_images(observation) if images is None else images
+        for name, data in encoded.items():
+            arrays[f"image/{name}"] = data
         return pack(arrays)
 
     def set_steering(self, payload: dict[str, Any]) -> int | None:
-        """Send a DSRL actor (see ``dsrl.steering_payload``) to the server."""
+        """Send an actor (``algorithm.actor_payload``) to the server."""
         response = unpack(self._call("SetSteering", pack(payload), timeout_s=180.0))
         step = int(response["steering_step"])
         self.steering_step = step if step >= 0 else None
         return self.steering_step
 
-    def infer(
-        self,
-        observation: PolicyObservation | dict[str, Any],
-        *,
-        exploration_std: float | None = None,
-        steer: bool = True,
-    ) -> PolicyOutput:
-        if not isinstance(observation, PolicyObservation):
-            raise TypeError("RemoteOpenPIRLTPolicy.infer expects a PolicyObservation")
+    def wait_for_actor(self, timeout_s: float = 120.0) -> bool:
+        """Poll the server until it has an actor; False on timeout."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            meta = json.loads(str(unpack(self._call("Info", b"", timeout_s=30.0))["meta"]))
+            if meta.get("actor_ready", True):
+                self.needs_images = bool(meta.get("needs_images", self.needs_images))
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(2.0)
+
+    def _send(self, request: bytes) -> dict[str, np.ndarray]:
         started = time.perf_counter()
-        request = self.encode_observation(
-            observation,
-            extra=(
-                {"exploration_std": float(exploration_std), "steer": bool(steer)}
-                if exploration_std is not None
-                else None
-            ),
-        )
         response = unpack(self._call("Infer", request))
         self._latencies_ms.append((time.perf_counter() - started) * 1000.0)
         self._server_ms.append(float(response["server_ms"]))
         self._request_bytes.append(len(request))
+        return response
+
+    def infer(self, observation: PolicyObservation) -> PolicyOutput:
+        """π0.5's own chunk and RL token, without the actor."""
+        if not isinstance(observation, PolicyObservation):
+            raise TypeError("RemoteOpenPIRLTPolicy.infer expects a PolicyObservation")
+        response = self._send(self.encode_observation(observation))
         token = np.asarray(response["rl_token"], dtype=np.float32).reshape(-1)
         if token.shape != (self.rl_token_dim,):
             raise RuntimeError(
@@ -417,14 +490,66 @@ class RemoteOpenPIRLTPolicy:
         return PolicyOutput(
             action_chunk=np.asarray(response["action_chunk"], dtype=np.float32),
             rl_token=token,
-            noise=(
-                np.asarray(response["noise"], dtype=np.float32)
-                if "noise" in response
+        )
+
+    def act(
+        self,
+        observation: PolicyObservation,
+        *,
+        explore: bool,
+        exploration_scale: float = 0.0,
+        exploration_correlation: float = 0.85,
+        base: bool = False,
+    ) -> ChunkResult:
+        """The actor's chunk for one observation. For an algorithm that needs
+        images, ``frames`` holds the views as sent, JPEG-encoded."""
+        if not isinstance(observation, PolicyObservation):
+            raise TypeError("RemoteOpenPIRLTPolicy.act expects a PolicyObservation")
+        images = self.encode_images(observation)
+        response = self._send(
+            self.encode_observation(
+                observation,
+                images=images,
+                extra={
+                    "act": True,
+                    "explore": bool(explore),
+                    "exploration_scale": float(exploration_scale),
+                    "exploration_correlation": float(exploration_correlation),
+                    "base": bool(base),
+                },
+            )
+        )
+        needs_images = bool(response.get("needs_images", False))
+        frames = None
+        if needs_images:
+            if self._image_codec == "jpeg":
+                frames = images
+            else:
+                height, width = self._image_size
+                frames = {
+                    name: encode_image(resize_for_model(image, height, width), "jpeg", 90)
+                    for name, image in observation.images.items()
+                }
+        token = None
+        if "rl_token" in response:
+            token = np.asarray(response["rl_token"], dtype=np.float32).reshape(-1)
+        step = int(response.get("actor_step", -1))
+        return ChunkResult(
+            chunk=np.asarray(response["action_chunk"], dtype=np.float32),
+            base_chunk=(
+                np.asarray(response["base_chunk"], dtype=np.float32)
+                if "base_chunk" in response
                 else None
             ),
-            steering_step=(
-                int(response["steering_step"]) if "steering_step" in response else None
-            ),
+            rl_token=token,
+            extras={
+                key.removeprefix("extra/"): np.asarray(value)
+                for key, value in response.items()
+                if key.startswith("extra/")
+            },
+            actor_step=step if step >= 0 else None,
+            frames=frames,
+            needs_images=needs_images,
         )
 
     def latency_summary(self) -> dict[str, float | int]:

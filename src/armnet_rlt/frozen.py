@@ -16,7 +16,10 @@ from armnet_rlt.config import (
 )
 
 
-FROZEN_SCHEMA_VERSION = 1
+# 2: the algorithm name and actor_meta, what a policy server rebuilds the
+# actor from. 1: rlt and dsrl actors before the algorithm interface.
+FROZEN_SCHEMA_VERSION = 2
+_READABLE_SCHEMAS = {1, 2}
 
 
 def freeze_learner_checkpoint(
@@ -24,30 +27,63 @@ def freeze_learner_checkpoint(
     *,
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Strip optimizers and critics from one learner checkpoint."""
-    policy_state = checkpoint.get("policy_state_dict")
+    """Keep the actor of one learner checkpoint and what rebuilds it."""
     config = checkpoint.get("config")
     step = checkpoint.get("step")
-    if not isinstance(policy_state, Mapping):
-        raise ValueError("learner checkpoint lacks policy_state_dict")
     if not isinstance(config, Mapping):
         raise ValueError("learner checkpoint lacks config")
     if not isinstance(step, int) or step < 0:
         raise ValueError("learner checkpoint has an invalid step")
-    actor_state = {
-        str(name).removeprefix("actor."): value.detach().cpu()
-        for name, value in policy_state.items()
-        if str(name).startswith("actor.") and isinstance(value, Tensor)
-    }
+    actor_state = checkpoint.get("actor_state")
+    if isinstance(actor_state, Mapping):
+        actor_state = {str(name): value.detach().cpu() for name, value in actor_state.items()}
+    else:
+        # Checkpoints from before the algorithm interface: the actor's part of
+        # the rlt/dsrl policy.
+        policy_state = checkpoint.get("policy_state_dict")
+        if policy_state is None:
+            policy_state = (checkpoint.get("algorithm_state") or {}).get("policy_state_dict")
+        if not isinstance(policy_state, Mapping):
+            raise ValueError("learner checkpoint lacks policy_state_dict")
+        actor_state = {
+            str(name).removeprefix("actor."): value.detach().cpu()
+            for name, value in policy_state.items()
+            if str(name).startswith("actor.") and isinstance(value, Tensor)
+        }
     if not actor_state:
         raise ValueError("learner checkpoint contains no actor parameters")
-    return {
+    clean = without_secrets(config)
+    algorithm = str(checkpoint.get("algorithm") or clean.get("algorithm", "rlt"))
+    meta = checkpoint.get("actor_meta")
+    artifact = {
         "schema_version": FROZEN_SCHEMA_VERSION,
         "learner_step": step,
+        "algorithm": algorithm,
         "actor_state_dict": actor_state,
-        "config": without_secrets(config),
+        "config": clean,
         "source": dict(source or {}),
     }
+    artifact["actor_meta"] = str(meta) if meta else _legacy_actor_meta(artifact)
+    return artifact
+
+
+def _legacy_actor_meta(artifact: Mapping[str, Any]) -> str:
+    """actor_meta of an rlt/dsrl actor saved without one."""
+    from armnet_rlt.algorithm import actor_meta, load_algorithm, spec_for
+
+    config = config_from_frozen_checkpoint(artifact)
+    return actor_meta(config.algorithm, spec_for(config, load_algorithm(config.algorithm)), config)
+
+
+def frozen_actor_payload(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``algorithm.actor_payload`` of a frozen checkpoint."""
+    from armnet_rlt.algorithm import actor_payload
+
+    return actor_payload(
+        artifact["actor_state_dict"],
+        str(artifact["actor_meta"]),
+        learner_step=int(artifact["learner_step"]),
+    )
 
 
 def load_frozen_checkpoint(path: str | Path) -> dict[str, Any]:
@@ -68,7 +104,7 @@ def load_frozen_checkpoint(path: str | Path) -> dict[str, Any]:
         ) from exc
     if not isinstance(artifact, dict):
         raise ValueError("frozen RLT checkpoint must contain a dictionary")
-    if artifact.get("schema_version") != FROZEN_SCHEMA_VERSION:
+    if artifact.get("schema_version") not in _READABLE_SCHEMAS:
         raise ValueError(
             "unsupported frozen RLT checkpoint schema "
             f"{artifact.get('schema_version')!r}"
@@ -80,6 +116,9 @@ def load_frozen_checkpoint(path: str | Path) -> dict[str, Any]:
     step = artifact.get("learner_step")
     if not isinstance(step, int) or step < 0:
         raise ValueError("frozen RLT checkpoint has an invalid learner_step")
+    if not artifact.get("actor_meta"):
+        artifact["actor_meta"] = _legacy_actor_meta(artifact)
+        artifact.setdefault("algorithm", str(artifact["config"].get("algorithm", "rlt")))
     return artifact
 
 
@@ -102,6 +141,7 @@ def config_from_frozen_checkpoint(artifact: Mapping[str, Any]) -> RLTConfig:
         embodiment=embodiment,
         network=network,
         algorithm=algorithm,
+        algorithm_options=dict(raw.get("algorithm_options") or {}),
         dsrl_noise_bound=float(raw.get("dsrl_noise_bound", 2.5)),
         dsrl_noise_steps=int(raw.get("dsrl_noise_steps", 1)),
         actions_to_execute=(
@@ -109,8 +149,8 @@ def config_from_frozen_checkpoint(artifact: Mapping[str, Any]) -> RLTConfig:
             if algorithm == "dsrl"
             else network.predicted_action_len
         ),
-        max_demo_pretrain_steps=0 if algorithm == "dsrl" else 500,
-        online_batch_fraction=1.0 if algorithm == "dsrl" else 0.5,
+        max_demo_pretrain_steps=0 if algorithm != "rlt" else 500,
+        online_batch_fraction=1.0 if algorithm != "rlt" else 0.5,
         use_subsampling=bool(raw.get("use_subsampling", True)),
         sub_chunk_stride=int(raw.get("sub_chunk_stride", 2)),
         use_quantile_norm=bool(raw.get("use_quantile_norm", True)),

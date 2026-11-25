@@ -1,9 +1,8 @@
-"""Export one Modal or local RLT learner checkpoint as a frozen Armnet actor."""
+"""Export one local RLT learner checkpoint as a frozen Armnet actor."""
 
 from __future__ import annotations
 
 import argparse
-import io
 import os
 from pathlib import Path
 
@@ -11,7 +10,7 @@ import torch
 from dotenv import load_dotenv
 
 from armnet_rlt.frozen import freeze_learner_checkpoint
-from armnet_rlt.resources import VOLUME_NAME, local_data_root
+from armnet_rlt.resources import local_data_root
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,13 +24,6 @@ def _parser() -> argparse.ArgumentParser:
         "--step",
         default="latest",
         help="Learner step number or 'latest'",
-    )
-    parser.add_argument("--modal-volume", default=VOLUME_NAME)
-    parser.add_argument(
-        "--local",
-        action="store_true",
-        help="Read the checkpoint from RLT_DATA_ROOT (an rlt-local run) "
-        "instead of the Modal volume",
     )
     parser.add_argument(
         "--output",
@@ -56,50 +48,14 @@ def _run_root(config_name: str, run_id: str) -> str:
     return f"tasks/{clean_config}/rlt_checkpoints/{clean_run}"
 
 
-def _resolve_step(volume, root: str, requested: str) -> int:
-    if requested != "latest":
-        try:
-            step = int(requested)
-        except ValueError as exc:
-            raise ValueError("step must be an integer or 'latest'") from exc
-        if step < 0:
-            raise ValueError("step must be nonnegative")
-        return step
-    steps = []
-    for entry in volume.iterdir(root, recursive=False):
-        name = Path(entry.path).name
-        suffix = name.removeprefix("step_")
-        if name.startswith("step_") and suffix.isdigit():
-            steps.append(int(suffix))
-    if not steps:
-        raise FileNotFoundError(f"no learner checkpoints found under {root}")
-    return max(steps)
-
-
-def _read_modal_checkpoint(
-    *,
-    volume_name: str,
-    config_name: str,
-    run_id: str,
-    step: str,
-) -> tuple[dict, int, str]:
-    import modal
-
-    volume = modal.Volume.from_name(volume_name)
-    root = _run_root(config_name, run_id)
-    resolved_step = _resolve_step(volume, root, step)
-    remote_path = (
-        f"{root}/step_{resolved_step:06d}/checkpoint.pt"
-    )
-    payload = b"".join(volume.read_file(remote_path))
-    checkpoint = torch.load(
-        io.BytesIO(payload),
-        map_location="cpu",
-        weights_only=False,
-    )
-    if not isinstance(checkpoint, dict):
-        raise ValueError(f"{remote_path} must contain a dictionary")
-    return checkpoint, resolved_step, remote_path
+def _resolve_step(requested: str) -> int:
+    try:
+        step = int(requested)
+    except ValueError as exc:
+        raise ValueError("step must be an integer or 'latest'") from exc
+    if step < 0:
+        raise ValueError("step must be nonnegative")
+    return step
 
 
 def _read_local_checkpoint(
@@ -119,7 +75,7 @@ def _read_local_checkpoint(
             raise FileNotFoundError(f"no learner checkpoints found under {root}")
         resolved_step = max(steps)
     else:
-        resolved_step = _resolve_step(None, "", step)
+        resolved_step = _resolve_step(step)
     path = root / f"step_{resolved_step:06d}" / "checkpoint.pt"
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, dict):
@@ -177,21 +133,12 @@ def main(argv: list[str] | None = None) -> None:
     _load_environment()
     args = _parser().parse_args(argv)
     source = {"config_name": args.config_name, "run_id": args.run_id}
-    if args.local:
-        checkpoint, step, local_path = _read_local_checkpoint(
-            config_name=args.config_name,
-            run_id=args.run_id,
-            step=args.step,
-        )
-        source["local_path"] = str(local_path)
-    else:
-        checkpoint, step, remote_path = _read_modal_checkpoint(
-            volume_name=args.modal_volume,
-            config_name=args.config_name,
-            run_id=args.run_id,
-            step=args.step,
-        )
-        source.update(modal_volume=args.modal_volume, remote_path=remote_path)
+    checkpoint, step, local_path = _read_local_checkpoint(
+        config_name=args.config_name,
+        run_id=args.run_id,
+        step=args.step,
+    )
+    source["local_path"] = str(local_path)
     artifact = freeze_learner_checkpoint(checkpoint, source=source)
     output = args.output or _default_output(
         args.config_name, args.run_id, step

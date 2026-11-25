@@ -142,12 +142,11 @@ def _variation_setting_enabled(name: str, args: dict[str, Any]) -> bool:
 
 
 def eval_schedule_entry(schedule: Any, episode: int) -> tuple[dict[str, Any], int] | None:
-    """The entry of an evaluation schedule covering job episode ``episode``, and
-    the episode's index within that entry.
+    """The schedule entry covering job episode ``episode`` and the episode's index
+    within it; None past the end.
 
     A schedule is a list of ``{"condition", "count", "seed"?, "rail_ranges"?,
-    "brightness"?}`` entries run back to back from episode 0, so one job can visit
-    several conditions and scene seeds; episodes past its end get None.
+    "brightness"?, "top_tilt"?}`` entries run back to back from episode 0.
     """
     start = 0
     for entry in schedule or ():
@@ -165,8 +164,8 @@ def tilt_steps(fraction: float, tilt_range: Any) -> float:
 
 
 def aim_top_tilt(cell: Any, fraction: float) -> float:
-    """Tilts the top camera to ``fraction`` of its travel, pan at its default;
-    returns the commanded steps."""
+    """Tilt the top camera to ``fraction`` of its travel with pan at its default;
+    return the commanded steps."""
     mount = cell.camera_mounts["top"]
     steps = tilt_steps(fraction, mount.mount_config["tilt_range"])
     mount.set(float(mount.default_pan), steps)
@@ -187,8 +186,7 @@ def _apply_curriculum_variation(
     enabled, seed = variation_request(ctx.args)
     if not enabled:
         return None
-    # A schedule entry may carry its own scene seed; its scenes are then
-    # numbered from 0 within the entry, as a job of that seed would number them.
+    # An entry with its own seed numbers its scenes from 0, as a job of that seed would.
     scheduled = eval_schedule_entry(ctx.args.get("eval_schedule"), episode)
     entry = scheduled[0] if scheduled else None
     if entry is not None and entry.get("seed") is not None:
@@ -233,7 +231,7 @@ def _apply_curriculum_variation(
             clamped = value != raw
         else:
             value = raw
-        # An entry's rail_ranges: one range drawn per episode, then a position in it.
+        # rail_ranges: one range drawn per episode, then a position in it.
         ranges = (entry or {}).get("rail_ranges")
         rail_range = (
             random.Random(f"{seed}:{episode}:{setting.name}:range").choice(ranges)
@@ -320,8 +318,7 @@ class CellOperatorControl:
         self._reset_problems: tuple[str, ...] = ()
         self._variation: dict[str, Any] | None = None
         self._scored_by: str | None = None
-        # Set when the edge rejected an unsafe command. It refuses all motion
-        # until a reset unlocks it, so the next reset passes unlock=True.
+        # The edge refuses motion after an unsafe command until reset(unlock=True).
         self._unlock_next_reset = False
 
     @property
@@ -338,11 +335,8 @@ class CellOperatorControl:
         return self._episode
 
     def _next_episode(self, next_index: int) -> int:
-        """Scene index for the upcoming rollout, preferring an eligible retry.
-
-        A retry does not consume a fresh scene: ``_fresh_rollouts`` advances only on
-        rollouts that visit a new scene, so no scene in the sequence is skipped.
-        """
+        """Scene index for the next rollout: the first due retry, else the next
+        fresh scene. Retries do not advance the fresh-scene sequence."""
         if self._retry_queue and self._retry_queue[0][1] <= next_index:
             episode, _ = self._retry_queue.popleft()
             return episode
@@ -456,12 +450,8 @@ class CellOperatorControl:
         ]
 
     def note_unsafe_command(self) -> None:
-        """Record that the edge ended the active rollout on an unsafe command.
-
-        The rollout is scored as a failure by the safety check, and the next
-        reset releases the edge's motion lock so the job can keep going.
-        """
-
+        """Score the active rollout as ended by the safety check and make the
+        next reset pass ``unlock=True``."""
         self._scored_by = "safety"
         self._unlock_next_reset = True
 

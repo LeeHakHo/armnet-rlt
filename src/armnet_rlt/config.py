@@ -13,11 +13,8 @@ BISO101_JERK_JOINT_WEIGHTS: tuple[float, ...] = (
 
 
 def parse_round_schedule(spec: str | int) -> tuple[int, ...]:
-    """Parse ``"30,30,10"`` into the episode count for each training round.
-
-    The last entry repeats for later rounds. An empty spec or ``0`` returns an
-    empty tuple.
-    """
+    """``"30,30,10"`` to the episode count of each training round; the last
+    entry repeats. An empty spec or ``0`` gives ``()``."""
     if isinstance(spec, int):
         values = [spec]
     else:
@@ -57,12 +54,10 @@ class RLTNetworkConfig:
     fixed_action_std: float = 0.05
     ref_action_dropout: float = 0.25
     delta_action_mask: tuple[bool, ...] = (True, True, True, True, True, False)
-    # Optional structural variants. Defaults keep the original behaviour.
-    #   residual_actor: the actor outputs ``reference + residual_scale * tanh(head)``
-    #     with the head initialised to zero, so it starts exactly at the VLA chunk.
-    #     Reference dropout is disabled in this mode (the base needs the reference).
-    #   critic_action_residual: the critic sees ``critic_action_gain * (action -
-    #     reference chunk)`` instead of the raw normalized action.
+    # residual_actor: the actor outputs reference + residual_scale * tanh(head),
+    #   head initialised to zero; no reference dropout.
+    # critic_action_residual: the critic sees
+    #   critic_action_gain * (action - reference chunk) instead of the action.
     residual_actor: bool = False
     residual_scale: float = 0.25
     critic_action_residual: bool = False
@@ -111,19 +106,9 @@ class RLTNetworkConfig:
         return self.reference_action_len * self.action_dim
 
 
-# Fields that configs from the mixture-of-Gaussians branch carry; unused with head "mean".
-_GMM_NETWORK_FIELDS = ("num_modes", "gmm_init_std", "gmm_min_log_std", "gmm_max_log_std")
-
-
 def network_config_from_dict(raw: Mapping[str, Any]) -> RLTNetworkConfig:
-    """RLTNetworkConfig from a saved network dict. Drops the mixture-of-Gaussians
-    fields when ``head`` is "mean" and rejects any other head."""
+    """RLTNetworkConfig from a saved network dict."""
     values = dict(raw)
-    head = values.pop("head", "mean")
-    if head != "mean":
-        raise ValueError(f"actor head {head!r} is not supported; only 'mean'")
-    for name in _GMM_NETWORK_FIELDS:
-        values.pop(name, None)
     for name in ("hidden_dims", "delta_action_mask"):
         if name in values:
             values[name] = tuple(values[name])
@@ -226,9 +211,6 @@ class RLTConfig:
     batch_size: int = 256
     online_batch_fraction: float = 0.5
     q_loss_normalization: bool = False
-    # Hinge cap in normalized action space; 0 disables it.
-    bc_deviation_max: float = 0.0
-    bc_deviation_weight: float = 1.0
     q_loss_alpha: float = 2.5
     actions_to_execute: int = 10
     use_subsampling: bool = True
@@ -236,9 +218,12 @@ class RLTConfig:
 
     use_quantile_norm: bool = True
     policy_uses_delta_actions: bool = False
-    # "rlt": the actor outputs an action chunk refined from the base policy's.
-    # "dsrl": the actor outputs the base flow policy's initial noise.
+    # A registered algorithm (armnet_rlt.algorithm.load_algorithm). "rlt": the
+    # actor refines the base policy's chunk; "dsrl": the actor picks the base
+    # flow policy's initial noise.
     algorithm: str = "rlt"
+    # Options of a plugin algorithm, as given with --algorithm-option.
+    algorithm_options: dict[str, Any] = field(default_factory=dict)
     # DSRL noise lives in [-dsrl_noise_bound, dsrl_noise_bound]; the actor
     # outputs dsrl_noise_steps rows of it, repeated over the chunk.
     dsrl_noise_bound: float = 1.5
@@ -271,8 +256,8 @@ class RLTConfig:
                 f"{self.embodiment} requires action_dim={expected_dim}, "
                 f"got {self.network.action_dim}"
             )
-        if self.algorithm not in {"rlt", "dsrl"}:
-            raise ValueError("algorithm must be 'rlt' or 'dsrl'")
+        if not self.algorithm:
+            raise ValueError("algorithm must not be empty")
         if self.algorithm == "dsrl":
             if self.network.predicted_action_len != self.network.reference_action_len:
                 raise ValueError(
@@ -313,13 +298,6 @@ class RLTConfig:
             raise ValueError(
                 "jerk_joint_weights length must equal network.action_dim"
             )
-        if not math.isfinite(self.bc_deviation_max) or self.bc_deviation_max < 0:
-            raise ValueError("bc_deviation_max must be finite and nonnegative")
-        if (
-            not math.isfinite(self.bc_deviation_weight)
-            or self.bc_deviation_weight < 0
-        ):
-            raise ValueError("bc_deviation_weight must be finite and nonnegative")
         if any(
             not math.isfinite(weight) or weight < 0
             for weight in self.jerk_joint_weights
@@ -416,6 +394,27 @@ class RLTConfig:
     @property
     def checkpoint_dir(self) -> Path:
         return Path(self.output_dir) / self.run_id
+
+
+def config_from_dict(raw: Mapping[str, Any]) -> RLTConfig:
+    """RLTConfig from a saved config dict; unknown keys are dropped."""
+    values = {key: raw[key] for key in RLTConfig.__dataclass_fields__ if key in raw}
+    if isinstance(values.get("network"), Mapping):
+        values["network"] = network_config_from_dict(values["network"])
+    if isinstance(values.get("actor_learner"), Mapping):
+        transport = values["actor_learner"]
+        values["actor_learner"] = RLTActorLearnerConfig(
+            **{
+                key: transport[key]
+                for key in RLTActorLearnerConfig.__dataclass_fields__
+                if key in transport
+            }
+        )
+    if "jerk_joint_weights" in values:
+        values["jerk_joint_weights"] = tuple(values["jerk_joint_weights"])
+    if values.get("algorithm_options") is None:
+        values.pop("algorithm_options", None)
+    return RLTConfig(**values)
 
 
 def without_secrets(config: Mapping[str, Any]) -> dict[str, Any]:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -109,8 +108,7 @@ class RLTActor(nn.Module):
             "action_std",
             torch.full((self.predicted_action_dim,), config.fixed_action_std),
         )
-        # Registered as buffers so the mode travels with the state dict: an
-        # actor that loads learner weights also loads the learner's architecture.
+        # Buffers, so a loaded state dict also sets the residual mode.
         self.register_buffer(
             "residual_mode", torch.tensor(bool(config.residual_actor))
         )
@@ -138,7 +136,7 @@ class RLTActor(nn.Module):
         self.trunk = nn.Sequential(*layers)
         self.mean_head = nn.Linear(previous, self.predicted_action_dim)
         if config.residual_actor:
-            # delta == 0 at initialisation, so the actor equals the reference.
+            # Zero head: the actor starts at the reference.
             nn.init.zeros_(self.mean_head.weight)
             nn.init.zeros_(self.mean_head.bias)
         elif config.init_final is not None:
@@ -155,7 +153,7 @@ class RLTActor(nn.Module):
         _register_norm_buffers(self, "na_ref", self.reference_action_dim)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        # State dicts written before residual mode existed lack these buffers.
+        # Older state dicts lack the residual buffers; keep the defaults.
         for name in ("residual_mode", "residual_scale"):
             state_dict.setdefault(
                 prefix + name, getattr(self, name).detach().clone()
@@ -331,8 +329,8 @@ class RLTCritic(nn.Module):
         action: Tensor,
         reference_chunk: Tensor | None = None,
     ) -> Tensor:
-        """``reference_chunk`` is the normalized reference for the executed
-        steps (same space as ``action``); only used with ``critic_action_residual``."""
+        """``reference_chunk``: the normalized reference for the executed steps,
+        in the same space as ``action``; required with ``critic_action_residual``."""
         if action.shape[-1] != self.predicted_action_dim:
             raise ValueError(
                 f"action has last dimension {action.shape[-1]}, "

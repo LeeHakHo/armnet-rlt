@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# System dependencies first. Ubuntu 24.04 provides Python 3.12.
+# System packages; Ubuntu 24.04 ships Python 3.12.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates ffmpeg git libgl1 libglib2.0-0 \
         python3.12 python3.12-dev python3.12-venv python3-pip \
@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel uv
 
-# Exclude LeRobot's optional input dependencies.
+# Version overrides; pynput and evdev (LeRobot input devices) are left out.
 RUN printf '%s\n' \
       'pynput>=0.0.0; sys_platform == "never"' \
       'evdev>=0.0.0; sys_platform == "never"' \
@@ -87,14 +87,14 @@ COPY pyproject.toml README.md /app/rlt/
 COPY src /app/rlt/src
 RUN python -m pip install --no-deps /app/rlt
 
-# Torch last, with the CUDA index.
+# CUDA torch wheels, last.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --upgrade \
         --override /tmp/overrides.txt \
         --extra-index-url https://download.pytorch.org/whl/cu129 \
         torch==2.8.0 torchvision==0.23.0
 
-RUN python -c "import torch, jax, lerobot, armnet_runtime; from armnet_client.robot_telemetry.session import RobotTelemetrySession; from lerobot.datasets.lerobot_dataset import LeRobotDataset; from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig; from lerobot.motors.feetech import FeetechMotorsBus; import openpi.models.pi0_rl; import armnet_rlt.actor_job, armnet_rlt.dataset_recording, armnet_rlt.lerobot_actor, armnet_rlt.remote_policy; from lerobot.policies.factory import get_policy_class, make_pre_post_processors; [get_policy_class(t) for t in ('diffusion', 'multi_task_dit', 'smolvla')]; from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); import openpi.policies.policy_config; print('RLT actor imports OK')" \
+RUN python -c "import torch, jax, lerobot, armnet_runtime; from armnet_client.robot_telemetry.session import RobotTelemetrySession; from lerobot.datasets.lerobot_dataset import LeRobotDataset; from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig; from lerobot.motors.feetech import FeetechMotorsBus; import openpi.models.pi0_rl; import armnet_rlt.actor_job, armnet_rlt.dataset_recording, armnet_rlt.lerobot_actor, armnet_rlt.remote_policy, armnet_rlt.policy_actor, armnet_rlt.algorithms.rlt, armnet_rlt.algorithms.dsrl; from lerobot.policies.factory import get_policy_class, make_pre_post_processors; [get_policy_class(t) for t in ('diffusion', 'multi_task_dit', 'smolvla')]; from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); import openpi.policies.policy_config; print('RLT actor imports OK')" \
     && python -c "from armnet_core.environment import environment_for; environment_for('busybox'); print('BusyBox plugin OK')"
 
 CMD ["armnet-runtime", "/app/rlt/src/armnet_rlt/actor_job.py"]

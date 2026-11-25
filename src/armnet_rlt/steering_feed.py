@@ -1,4 +1,4 @@
-"""Keep a policy server's DSRL steering at the learner's newest actor by
+"""Keep a policy server's actor at the learner's newest weights by
 subscribing to the learner's parameter stream directly."""
 
 from __future__ import annotations
@@ -10,8 +10,7 @@ from typing import Any, Callable, Mapping
 
 import torch
 
-from armnet_rlt.config import RLTNetworkConfig
-from armnet_rlt.dsrl import steering_payload
+from armnet_rlt.algorithm import actor_payload
 from armnet_rlt.grpc_util import grpc_channel
 
 
@@ -20,8 +19,8 @@ log = logging.getLogger(__name__)
 
 class LearnerSteeringFeed:
     """Subscribe to ``StreamParameters`` on a thread and hand each actor state
-    to ``apply`` as a steering payload. A partial update merges into the last
-    full state."""
+    to ``apply`` as an ``algorithm.actor_payload``, or to ``installer`` as is.
+    A partial update merges into the last full state."""
 
     def __init__(
         self,
@@ -32,8 +31,6 @@ class LearnerSteeringFeed:
         use_tls: bool,
         token: str,
         server_name: str = "",
-        network: RLTNetworkConfig | None = None,
-        noise_steps: int = 1,
         max_message_bytes: int,
         retry_s: float = 5.0,
         installer: Callable[[Mapping[str, torch.Tensor], int | None, bool], None] | None = None,
@@ -44,8 +41,7 @@ class LearnerSteeringFeed:
         self._use_tls = use_tls
         self._token = token
         self._server_name = server_name
-        self._network = network
-        self._noise_steps = int(noise_steps)
+        self._meta: str | None = None
         self._installer = installer
         self._max_message_bytes = max_message_bytes
         self._retry_s = retry_s
@@ -66,7 +62,8 @@ class LearnerSteeringFeed:
 
     def apply_state(self, state: Mapping[str, Any]) -> int | None:
         """Install one decoded parameter message: ``policy`` (the actor's
-        state dict), ``learner_step`` and an optional ``partial`` flag."""
+        state dict), ``learner_step``, ``actor_meta`` (``algorithm.actor_meta``)
+        and an optional ``partial`` flag."""
         weights = dict(state.get("policy", state))
         partial = bool(_scalar(state.get("partial", False)))
         raw_step = state.get("learner_step")
@@ -76,8 +73,12 @@ class LearnerSteeringFeed:
             self.learner_step = step
             self.updates += 1
             return step
-        if self._network is None:
-            raise ValueError("a DSRL steering feed needs the actor network config")
+        if state.get("actor_meta"):
+            self._meta = str(state["actor_meta"])
+        if self._meta is None:
+            raise ValueError(
+                "the learner sent no actor_meta; it predates the algorithm interface"
+            )
         if partial:
             if not self._state:
                 log.warning("partial actor update before any full one; skipped")
@@ -85,33 +86,10 @@ class LearnerSteeringFeed:
             self._state.update(weights)
         else:
             self._state = weights
-        if "noise_bound" not in self._state:
-            raise ValueError("actor state has no noise_bound; not a DSRL actor")
-        payload = steering_payload(
-            self._state,
-            network=self._network,
-            noise_bound=float(_scalar(self._state["noise_bound"])),
-            noise_steps=self._state_noise_steps(),
-            learner_step=step,
-        )
-        self._apply(payload)
+        self._apply(actor_payload(self._state, self._meta, learner_step=step))
         self.learner_step = step
         self.updates += 1
         return step
-
-    def _state_noise_steps(self) -> int:
-        """Rows of noise the installed actor outputs, from its mean head's
-        width; the configured value stands in when the head is missing."""
-        weight = self._state.get("mean_head.weight")
-        if weight is None:
-            return self._noise_steps
-        rows, remainder = divmod(int(weight.shape[0]), int(self._network.action_dim))
-        if remainder or rows < 1:
-            raise ValueError(
-                f"actor mean head has {int(weight.shape[0])} outputs, not a "
-                f"multiple of the action dim {self._network.action_dim}"
-            )
-        return rows
 
     def _run(self) -> None:
         from lerobot.transport import services_pb2, services_pb2_grpc
@@ -145,7 +123,7 @@ class LearnerSteeringFeed:
                 except Exception:
                     log.exception("steering feed could not apply an update")
                     continue
-                print(f"[RLT policy] steering from learner step {step}", flush=True)
+                print(f"[RLT policy] actor from learner step {step}", flush=True)
             channel.close()
             if not self._shutdown.is_set():
                 time.sleep(self._retry_s)

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from armnet_rlt import local_app
-from armnet_rlt.learner_config import learner_config, resolve_init_checkpoint
+from armnet_rlt.learner_config import learner_config
 from armnet_rlt.resources import (
     local_rendezvous_path,
     read_local_rendezvous,
@@ -16,12 +16,6 @@ from armnet_rlt.submit_actor import build_job_args, resolve_rendezvous
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = "pi05_rlt_busybox_multitask_singlearm_minmax"
-
-
-def test_local_modules_do_not_import_modal() -> None:
-    for name in ("local_app", "learner_config", "cache_builder", "resources"):
-        source = (ROOT / "src" / "armnet_rlt" / f"{name}.py").read_text()
-        assert "import modal" not in source, name
 
 
 def test_task_paths_follow_the_given_root(tmp_path) -> None:
@@ -37,22 +31,6 @@ def test_local_config_writes_under_the_data_root(tmp_path) -> None:
     )
     assert cfg.checkpoint_dir == tmp_path / "tasks" / CONFIG / "rlt_checkpoints" / "run-1"
     assert cfg.policy_uses_delta_actions is True
-
-
-def test_init_checkpoint_defaults_to_the_latest_step(tmp_path) -> None:
-    cfg = learner_config(
-        data_root=tmp_path, embodiment="so101", config_name=CONFIG, run_id="run-2"
-    )
-    assert resolve_init_checkpoint(cfg, "") is None
-    for step in (500, 5000):
-        path = cfg.checkpoint_dir.parent / "run-1" / f"step_{step:06d}"
-        path.mkdir(parents=True)
-        (path / "checkpoint.pt").write_bytes(b"")
-    latest = resolve_init_checkpoint(cfg, "run-1")
-    assert latest is not None and latest.parent.name == "step_005000"
-    assert resolve_init_checkpoint(cfg, "run-1", 500).parent.name == "step_000500"
-    with pytest.raises(FileNotFoundError):
-        resolve_init_checkpoint(cfg, "run-1", 123)
 
 
 def test_submitter_prefers_a_local_learner_and_pins_its_certificate(
@@ -104,13 +82,13 @@ def test_self_signed_certificate_names_the_learner(tmp_path) -> None:
     assert local_app.ensure_tls_certificate(tmp_path / "tls") == (certificate, key)
 
 
-def test_streaming_bc_requires_a_route_for_the_cell() -> None:
-    args = local_app._parser().parse_args(["streaming-bc", "--tunnel", "none"])
+def test_online_requires_a_route_for_the_cell() -> None:
+    args = local_app._parser().parse_args(["online", "--tunnel", "none"])
     with pytest.raises(SystemExit):
         with local_app._public_endpoint(args):
             pass
     args = local_app._parser().parse_args(
-        ["streaming-bc", "--public-endpoint", "learner.example.org:50051"]
+        ["online", "--public-endpoint", "learner.example.org:50051"]
     )
     with local_app._public_endpoint(args) as endpoint:
         assert endpoint == ("learner.example.org", 50051)
@@ -163,36 +141,21 @@ def test_learner_serves_a_given_certificate_without_a_name_override(
     assert cfg.actor_learner.server_bind_host == "0.0.0.0"
 
 
-def test_bc_cache_and_bc_take_the_checkpoint_and_save_frequency(monkeypatch, tmp_path) -> None:
+
+def test_online_and_policy_server_take_any_algorithm_name() -> None:
     parser = local_app._parser()
-    args = parser.parse_args(["bc-cache", "--manifest", "m.json"])
-    assert args.checkpoint == ""
-    args = parser.parse_args(
-        ["bc-cache", "--manifest", "m.json", "--checkpoint", "experiment-data/openpi/base"]
+    online = parser.parse_args(
+        ["online", "--algorithm", "residual_td3", "--algorithm-option", "hidden=32",
+         "--algorithm-option", "label=wide", "--algorithm-option", "scales=[0.1, 0.2]"]
     )
-    assert args.checkpoint == "experiment-data/openpi/base"
-
-    args = parser.parse_args(
-        ["bc", "--run-id", "bc-smoke", "--save-freq", "5000", "--steps", "30000"]
+    assert online.algorithm == "residual_td3"
+    assert local_app._algorithm_options(online.algorithm_option) == {
+        "hidden": 32, "label": "wide", "scales": [0.1, 0.2]
+    }
+    with pytest.raises(SystemExit):
+        local_app._algorithm_options(["hidden"])
+    server = parser.parse_args(
+        ["policy-server", "--algorithm", "pixel_sac", "--actor-checkpoint", "frozen.pt"]
     )
-    assert args.save_freq == 5000
-    assert parser.parse_args(["bc"]).save_freq is None
-
-    received: dict[str, object] = {}
-
-    def fake_run(config, *, steps, wandb_project, init_checkpoint=None):
-        received["save_freq"] = config.save_freq
-        received["steps"] = steps
-        received["cache"] = Path(config.demo_cache_path).name
-        return {}
-
-    monkeypatch.setattr(local_app, "_select_gpu", lambda gpu: None)
-    monkeypatch.setattr(local_app, "ensure_norm_stats", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(
-        local_app, "local_data_root", lambda: tmp_path, raising=False
-    )
-    import armnet_rlt.learner as learner_module
-
-    monkeypatch.setattr(learner_module, "run_bc_training", fake_run)
-    local_app.cmd_bc(args)
-    assert received == {"save_freq": 5000, "steps": 30000, "cache": "rlt_bc_cache.pt"}
+    assert server.algorithm == "pixel_sac" and server.checkpoint == ""
+    assert server.actor_checkpoint == "frozen.pt" and server.actor_device == "cuda"

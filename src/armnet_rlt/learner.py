@@ -27,13 +27,17 @@ from armnet_rlt.artifacts import (
 from armnet_rlt.config import (
     RLTConfig,
     RLTNetworkConfig,
-    episodes_for_round,
-    parse_round_schedule,
     without_secrets,
 )
 from armnet_rlt.jsonl_log import append_jsonl, read_jsonl
 from armnet_rlt.metrics import EpisodeRecord, RollingMetrics, episode_metrics
-from armnet_rlt.policy import RLTPolicy
+from armnet_rlt.algorithm import (
+    Algorithm,
+    actor_meta,
+    has_pretraining,
+    load_algorithm,
+    spec_for,
+)
 
 
 def _batch_from_transitions(
@@ -85,7 +89,27 @@ def _batch_from_transitions(
     }
     if all("curriculum_scale" in item for item in transitions):
         batch["curriculum_scale"] = stack("curriculum_scale")
+    for group in ("extras", "images", "next_images"):
+        names = _shared_keys(transitions, group)
+        if names:
+            batch[group] = {
+                name: torch.stack(
+                    [transitions[index][group][name] for index in indices]
+                ).to(device)
+                for name in names
+            }
     return batch
+
+
+def _shared_keys(transitions: list[dict[str, Any]], group: str) -> list[str]:
+    """Keys of ``transition[group]`` present in every transition."""
+    keys: set[str] | None = None
+    for transition in transitions:
+        values = transition.get(group)
+        if not values:
+            return []
+        keys = set(values) if keys is None else keys & set(values)
+    return sorted(keys or ())
 
 
 def _merge_batches(first: Any, second: Any) -> Any:
@@ -97,166 +121,29 @@ def _merge_batches(first: Any, second: Any) -> Any:
     return torch.cat((first, second), dim=0)
 
 
-@torch.no_grad()
-def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
-    """Mean and spread of min-Q over the batch, split by reward when both
-    rewarded and unrewarded transitions are present.
-    """
-    state = batch["state"]
-    if hasattr(policy, "min_q"):
-        q = policy.min_q(
-            state["rl_token"], state["proprioception"], batch["action"]
-        ).reshape(-1)
-    else:
-        normalized = policy.actor.normalize_action(
-            batch["action"], state["proprioception"]
-        ).clamp(-1.0, 1.0)
-        reference_chunk = (
-            policy.actor.normalize_action(
-                state["reference_action"][:, : policy.predicted_action_dim],
-                state["proprioception"],
-            ).clamp(-1.0, 1.0)
-            if policy.critic_ensemble.action_residual
-            else None
-        )
-        q = policy.critic_ensemble(
-            state["rl_token"], state["proprioception"], normalized, reference_chunk
-        ).min(dim=0).values.reshape(-1)
-    reward = batch["reward"].reshape(-1)
-    stats = {
-        "learner/q_mean": float(q.mean()),
-        "learner/q_std": float(q.std()),
-    }
-    rewarded = reward > 0
-    if bool(rewarded.any()) and bool((~rewarded).any()):
-        high = float(q[rewarded].mean())
-        low = float(q[~rewarded].mean())
-        stats["learner/q_reward1_mean"] = high
-        stats["learner/q_reward0_mean"] = low
-        stats["learner/q_gap"] = high - low
-    return stats
-
-
-def _train_step(
-    policy: RLTPolicy,
-    batch: dict[str, Any],
-    *,
-    step: int,
-    config: RLTConfig,
-    actor_optimizer: torch.optim.Optimizer,
-    critic_optimizer: torch.optim.Optimizer,
-) -> tuple[float, float | None]:
-    state = batch["state"]
-    next_state = batch["next_state"]
-    critic_loss: Tensor | None = None
-    for _ in range(config.utd_ratio):
-        critic_loss = policy.compute_loss_critic(
-            state["rl_token"],
-            state["proprioception"],
-            batch["action"],
-            batch["reward"],
-            next_state["rl_token"],
-            next_state["proprioception"],
-            next_state["reference_action"],
-            batch["done"],
-            reference_action=state["reference_action"],
-        )
-        critic_optimizer.zero_grad(set_to_none=True)
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            policy.critic_ensemble.parameters(), config.grad_clip_norm
-        )
-        critic_optimizer.step()
-        policy.update_target_networks()
-
-    actor_value: float | None = None
-    if step % config.policy_update_freq == 0:
-        actor_loss = policy.compute_loss_actor(
-            state["rl_token"],
-            state["proprioception"],
-            state["reference_action"],
-        )
-        actor_optimizer.zero_grad(set_to_none=True)
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            policy.actor.parameters(), config.grad_clip_norm
-        )
-        actor_optimizer.step()
-        actor_value = float(actor_loss.detach())
-    assert critic_loss is not None
-    return float(critic_loss.detach()), actor_value
-
-
-def _train_step_dsrl(
-    policy: Any,
-    batch: dict[str, Any],
-    *,
-    actor_optimizer: torch.optim.Optimizer,
-    critic_optimizer: torch.optim.Optimizer,
-    temperature_optimizer: torch.optim.Optimizer,
-) -> tuple[float, float]:
-    """One SAC gradient step on one batch: critics, target critics, actor,
-    temperature."""
-    state = batch["state"]
-    next_state = batch["next_state"]
-    critic_loss = policy.compute_loss_critic(
-        state["rl_token"],
-        state["proprioception"],
-        batch["action"],
-        batch["reward"],
-        next_state["rl_token"],
-        next_state["proprioception"],
-        next_state["reference_action"],
-        batch["done"],
-    )
-    critic_optimizer.zero_grad(set_to_none=True)
-    critic_loss.backward()
-    critic_optimizer.step()
-    policy.update_target_networks()
-
-    actor_loss = policy.compute_loss_actor(
-        state["rl_token"], state["proprioception"], state["reference_action"]
-    )
-    actor_optimizer.zero_grad(set_to_none=True)
-    actor_loss.backward()
-    actor_optimizer.step()
-
-    temperature_loss = policy.compute_loss_temperature()
-    temperature_optimizer.zero_grad(set_to_none=True)
-    temperature_loss.backward()
-    temperature_optimizer.step()
-    return float(critic_loss.detach()), float(actor_loss.detach())
-
-
 def _checkpoint_path(config: RLTConfig, step: int) -> Path:
     return config.checkpoint_dir / f"step_{step:06d}" / "checkpoint.pt"
 
 
 def _save_checkpoint(
-    policy: RLTPolicy,
-    actor_optimizer: torch.optim.Optimizer,
-    critic_optimizer: torch.optim.Optimizer,
-    actor_scheduler: torch.optim.lr_scheduler.LRScheduler,
-    critic_scheduler: torch.optim.lr_scheduler.LRScheduler,
+    algorithm: Algorithm,
     *,
     step: int,
     config: RLTConfig,
-    temperature_optimizer: torch.optim.Optimizer | None = None,
 ) -> Path:
     path = _checkpoint_path(config, step)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".pt.tmp")
     payload = {
         "step": step,
-        "policy_state_dict": policy.state_dict(),
-        "actor_optimizer": actor_optimizer.state_dict(),
-        "critic_optimizer": critic_optimizer.state_dict(),
-        "actor_scheduler": actor_scheduler.state_dict(),
-        "critic_scheduler": critic_scheduler.state_dict(),
+        "algorithm": config.algorithm,
+        "algorithm_state": algorithm.state_dict(),
+        "actor_state": {
+            name: value.detach().cpu() for name, value in algorithm.actor_state().items()
+        },
+        "actor_meta": actor_meta(config.algorithm, algorithm.spec, config),
         "config": without_secrets(asdict(config)),
     }
-    if temperature_optimizer is not None:
-        payload["temperature_optimizer"] = temperature_optimizer.state_dict()
     torch.save(payload, temporary)
     temporary.replace(path)
     return path
@@ -357,26 +244,22 @@ def _check_resumed_network(saved: Any, config: RLTConfig, path: Path) -> None:
 
 def _restore_checkpoint(
     config: RLTConfig,
-    policy: RLTPolicy,
-    actor_optimizer: torch.optim.Optimizer,
-    critic_optimizer: torch.optim.Optimizer,
-    actor_scheduler: torch.optim.lr_scheduler.LRScheduler,
-    critic_scheduler: torch.optim.lr_scheduler.LRScheduler,
+    algorithm: Algorithm,
     device: torch.device,
-    temperature_optimizer: torch.optim.Optimizer | None = None,
 ) -> int:
     path = _latest_checkpoint(config)
     if path is None:
         return 0
     payload = torch.load(path, map_location=device, weights_only=False)
     _check_resumed_network(payload.get("config"), config, path)
-    policy.load_state_dict(payload["policy_state_dict"])
-    actor_optimizer.load_state_dict(payload["actor_optimizer"])
-    critic_optimizer.load_state_dict(payload["critic_optimizer"])
-    actor_scheduler.load_state_dict(payload["actor_scheduler"])
-    critic_scheduler.load_state_dict(payload["critic_scheduler"])
-    if temperature_optimizer is not None and "temperature_optimizer" in payload:
-        temperature_optimizer.load_state_dict(payload["temperature_optimizer"])
+    saved = payload.get("algorithm", (payload.get("config") or {}).get("algorithm", "rlt"))
+    if saved != config.algorithm:
+        raise ValueError(
+            f"resume from {path} needs --algorithm {saved}, not {config.algorithm}"
+        )
+    # Checkpoints from before the algorithm interface hold the rlt/dsrl state
+    # at the top level.
+    algorithm.load_state_dict(payload.get("algorithm_state", payload))
     return int(payload["step"])
 
 
@@ -407,7 +290,7 @@ def _make_auth_interceptor(grpc: Any, token: str) -> Any:
 
 def _start_online_transport(
     config: RLTConfig,
-    policy: RLTPolicy,
+    policy: Any,
     shutdown_event: Event,
     *,
     learner_step: int,
@@ -518,17 +401,24 @@ def _active_parameter_stream(
 
 def _push_weights(
     parameters_queue: Queue,
-    policy: RLTPolicy,
+    policy: Any,
     *,
     learner_step: int,
     partial: bool = False,
 ) -> None:
+    """Queue the actor weights of ``policy`` (an ``Algorithm``, or an object
+    with ``actor_state_bytes``) for the parameter stream; newest wins."""
     from lerobot.transport.utils import state_to_bytes
 
-    state: dict[str, Any] = {
-        "policy": policy.actor_state_bytes(),
-        "learner_step": torch.tensor(learner_step, dtype=torch.int64),
-    }
+    state: dict[str, Any] = {"learner_step": torch.tensor(learner_step, dtype=torch.int64)}
+    if isinstance(policy, Algorithm):
+        state["policy"] = {
+            name: value.detach().cpu() for name, value in policy.actor_state().items()
+        }
+        # What a policy server rebuilds the actor from.
+        state["actor_meta"] = actor_meta(policy.config.algorithm, policy.spec, policy.config)
+    else:
+        state["policy"] = policy.actor_state_bytes()
     if partial:
         state["partial"] = torch.tensor(True)
     payload = state_to_bytes(state)
@@ -548,52 +438,86 @@ def _push_weights(
         parameters_queue.put_nowait(payload)
 
 
-def _transition_fields(transition: dict[str, Any]) -> dict[str, Tensor]:
-    """Convert one wire transition into the tensors the learner batches."""
+def _unbatch(value: Any) -> Tensor:
+    tensor = torch.as_tensor(value, dtype=torch.float32).detach().cpu()
+    if tensor.ndim and tensor.shape[0] == 1:
+        tensor = tensor.squeeze(0)
+    return tensor.contiguous()
 
-    def unbatch(value: Any) -> Tensor:
-        tensor = torch.as_tensor(value, dtype=torch.float32).detach().cpu()
-        if tensor.ndim and tensor.shape[0] == 1:
-            tensor = tensor.squeeze(0)
-        return tensor.contiguous()
 
-    return {
-        "rl_token": unbatch(transition["state"]["rl_token"]),
-        "proprioception": unbatch(transition["state"]["proprioception"]),
-        "reference_action": unbatch(transition["state"]["reference_action"]),
-        "action": unbatch(transition["action"]),
-        "reward": torch.tensor(
-            float(transition["reward"]), dtype=torch.float32
-        ),
-        "next_rl_token": unbatch(transition["next_state"]["rl_token"]),
-        "next_proprioception": unbatch(
-            transition["next_state"]["proprioception"]
-        ),
-        "next_reference_action": unbatch(
-            transition["next_state"]["reference_action"]
-        ),
-        "done": torch.tensor(
-            float(bool(transition["done"])), dtype=torch.float32
-        ),
-        "curriculum_scale": unbatch(
-            transition["state"].get(
-                "curriculum_scale",
-                torch.tensor(0.0),
-            )
-        ),
-        "safety_trip": unbatch(
-            transition["state"].get("safety_trip", torch.tensor(0.0))
-        ),
+def _transition_fields(transition: dict[str, Any]) -> dict[str, Any]:
+    """Convert one wire transition into the tensors the learner batches.
+
+    ``extra/<name>`` state entries become ``extras``; ``image/<view>`` and
+    ``next_image/<view>`` (JPEG bytes) stay encoded under ``_jpeg`` and
+    ``_next_jpeg`` until ``_decode_episode_images``."""
+    state = transition["state"]
+    item: dict[str, Any] = {
+        "rl_token": _unbatch(state["rl_token"]),
+        "proprioception": _unbatch(state["proprioception"]),
+        "reference_action": _unbatch(state["reference_action"]),
+        "action": _unbatch(transition["action"]),
+        "reward": torch.tensor(float(transition["reward"]), dtype=torch.float32),
+        "next_rl_token": _unbatch(transition["next_state"]["rl_token"]),
+        "next_proprioception": _unbatch(transition["next_state"]["proprioception"]),
+        "next_reference_action": _unbatch(transition["next_state"]["reference_action"]),
+        "done": torch.tensor(float(bool(transition["done"])), dtype=torch.float32),
+        "curriculum_scale": _unbatch(state.get("curriculum_scale", torch.tensor(0.0))),
+        "safety_trip": _unbatch(state.get("safety_trip", torch.tensor(0.0))),
     }
+    if "partial" in state:
+        item["partial"] = _unbatch(state["partial"])
+    extras = {
+        key.removeprefix("extra/"): _unbatch(value)
+        for key, value in state.items()
+        if key.startswith("extra/")
+    }
+    if extras:
+        item["extras"] = extras
+    for prefix, name in (("image/", "_jpeg"), ("next_image/", "_next_jpeg")):
+        encoded = {
+            key.removeprefix(prefix): value
+            for key, value in state.items()
+            if key.startswith(prefix)
+        }
+        if encoded:
+            item[name] = encoded
+    return item
 
 
-def relabel_rlt_safety_trip(
-    transitions: list[dict[str, Tensor]], penalty: float
-) -> None:
-    """Set the terminal reward of a safety-tripped RLT episode to ``-penalty``
-    (success 1, failure 0)."""
-    if transitions and bool(float(transitions[-1].get("safety_trip", 0.0))):
-        transitions[-1]["reward"] = torch.tensor(-float(penalty), dtype=torch.float32)
+def _decode_episode_images(episode: list[dict[str, Any]]) -> None:
+    """Decode the JPEG views of one episode in place into ``images`` and
+    ``next_images`` (view to uint8 ``[H, W, 3]``). A transition's next images
+    are the next transition's images, shared, unless it carries its own."""
+    from armnet_rlt.remote_policy import decode_image
+
+    def decode(encoded: dict[str, Any]) -> dict[str, Tensor]:
+        return {
+            view: torch.from_numpy(
+                decode_image(np.asarray(torch.as_tensor(data), dtype=np.uint8).reshape(-1), "jpeg")
+            )
+            for view, data in encoded.items()
+        }
+
+    for item in episode:
+        if "_jpeg" in item:
+            item["images"] = decode(item.pop("_jpeg"))
+    for index, item in enumerate(episode):
+        if "_next_jpeg" in item:
+            item["next_images"] = decode(item.pop("_next_jpeg"))
+        elif "images" in item and index + 1 < len(episode) and "images" in episode[index + 1]:
+            item["next_images"] = episode[index + 1]["images"]
+
+
+def _drop_partial_chunks(episode: list[dict[str, Any]]) -> None:
+    """Drop the in-flight chunk of a safety-tripped episode, moving its
+    terminal reward and flags to the transition before it."""
+    if not episode or not bool(float(episode[-1].get("partial", 0.0))):
+        return
+    last = episode.pop()
+    if episode:
+        for key in ("reward", "done", "safety_trip"):
+            episode[-1][key] = last[key]
 
 
 def _replayed(payload: bytes, seen: set[bytes] | None) -> bool:
@@ -616,10 +540,15 @@ def _drain_online_transitions(
     shutdown_event: Event,
     relabel: Callable[[list[dict[str, Tensor]]], None] | None = None,
     seen: set[bytes] | None = None,
+    reward_plugin: Callable[[list[dict[str, Tensor]], dict[str, list[bytes]] | None], None]
+    | None = None,
+    keep_partial: bool = False,
 ) -> int:
     """Append the queued transitions; each message holds one episode, which
-    ``relabel`` may rewrite before it is stored. Replayed messages (digest in
-    ``seen``) are dropped."""
+    ``relabel`` may rewrite before it is stored, and then ``reward_plugin``
+    with the episode's camera frames (None when the actor sent none).
+    Replayed messages (digest in ``seen``) are dropped, and so is the
+    in-flight chunk of a safety-tripped episode unless ``keep_partial``."""
     from lerobot.transport.utils import bytes_to_transitions
 
     count = 0
@@ -627,12 +556,20 @@ def _drain_online_transitions(
         payload = queue.get()
         if _replayed(payload, seen):
             continue
-        episode = [
-            _transition_fields(transition)
-            for transition in bytes_to_transitions(payload)
-        ]
+        wire = bytes_to_transitions(payload)
+        packed = wire[0]["state"].get("episode_frames") if wire else None
+        episode = [_transition_fields(transition) for transition in wire]
+        _decode_episode_images(episode)
+        if not keep_partial:
+            _drop_partial_chunks(episode)
+        if not episode:
+            continue
         if relabel is not None:
             relabel(episode)
+        if reward_plugin is not None:
+            from armnet_rlt.episode_frames import unpack_episode_frames
+
+            reward_plugin(episode, unpack_episode_frames(packed) if packed is not None else None)
         replay_buffer.extend(episode)
         count += len(episode)
     return count
@@ -686,7 +623,6 @@ def _episode_key(record: EpisodeRecord) -> tuple[str, int] | None:
 
 
 def _logged_episode_keys(path: Path) -> set[tuple[str, int]]:
-    """The episode keys already in the rollout log."""
     keys: set[tuple[str, int]] = set()
     for value in read_jsonl(path):
         key = _episode_key(EpisodeRecord.from_dict(value))
@@ -698,9 +634,8 @@ def _logged_episode_keys(path: Path) -> set[tuple[str, int]]:
 def _schedule_online_updates(
     pending_updates: int, new_transitions: int, *, steps_per_transition: int = 1
 ) -> int:
-    """Schedule learner steps per transition: one for RLT, whose step applies
-    UTD critic updates itself; ``utd_ratio`` for DSRL, whose step is one
-    gradient step."""
+    """Add ``steps_per_transition`` learner steps (the algorithm's
+    ``updates_per_transition``) per new transition."""
     if pending_updates < 0 or new_transitions < 0 or steps_per_transition <= 0:
         raise ValueError("online update counts must be nonnegative")
     return pending_updates + new_transitions * steps_per_transition
@@ -776,14 +711,10 @@ def _append_training_metrics(
     *,
     phase: str,
     learner_step: int,
-    critic_loss: float,
-    actor_loss: float,
     online_buffer_size: int,
     pending_updates: int,
     episode_count: int,
-    actor_optimizer: torch.optim.Optimizer,
-    critic_optimizer: torch.optim.Optimizer,
-    extra: Mapping[str, float] | None = None,
+    metrics: Mapping[str, float],
 ) -> None:
     append_jsonl(
         path,
@@ -792,701 +723,18 @@ def _append_training_metrics(
             "timestamp": datetime.now(UTC).isoformat(),
             "phase": phase,
             "learner_step": learner_step,
-            "critic_loss": critic_loss,
-            "actor_loss": actor_loss,
+            "critic_loss": metrics.get("critic_loss", 0.0),
+            "actor_loss": metrics.get("actor_loss", 0.0),
             "online_buffer_size": online_buffer_size,
             "pending_updates": pending_updates,
             "episodes_total": episode_count,
-            "actor_lr": actor_optimizer.param_groups[0]["lr"],
-            "critic_lr": critic_optimizer.param_groups[0]["lr"],
-            **dict(extra or {}),
+            **{
+                name: value
+                for name, value in metrics.items()
+                if name not in {"critic_loss", "actor_loss"}
+            },
         },
     )
-
-
-def _load_init_policy(
-    policy: RLTPolicy, init_checkpoint: Path, *, device: torch.device, label: str
-) -> dict[str, Any]:
-    """Load an init checkpoint's policy."""
-    payload = torch.load(init_checkpoint, map_location=device, weights_only=False)
-    policy.load_policy_state(payload["policy_state_dict"])
-    print(
-        f"[RLT {label}] actor initialised from {init_checkpoint} "
-        f"(step {int(payload.get('step', 0))})",
-        flush=True,
-    )
-    return payload
-
-
-def run_bc_training(
-    config: RLTConfig,
-    *,
-    steps: int,
-    wandb_project: str | None = None,
-    init_checkpoint: Path | None = None,
-) -> dict[str, object]:
-    """Clone the actions in ``config.demo_cache_path`` through ``compute_loss_bc``.
-
-    Trains the actor only; the critic stays at its initial weights.
-    ``init_checkpoint`` starts the actor from another run's checkpoint (its
-    optimizer state is not kept).
-    """
-    if not config.assets_dir:
-        raise ValueError("assets_dir is required")
-    if not config.demo_cache_path:
-        raise ValueError("demo_cache_path is required")
-    if steps <= 0:
-        raise ValueError("steps must be positive")
-
-    run_dir = config.checkpoint_dir
-    run_dir.mkdir(parents=True, exist_ok=True)
-    training_log = run_dir / "training_metrics.jsonl"
-
-    random.seed(config.seed)
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-    device = torch.device(config.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(config.seed)
-
-    norm_stats = load_norm_stats(
-        config.assets_dir,
-        use_delta_actions=config.policy_uses_delta_actions,
-        network=config.network,
-    )
-    transitions, artifact_summary = load_transition_cache(
-        config.demo_cache_path, config.network
-    )
-    policy = RLTPolicy(config)
-    policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
-    policy.to(device).train()
-    if init_checkpoint is not None:
-        _load_init_policy(policy, init_checkpoint, device=device, label="bc")
-        # state_dict carries the normalisation buffers; re-apply the stats.
-        policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
-
-    actor_optimizer = torch.optim.Adam(
-        policy.actor.parameters(), lr=config.actor_lr
-    )
-    critic_optimizer = torch.optim.Adam(
-        policy.critic_ensemble.parameters(), lr=config.critic_lr
-    )
-    actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        actor_optimizer, T_max=steps, eta_min=config.actor_lr_min
-    )
-    critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        critic_optimizer, T_max=steps, eta_min=config.critic_lr_min
-    )
-
-    wandb_run = None
-    if wandb_project:
-        import wandb
-
-        wandb_run = wandb.init(
-            project=wandb_project,
-            id=config.run_id,
-            resume="allow",
-            config=without_secrets(asdict(config)),
-            tags=["bc"],
-        )
-
-    print(
-        f"[RLT bc] transitions={len(transitions)} steps={steps} "
-        f"batch={config.batch_size} lr={config.actor_lr:.3e}",
-        flush=True,
-    )
-    final_loss = 0.0
-    for step in range(1, steps + 1):
-        batch = _batch_from_transitions(transitions, config.batch_size, device)
-        state = batch["state"]
-        loss = policy.compute_loss_bc(
-            state["rl_token"],
-            state["proprioception"],
-            state["reference_action"],
-            batch["action"],
-        )
-        actor_optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            policy.actor.parameters(), config.grad_clip_norm
-        )
-        actor_optimizer.step()
-        actor_scheduler.step()
-        final_loss = float(loss.detach())
-        if config.log_freq and step % config.log_freq == 0:
-            print(
-                f"[RLT bc] step {step}/{steps} bc_loss={final_loss:.6f}",
-                flush=True,
-            )
-            _append_training_metrics(
-                training_log,
-                phase="bc",
-                learner_step=step,
-                critic_loss=0.0,
-                actor_loss=final_loss,
-                online_buffer_size=0,
-                pending_updates=0,
-                episode_count=0,
-                actor_optimizer=actor_optimizer,
-                critic_optimizer=critic_optimizer,
-            )
-            if wandb_run is not None:
-                wandb_run.log(
-                    {
-                        "bc/loss": final_loss,
-                        "bc/step": step,
-                        "bc/actor_lr": actor_optimizer.param_groups[0]["lr"],
-                    },
-                    step=step,
-                )
-        if config.save_freq and step % config.save_freq == 0:
-            _save_checkpoint(
-                policy,
-                actor_optimizer,
-                critic_optimizer,
-                actor_scheduler,
-                critic_scheduler,
-                step=step,
-                config=config,
-            )
-
-    checkpoint = _save_checkpoint(
-        policy,
-        actor_optimizer,
-        critic_optimizer,
-        actor_scheduler,
-        critic_scheduler,
-        step=steps,
-        config=config,
-    )
-    summary = {
-        "phase": "bc",
-        "steps": steps,
-        "bc_loss": final_loss,
-        "checkpoint": str(checkpoint),
-        "transitions": len(transitions),
-        **artifact_summary.to_dict(),
-    }
-    if wandb_run is not None:
-        wandb_run.summary.update(summary)
-        wandb_run.finish()
-    print(f"[RLT bc] complete: {summary}", flush=True)
-    return summary
-
-
-def _bc_batch(
-    success_buffer: deque[dict[str, Tensor]],
-    base_buffer: deque[dict[str, Tensor]],
-    *,
-    batch_size: int,
-    base_fraction: float,
-    device: torch.device,
-) -> dict[str, Any]:
-    """Draw a batch, reserving ``base_fraction`` of it for ``base_buffer``.
-
-    Falls back to ``success_buffer`` alone when either buffer is empty.
-    """
-    base_size = (
-        min(batch_size - 1, max(1, round(batch_size * base_fraction)))
-        if base_fraction > 0 and base_buffer
-        else 0
-    )
-    if not base_size:
-        return _batch_from_transitions(list(success_buffer), batch_size, device)
-    if not success_buffer:
-        return _batch_from_transitions(list(base_buffer), batch_size, device)
-    head_batch = _batch_from_transitions(
-        list(success_buffer), batch_size - base_size, device
-    )
-    base_batch = _batch_from_transitions(list(base_buffer), base_size, device)
-    return _merge_batches(head_batch, base_batch)
-
-
-def _success_buffer_path(config: RLTConfig) -> Path:
-    return config.checkpoint_dir / "success_buffer.pt"
-
-
-def _save_success_buffer(
-    config: RLTConfig,
-    success_buffer: deque[dict[str, Tensor]],
-    *,
-    step: int,
-) -> Path:
-    """Write the cloned transitions beside the checkpoints so a resume keeps them."""
-    path = _success_buffer_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".pt.tmp")
-    torch.save(
-        {
-            "schema_version": 1,
-            "learner_step": step,
-            "transitions": list(success_buffer),
-        },
-        temporary,
-    )
-    temporary.replace(path)
-    return path
-
-
-def run_streaming_bc(
-    config: RLTConfig,
-    *,
-    wandb_project: str | None = None,
-    min_success_transitions: int = 32,
-    steps_per_transition: int = 1,
-    episodes_per_round: str | int = 0,
-    steps_per_round: int = 0,
-    init_checkpoint: Path | None = None,
-    min_shaped_reward: float = 0.0,
-    base_batch_fraction: float = 0.0,
-    idle_timeout_s: float = 600.0,
-    idle_min_episodes: int = 5,
-    push_unchanged_weights: bool = True,
-) -> dict[str, object]:
-    """Clone successful episodes as they stream in from a live actor.
-
-    Episodes arrive over the actor-learner gRPC transport; those accepted by
-    ``min_shaped_reward`` go to a success buffer, the actor is trained on it
-    through ``compute_loss_bc``, and the updated weights are pushed back mid-job.
-    The critic is not trained.
-    """
-    if not config.assets_dir:
-        raise ValueError("assets_dir is required")
-    if steps_per_transition <= 0:
-        raise ValueError("steps_per_transition must be positive")
-    if min_success_transitions <= 0:
-        raise ValueError("min_success_transitions must be positive")
-    if not 0.0 <= base_batch_fraction <= 1.0:
-        raise ValueError("base_batch_fraction must be in [0, 1]")
-    if idle_min_episodes < 1:
-        raise ValueError("idle_min_episodes must be at least 1")
-    round_schedule = parse_round_schedule(episodes_per_round)
-    if round_schedule and steps_per_round <= 0:
-        raise ValueError(
-            "steps_per_round must be positive when episodes_per_round is set"
-        )
-
-    run_dir = config.checkpoint_dir
-    run_dir.mkdir(parents=True, exist_ok=True)
-    rollout_log = run_dir / "rollout_metrics.jsonl"
-    training_log = run_dir / "training_metrics.jsonl"
-
-    random.seed(config.seed)
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-    device = torch.device(config.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(config.seed)
-
-    norm_stats = load_norm_stats(
-        config.assets_dir,
-        use_delta_actions=config.policy_uses_delta_actions,
-        network=config.network,
-    )
-    policy = RLTPolicy(config)
-    policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
-    policy.to(device).train()
-
-    actor_optimizer = torch.optim.Adam(
-        policy.actor.parameters(), lr=config.actor_lr
-    )
-    critic_optimizer = torch.optim.Adam(
-        policy.critic_ensemble.parameters(), lr=config.critic_lr
-    )
-    actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        actor_optimizer,
-        T_max=max(1, config.online_steps),
-        eta_min=config.actor_lr_min,
-    )
-    critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        critic_optimizer,
-        T_max=max(1, config.online_steps),
-        eta_min=config.critic_lr_min,
-    )
-    restored_transitions: list[dict[str, Tensor]] = []
-    if init_checkpoint is not None:
-        payload = _load_init_policy(
-            policy, init_checkpoint, device=device, label="sbc"
-        )
-        # state_dict carries the normalisation buffers; re-apply the stats.
-        policy.set_norm_stats(norm_stats, use_quantiles=config.use_quantile_norm)
-        for state_key, target in (
-            ("actor_optimizer", actor_optimizer),
-            ("critic_optimizer", critic_optimizer),
-            ("actor_scheduler", actor_scheduler),
-            ("critic_scheduler", critic_scheduler),
-        ):
-            if state_key in payload:
-                target.load_state_dict(payload[state_key])
-        init_step = int(payload.get("step", 0))
-        buffer_path = init_checkpoint.parent.parent / "success_buffer.pt"
-        if buffer_path.exists():
-            snapshot = torch.load(
-                buffer_path, map_location="cpu", weights_only=False
-            )
-            if snapshot.get("schema_version") != 1:
-                raise ValueError(f"invalid success buffer at {buffer_path}")
-            restored_transitions = list(snapshot.get("transitions") or [])
-        print(
-            f"[RLT sbc] resumed from {init_checkpoint} (step {init_step}, "
-            f"{len(restored_transitions)} success transitions)",
-            flush=True,
-        )
-
-    wandb_run = None
-    if wandb_project:
-        import wandb
-
-        wandb_run = wandb.init(
-            project=wandb_project,
-            id=config.run_id,
-            resume="allow",
-            config=without_secrets(asdict(config)),
-            tags=["streaming-bc"],
-        )
-        print(f"[RLT] WandB run: {wandb_run.url}", flush=True)
-
-    rolling, episode_count = _restore_rolling_metrics(
-        rollout_log, window=config.rolling_window
-    )
-    seen_episodes = _logged_episode_keys(rollout_log)
-    seen_transitions: set[bytes] = set()
-    shutdown_event = Event()
-    # Set when an actor opens its parameter stream.
-    actor_subscribed = Event()
-    (
-        server,
-        transition_queue,
-        interaction_queue,
-        parameters_queue,
-    ) = _start_online_transport(
-        config,
-        policy,
-        shutdown_event,
-        learner_step=0,
-        on_parameter_stream=actor_subscribed.set,
-    )
-    _push_weights(parameters_queue, policy, learner_step=0)
-    last_push = time.monotonic()
-    pushed_step = 0
-
-    success_buffer: deque[dict[str, Tensor]] = deque(
-        restored_transitions, maxlen=config.online_buffer_capacity
-    )
-    # Offline demonstrations; base_batch_fraction of every batch is drawn here.
-    base_buffer: deque[dict[str, Tensor]] = deque(
-        maxlen=config.online_buffer_capacity
-    )
-    if base_batch_fraction > 0 and config.demo_cache_path:
-        demo_transitions, demo_summary = load_transition_cache(
-            config.demo_cache_path, config.network
-        )
-        base_buffer.extend(demo_transitions)
-        print(
-            f"[RLT sbc] seeded the anchor buffer with {len(demo_transitions)} "
-            f"offline demo transitions from {config.demo_cache_path}",
-            flush=True,
-        )
-    pending_segment: list[dict[str, Tensor]] = []
-    finished_segments: deque[list[dict[str, Tensor]]] = deque()
-    pending_labels: deque[EpisodeRecord] = deque()
-    pending_updates = 0
-    episodes_since_round = 0
-    rounds = 0
-    completed_steps = 0
-    success_episodes = 0
-    rejected_episodes = 0
-    dropped_segments = 0
-    final_loss = 0.0
-    last_arrival = time.monotonic()
-    stop_reason = "step_budget"
-
-    print(
-        f"[RLT sbc] serving; "
-        + (
-            f"{steps_per_round} step(s) per round on the episode "
-            f"schedule {list(round_schedule)}"
-            if round_schedule
-            else f"clone starts at {min_success_transitions} success "
-            f"transitions, {steps_per_transition} step(s) per transition"
-        )
-        + f", batch={config.batch_size}, "
-        f"min_shaped_reward={min_shaped_reward:.2f}",
-        flush=True,
-    )
-    try:
-        while (
-            not shutdown_event.is_set()
-            and completed_steps < config.online_steps
-        ):
-            arrived = _drain_episode_segments(
-                transition_queue,
-                pending_segment,
-                finished_segments,
-                shutdown_event,
-                seen=seen_transitions,
-            )
-            labels: list[EpisodeRecord] = []
-            arrived += _drain_interactions(
-                interaction_queue,
-                rolling,
-                rollout_log=rollout_log,
-                episode_count=episode_count,
-                learner_step=completed_steps,
-                wandb_run=wandb_run,
-                sink=labels,
-                seen=seen_episodes,
-            )
-            episode_count += len(labels)
-            episodes_since_round += len(labels)
-            pending_labels.extend(labels)
-            while round_schedule and episodes_since_round >= episodes_for_round(
-                round_schedule, rounds + 1
-            ):
-                episodes_since_round -= episodes_for_round(
-                    round_schedule, rounds + 1
-                )
-                rounds += 1
-                if success_buffer:
-                    pending_updates += steps_per_round
-                    print(
-                        f"[RLT sbc] round {rounds}: {steps_per_round} steps on "
-                        f"{len(success_buffer)} transitions from "
-                        f"{success_episodes} episodes",
-                        flush=True,
-                    )
-                else:
-                    print(
-                        f"[RLT sbc] round {rounds}: no successes yet, "
-                        "nothing to clone",
-                        flush=True,
-                    )
-            if arrived:
-                last_arrival = time.monotonic()
-            elif (
-                episode_count >= idle_min_episodes
-                and time.monotonic() - last_arrival >= idle_timeout_s
-            ):
-                stop_reason = "actor_idle"
-                print(
-                    f"[RLT sbc] no actor traffic for {idle_timeout_s:.0f}s "
-                    f"after {episode_count} episodes; stopping",
-                    flush=True,
-                )
-                break
-
-            while pending_labels:
-                record = pending_labels[0]
-                if record.num_transitions == 0:
-                    pending_labels.popleft()
-                    continue
-                if not finished_segments:
-                    break
-                pending_labels.popleft()
-                segment = finished_segments.popleft()
-                if len(segment) != record.num_transitions:
-                    dropped_segments += 1
-                    print(
-                        f"[RLT sbc] dropped an episode: {len(segment)} "
-                        f"transitions arrived but the record reports "
-                        f"{record.num_transitions}",
-                        flush=True,
-                    )
-                    continue
-                if not record.success or (
-                    record.shaped_reward < min_shaped_reward - 1e-9
-                ):
-                    if record.success:
-                        rejected_episodes += 1
-                        print(
-                            f"[RLT sbc] skipped a success: reward "
-                            f"{record.shaped_reward:.2f} is below "
-                            f"{min_shaped_reward:.2f} "
-                            f"({record.wrong_button_presses} wrong presses)",
-                            flush=True,
-                        )
-                    continue
-                success_episodes += 1
-                success_buffer.extend(segment)
-                if not round_schedule:
-                    pending_updates += len(segment) * steps_per_transition
-                print(
-                    f"[RLT sbc] success {success_episodes}: "
-                    f"+{len(segment)} transitions, buffer="
-                    f"{len(success_buffer)}",
-                    flush=True,
-                )
-
-            now = time.monotonic()
-            changed = completed_steps != pushed_step
-            due = (
-                now - last_push
-                >= config.actor_learner.policy_parameters_push_frequency
-            )
-            if (
-                actor_subscribed.is_set()
-                or (due and (changed or push_unchanged_weights))
-                or (changed and pending_updates <= 0)
-            ):
-                actor_subscribed.clear()
-                _push_weights(
-                    parameters_queue, policy, learner_step=completed_steps
-                )
-                last_push = now
-                pushed_step = completed_steps
-
-            buffer_floor = 1 if round_schedule else min_success_transitions
-            if (
-                len(success_buffer) + len(base_buffer) < buffer_floor
-                or pending_updates <= 0
-            ):
-                time.sleep(0.02)
-                continue
-
-            batch = _bc_batch(
-                success_buffer,
-                base_buffer,
-                batch_size=config.batch_size,
-                base_fraction=base_batch_fraction,
-                device=device,
-            )
-            state = batch["state"]
-            loss = policy.compute_loss_bc(
-                state["rl_token"],
-                state["proprioception"],
-                state["reference_action"],
-                batch["action"],
-            )
-            actor_optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                policy.actor.parameters(), config.grad_clip_norm
-            )
-            actor_optimizer.step()
-            actor_scheduler.step()
-            final_loss = float(loss.detach())
-            completed_steps += 1
-            pending_updates -= 1
-
-            if config.log_freq and completed_steps % config.log_freq == 0:
-                print(
-                    f"[RLT sbc] step={completed_steps} "
-                    f"bc_loss={final_loss:.6f} "
-                    f"buffer={len(success_buffer)} "
-                    f"successes={success_episodes}/{episode_count} "
-                    f"pending={pending_updates}",
-                    flush=True,
-                )
-                _append_training_metrics(
-                    training_log,
-                    phase="streaming_bc",
-                    learner_step=completed_steps,
-                    critic_loss=0.0,
-                    actor_loss=final_loss,
-                    online_buffer_size=len(success_buffer),
-                    pending_updates=pending_updates,
-                    episode_count=episode_count,
-                    actor_optimizer=actor_optimizer,
-                    critic_optimizer=critic_optimizer,
-                )
-                if wandb_run is not None:
-                    wandb_run.log(
-                        {
-                            "bc/loss": final_loss,
-                            "bc/step": completed_steps,
-                            "bc/actor_lr": actor_optimizer.param_groups[0][
-                                "lr"
-                            ],
-                            "bc/success_buffer": len(success_buffer),
-                            "bc/success_episodes": success_episodes,
-                            "bc/episodes": episode_count,
-                        },
-                        step=completed_steps,
-                    )
-            if config.save_freq and completed_steps % config.save_freq == 0:
-                _save_checkpoint(
-                    policy,
-                    actor_optimizer,
-                    critic_optimizer,
-                    actor_scheduler,
-                    critic_scheduler,
-                    step=completed_steps,
-                    config=config,
-                )
-                _save_success_buffer(
-                    config, success_buffer, step=completed_steps
-                )
-    finally:
-        shutdown_event.set()
-        if server is not None:
-            server.stop(grace=1.0)
-
-    # Train the steps the last successes earned, then write the actor.
-    while (
-        pending_updates > 0
-        and completed_steps < config.online_steps
-        and len(success_buffer)
-        >= (1 if round_schedule else min_success_transitions)
-    ):
-        batch = _bc_batch(
-            success_buffer,
-            base_buffer,
-            batch_size=config.batch_size,
-            base_fraction=base_batch_fraction,
-            device=device,
-        )
-        state = batch["state"]
-        loss = policy.compute_loss_bc(
-            state["rl_token"],
-            state["proprioception"],
-            state["reference_action"],
-            batch["action"],
-        )
-        actor_optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            policy.actor.parameters(), config.grad_clip_norm
-        )
-        actor_optimizer.step()
-        actor_scheduler.step()
-        final_loss = float(loss.detach())
-        completed_steps += 1
-        pending_updates -= 1
-
-    checkpoint = _save_checkpoint(
-        policy,
-        actor_optimizer,
-        critic_optimizer,
-        actor_scheduler,
-        critic_scheduler,
-        step=completed_steps,
-        config=config,
-    )
-    _save_success_buffer(config, success_buffer, step=completed_steps)
-    summary = {
-        "phase": "streaming_bc",
-        "steps": completed_steps,
-        "bc_loss": final_loss,
-        "checkpoint": str(checkpoint),
-        "episodes": episode_count,
-        "success_episodes": success_episodes,
-        "rejected_episodes": rejected_episodes,
-        "success_transitions": len(success_buffer),
-        "base_transitions": len(base_buffer),
-        "dropped_segments": dropped_segments,
-        "stop_reason": stop_reason,
-        "rounds": rounds,
-        **rolling.to_dict(),
-    }
-    if wandb_run is not None:
-        wandb_run.summary.update(summary)
-        wandb_run.finish()
-    print(f"[RLT sbc] complete: {summary}", flush=True)
-    return summary
 
 
 def _episode_mark(episode_count: int, every: int, max_episodes: int) -> int:
@@ -1510,27 +758,42 @@ def run_learner(
     idle_min_episodes: int = 5,
     max_episodes: int = 0,
     checkpoint_every_episodes: int = 0,
+    reward_plugin: Callable[[list[dict[str, Tensor]], dict[str, list[bytes]] | None], None]
+    | None = None,
 ) -> dict[str, object]:
     """Pretrain on the demo cache, then learn from actor episodes.
 
+    ``config.algorithm`` names the algorithm (``algorithm.load_algorithm``);
+    it supplies the update, the actor weights and the checkpoint contents.
     Training stops at ``config.online_steps`` or, when ``max_episodes`` is set,
     once that many episodes have arrived and been trained on. With
     ``checkpoint_every_episodes``, a checkpoint is saved each time the episode
     count reaches a multiple of it and its updates are done; each one is listed
     in ``episode_checkpoints.jsonl`` as ``{"episodes": E, "step": S}``.
+    ``reward_plugin`` rewrites each episode's rewards after the algorithm's own
+    relabelling, given the camera frames an ``--episode-frames`` actor sent.
     """
-    dsrl = config.algorithm == "dsrl"
+    algorithm_class = load_algorithm(config.algorithm)
+    pretrains = has_pretraining(algorithm_class) and config.max_demo_pretrain_steps > 0
     if not config.assets_dir:
         raise ValueError("assets_dir is required")
     has_cache = bool(config.demo_cache_path) and Path(config.demo_cache_path).is_file()
-    if not dsrl and not has_cache:
+    uses_cache = algorithm_class.uses_demos and (
+        pretrains or config.online_batch_fraction < 1.0
+    )
+    if uses_cache and not has_cache:
         # Without demonstrations the actor learns from its rollouts alone.
-        if config.max_demo_pretrain_steps > 0 or config.online_batch_fraction < 1.0:
-            raise ValueError(
-                f"no demo cache at {config.demo_cache_path!r}: run with "
-                "--pretrain-steps 0 --online-batch-fraction 1.0, or build one "
-                "with `rlt-local cache`"
-            )
+        raise ValueError(
+            f"no demo cache at {config.demo_cache_path!r}: run with "
+            "--pretrain-steps 0 --online-batch-fraction 1.0, or build one "
+            "with `rlt-local cache`"
+        )
+    if not algorithm_class.uses_demos and config.online_batch_fraction < 1.0:
+        raise ValueError(
+            f"{config.algorithm} trains on online transitions only; "
+            "set online_batch_fraction to 1.0"
+        )
+    pretrain_steps = config.max_demo_pretrain_steps if pretrains else 0
 
     run_dir = config.checkpoint_dir
     if not resume and run_dir.exists() and any(run_dir.iterdir()):
@@ -1564,63 +827,17 @@ def run_learner(
         use_delta_actions=config.policy_uses_delta_actions,
         network=config.network,
     )
-    if dsrl:
-        # DSRL has no demonstration transitions.
-        from armnet_rlt.dsrl import DSRLPolicy
-
-        transitions = []
-        artifact_summary = _empty_summary(config.network)
-        policy: Any = DSRLPolicy(config)
-    elif has_cache:
+    if uses_cache:
         transitions, artifact_summary = load_transition_cache(
             config.demo_cache_path, config.network
         )
-        policy = RLTPolicy(config)
     else:
         transitions = []
         artifact_summary = _empty_summary(config.network)
-        policy = RLTPolicy(config)
-    policy.set_norm_stats(
-        norm_stats, use_quantiles=config.use_quantile_norm
-    )
-    policy.to(device).train()
+    spec = spec_for(config, algorithm_class, norm_stats)
+    algorithm = algorithm_class(spec, config)
 
-    actor_optimizer = torch.optim.Adam(
-        policy.actor.parameters(), lr=config.actor_lr
-    )
-    critic_optimizer = torch.optim.Adam(
-        policy.critic_ensemble.parameters(), lr=config.critic_lr
-    )
-    # The DSRL entropy temperature has its own optimizer.
-    temperature_optimizer = (
-        torch.optim.Adam(policy.temperature_parameters(), lr=config.dsrl_temperature_lr)
-        if dsrl
-        else None
-    )
-    actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        actor_optimizer,
-        T_max=max(1, config.max_demo_pretrain_steps),
-        eta_min=config.actor_lr_min,
-    )
-    critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        critic_optimizer,
-        T_max=max(1, config.max_demo_pretrain_steps),
-        eta_min=config.critic_lr_min,
-    )
-    completed_steps = (
-        _restore_checkpoint(
-            config,
-            policy,
-            actor_optimizer,
-            critic_optimizer,
-            actor_scheduler,
-            critic_scheduler,
-            device,
-            temperature_optimizer=temperature_optimizer,
-        )
-        if resume
-        else 0
-    )
+    completed_steps = _restore_checkpoint(config, algorithm, device) if resume else 0
     restored_online_transitions = (
         _restore_replay_buffer(
             config,
@@ -1634,14 +851,13 @@ def run_learner(
     )
     seen_episodes = _logged_episode_keys(rollout_log)
     seen_transitions: set[bytes] = set()
-    final_actor_loss = 0.0
-    final_critic_loss = 0.0
+    # Newest value of each metric the algorithm reported.
+    latest: dict[str, float] = {"critic_loss": 0.0, "actor_loss": 0.0}
     wandb_run = None
     if wandb_project:
         try:
             import wandb
 
-            # Appends to the W&B run named by ``config.run_id``.
             wandb_run = wandb.init(
                 project=wandb_project,
                 id=config.run_id,
@@ -1657,6 +873,27 @@ def run_learner(
             ) from exc
         print(f"[RLT] WandB run: {wandb_run.url}", flush=True)
 
+    def log_wandb(batch: dict[str, Any], extra: Mapping[str, Any]) -> None:
+        if wandb_run is None:
+            return
+        wandb_run.log(
+            {
+                **{
+                    f"learner/{name}": value
+                    for name, value in {**algorithm.diagnostics(batch), **latest}.items()
+                },
+                **extra,
+                "learner/step": completed_steps,
+            },
+            step=completed_steps,
+        )
+
+    def save(*, replay: deque[dict[str, Tensor]] | None = None) -> Path:
+        path = _save_checkpoint(algorithm, step=completed_steps, config=config)
+        if replay is not None:
+            _save_replay_buffer(config, replay, step=completed_steps)
+        return path
+
     # Start the transport before demonstration pretraining so an actor can
     # connect during it.
     server = None
@@ -1665,11 +902,7 @@ def run_learner(
     parameters_queue: Queue | None = None
     shutdown_event = Event()
     last_push = time.monotonic()
-    if (
-        not offline_only
-        and max(completed_steps, config.max_demo_pretrain_steps)
-        < config.online_steps
-    ):
+    if not offline_only and max(completed_steps, pretrain_steps) < config.online_steps:
         (
             server,
             transition_queue,
@@ -1677,79 +910,39 @@ def run_learner(
             parameters_queue,
         ) = _start_online_transport(
             config,
-            policy,
+            algorithm,
             shutdown_event,
             learner_step=completed_steps,
         )
 
-    while completed_steps < config.max_demo_pretrain_steps:
-        batch = _batch_from_transitions(
-            transitions, config.batch_size, device
-        )
-        critic_loss, actor_loss = _train_step(
-            policy,
-            batch,
-            step=completed_steps,
-            config=config,
-            actor_optimizer=actor_optimizer,
-            critic_optimizer=critic_optimizer,
-        )
-        final_critic_loss = critic_loss
-        if actor_loss is not None:
-            final_actor_loss = actor_loss
+    while completed_steps < pretrain_steps:
+        batch = _batch_from_transitions(transitions, config.batch_size, device)
+        latest.update(algorithm.pretrain(batch))
         completed_steps += 1
-        actor_scheduler.step()
-        critic_scheduler.step()
         if parameters_queue is not None and (
             time.monotonic() - last_push
             >= config.actor_learner.policy_parameters_push_frequency
         ):
-            _push_weights(
-                parameters_queue, policy, learner_step=completed_steps
-            )
+            _push_weights(parameters_queue, algorithm, learner_step=completed_steps)
             last_push = time.monotonic()
         if config.log_freq and completed_steps % config.log_freq == 0:
             print(
-                f"[RLT] pretrain {completed_steps}/{config.max_demo_pretrain_steps} "
-                f"critic={final_critic_loss:.6f} actor={final_actor_loss:.6f}",
+                f"[RLT] pretrain {completed_steps}/{pretrain_steps} "
+                f"critic={latest['critic_loss']:.6f} actor={latest['actor_loss']:.6f}",
                 flush=True,
             )
             _append_training_metrics(
                 training_log,
                 phase="pretrain",
                 learner_step=completed_steps,
-                critic_loss=final_critic_loss,
-                actor_loss=final_actor_loss,
                 online_buffer_size=0,
                 pending_updates=0,
                 episode_count=episode_count,
-                actor_optimizer=actor_optimizer,
-                critic_optimizer=critic_optimizer,
+                metrics=latest,
             )
-            if wandb_run is not None:
-                wandb_run.log(
-                    {
-                        **_q_stats(policy, batch),
-                        "learner/critic_loss": final_critic_loss,
-                        "learner/actor_loss": final_actor_loss,
-                        "learner/step": completed_steps,
-                    },
-                    step=completed_steps,
-                )
-        if (
-            config.save_freq
-            and completed_steps % config.save_freq == 0
-        ):
-            _save_checkpoint(
-                policy,
-                actor_optimizer,
-                critic_optimizer,
-                actor_scheduler,
-                critic_scheduler,
-                step=completed_steps,
-                config=config,
-                temperature_optimizer=temperature_optimizer,
-            )
+            log_wandb(batch, {})
+        if config.save_freq and completed_steps % config.save_freq == 0:
+            save()
 
     online_buffer: deque[dict[str, Tensor]] | None = None
     if not offline_only and completed_steps < config.online_steps:
@@ -1763,8 +956,6 @@ def run_learner(
         pending_updates = 0
         session_episodes = 0
         last_arrival = time.monotonic()
-        if dsrl:
-            from armnet_rlt.dsrl import relabel_episode
         try:
             while (
                 not shutdown_event.is_set()
@@ -1779,17 +970,7 @@ def run_learner(
                 ):
                     mark = _episode_mark(episode_count, checkpoint_every_episodes, max_episodes)
                     if mark and mark not in saved_episode_marks:
-                        _save_checkpoint(
-                            policy,
-                            actor_optimizer,
-                            critic_optimizer,
-                            actor_scheduler,
-                            critic_scheduler,
-                            step=completed_steps,
-                            config=config,
-                            temperature_optimizer=temperature_optimizer,
-                        )
-                        _save_replay_buffer(config, online_buffer, step=completed_steps)
+                        save(replay=online_buffer)
                         with episode_checkpoint_log.open("a") as handle:
                             handle.write(
                                 json.dumps({"episodes": mark, "step": completed_steps}) + "\n"
@@ -1809,37 +990,19 @@ def run_learner(
                     online_buffer,
                     device,
                     shutdown_event,
-                    relabel=(
-                        (
-                            lambda episode: relabel_episode(
-                                episode,
-                                chunk_discount=policy.chunk_discount,
-                                safety_trip_penalty=config.safety_trip_penalty,
-                            )
-                        )
-                        if dsrl
-                        else (
-                            (
-                                lambda episode: relabel_rlt_safety_trip(
-                                    episode, config.safety_trip_penalty
-                                )
-                            )
-                            if config.safety_trip_penalty is not None
-                            else None
-                        )
-                    ),
+                    relabel=algorithm.relabel,
                     seen=seen_transitions,
+                    reward_plugin=reward_plugin,
+                    keep_partial=algorithm.keeps_partial_chunks,
                 )
-                if dsrl and added and was_empty and completed_steps == 0:
-                    # DSRL trains dsrl_initial_steps on the first episode.
-                    pending_updates = config.dsrl_initial_steps
+                if algorithm.initial_updates and added and was_empty and completed_steps == 0:
+                    # The first episode is followed by initial_updates steps.
+                    pending_updates = algorithm.initial_updates
                 else:
-                    # One RLT learner step already applies utd_ratio critic
-                    # updates; a DSRL learner step is one gradient step.
                     pending_updates = _schedule_online_updates(
                         pending_updates,
                         added,
-                        steps_per_transition=config.utd_ratio if dsrl else 1,
+                        steps_per_transition=algorithm.updates_per_transition,
                     )
                 finished = _drain_interactions(
                     interaction_queue,
@@ -1870,9 +1033,7 @@ def run_learner(
                     now - last_push
                     >= config.actor_learner.policy_parameters_push_frequency
                 ):
-                    _push_weights(
-                        parameters_queue, policy, learner_step=completed_steps
-                    )
+                    _push_weights(parameters_queue, algorithm, learner_step=completed_steps)
                     last_push = now
                 if (
                     len(online_buffer)
@@ -1892,53 +1053,26 @@ def run_learner(
                     list(online_buffer),
                     online_batch_size,
                     device,
-                    balance_key=None if dsrl else "curriculum_scale",
+                    balance_key="curriculum_scale" if algorithm.balance_curriculum else None,
                 )
-                demo_batch_size = (
-                    config.batch_size - online_batch_size
-                )
-                if demo_batch_size:
+                demo_batch_size = config.batch_size - online_batch_size
+                if demo_batch_size and transitions:
                     demo_batch = _batch_from_transitions(
                         transitions, demo_batch_size, device
                     )
                     batch = _merge_batches(online_batch, demo_batch)
                 else:
                     batch = online_batch
-                if dsrl:
-                    assert temperature_optimizer is not None
-                    critic_loss, actor_loss = _train_step_dsrl(
-                        policy,
-                        batch,
-                        actor_optimizer=actor_optimizer,
-                        critic_optimizer=critic_optimizer,
-                        temperature_optimizer=temperature_optimizer,
-                    )
-                else:
-                    critic_loss, actor_loss = _train_step(
-                        policy,
-                        batch,
-                        step=completed_steps,
-                        config=config,
-                        actor_optimizer=actor_optimizer,
-                        critic_optimizer=critic_optimizer,
-                    )
-                final_critic_loss = critic_loss
-                if actor_loss is not None:
-                    final_actor_loss = actor_loss
+                latest.update(algorithm.update(batch))
                 completed_steps += 1
                 pending_updates -= 1
                 if config.log_freq and completed_steps % config.log_freq == 0:
-                    qs = _q_stats(policy, batch)
-                    actor_stats = dict(getattr(policy, "last_actor_stats", {}))
+                    shown = {**algorithm.diagnostics(batch), **latest}
                     print(
                         f"[RLT] online step={completed_steps} "
-                        f"critic={final_critic_loss:.6f} "
-                        f"actor={final_actor_loss:.6f} "
-                        f"q={qs['learner/q_mean']:.4f}"
-                        f"±{qs['learner/q_std']:.4f} "
-                        f"gap={qs.get('learner/q_gap', float('nan')):.4f} "
                         + "".join(
-                            f"{name}={value:.4f} " for name, value in actor_stats.items()
+                            f"{name}={value:.4f} " for name, value in shown.items()
+                            if isinstance(value, (int, float)) and not name.endswith("_lr")
                         )
                         + f"online_buffer={len(online_buffer)}",
                         flush=True,
@@ -1947,87 +1081,34 @@ def run_learner(
                         training_log,
                         phase="online",
                         learner_step=completed_steps,
-                        critic_loss=final_critic_loss,
-                        actor_loss=final_actor_loss,
                         online_buffer_size=len(online_buffer),
                         pending_updates=pending_updates,
                         episode_count=episode_count,
-                        actor_optimizer=actor_optimizer,
-                        critic_optimizer=critic_optimizer,
-                        extra=actor_stats,
+                        metrics=latest,
                     )
-                    if wandb_run is not None:
-                        wandb_run.log(
-                            {
-                                **_q_stats(policy, batch),
-                                **{
-                                    f"learner/{name}": value
-                                    for name, value in actor_stats.items()
-                                },
-                                "learner/critic_loss": final_critic_loss,
-                                "learner/actor_loss": final_actor_loss,
-                                "learner/online_buffer": len(online_buffer),
-                                "learner/step": completed_steps,
-                                "learner/actor_lr": actor_optimizer.param_groups[0]["lr"],
-                                "learner/critic_lr": critic_optimizer.param_groups[0]["lr"],
-                            },
-                            step=completed_steps,
-                        )
-                if (
-                    config.save_freq
-                    and completed_steps % config.save_freq == 0
-                ):
-                    _save_checkpoint(
-                        policy,
-                        actor_optimizer,
-                        critic_optimizer,
-                        actor_scheduler,
-                        critic_scheduler,
-                        step=completed_steps,
-                        config=config,
-                        temperature_optimizer=temperature_optimizer,
-                    )
-                    _save_replay_buffer(
-                        config,
-                        online_buffer,
-                        step=completed_steps,
-                    )
+                    log_wandb(batch, {"learner/online_buffer": len(online_buffer)})
+                if config.save_freq and completed_steps % config.save_freq == 0:
+                    save(replay=online_buffer)
         finally:
             shutdown_event.set()
             if server is not None:
                 server.stop(5)
 
-    if not math.isfinite(final_actor_loss) or not math.isfinite(
-        final_critic_loss
-    ):
+    if not math.isfinite(latest["actor_loss"]) or not math.isfinite(latest["critic_loss"]):
         raise FloatingPointError(
             "learner produced non-finite actor or critic loss"
         )
-    checkpoint = _save_checkpoint(
-        policy,
-        actor_optimizer,
-        critic_optimizer,
-        actor_scheduler,
-        critic_scheduler,
-        step=completed_steps,
-        config=config,
-        temperature_optimizer=temperature_optimizer,
-    )
-    if online_buffer is not None:
-        _save_replay_buffer(
-            config,
-            online_buffer,
-            step=completed_steps,
-        )
+    checkpoint = save(replay=online_buffer)
     summary = _learner_summary(
         artifact_summary,
         completed_steps=completed_steps,
-        actor_loss=final_actor_loss,
-        critic_loss=final_critic_loss,
+        actor_loss=latest["actor_loss"],
+        critic_loss=latest["critic_loss"],
         checkpoint=checkpoint,
     )
     summary.update(
         {
+            "algorithm": config.algorithm,
             "episodes_total": episode_count,
             "rollout_metrics_path": str(rollout_log),
             "training_metrics_path": str(training_log),

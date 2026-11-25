@@ -32,8 +32,7 @@ class RLTPolicy(nn.Module):
         self.predicted_action_dim = config.network.predicted_action_dim
         self.reference_action_dim = config.network.reference_action_dim
         self.chunk_discount = config.discount**self.predicted_action_len
-        self._chunk_discount = self.chunk_discount
-        # The residual base is the reference itself, so it cannot be dropped.
+        # The residual actor's base is the reference, so it is never dropped.
         self.ref_dropout = (
             0.0
             if config.network.residual_actor
@@ -44,8 +43,6 @@ class RLTPolicy(nn.Module):
         self.q_loss_normalization = config.q_loss_normalization
         self.q_loss_alpha = config.q_loss_alpha
         self.jerk_lambda = config.jerk_lambda
-        self.bc_deviation_max = config.bc_deviation_max
-        self.bc_deviation_weight = config.bc_deviation_weight
         self.target_policy_noise = config.target_policy_noise
         self.target_noise_clip = config.target_noise_clip
 
@@ -70,40 +67,6 @@ class RLTPolicy(nn.Module):
             norm_stats, use_quantiles=use_quantiles
         )
 
-    def compute_loss_bc(
-        self,
-        rl_token: Tensor,
-        proprioception: Tensor,
-        reference_action: Tensor,
-        action: Tensor,
-    ) -> Tensor:
-        """Squared error between the sampled action and the recorded ``action``.
-
-        Uses no critic. ``bc_deviation_max`` adds a hinge penalty on the distance
-        from ``reference_action``; the gripper weighting and jerk penalty are
-        shared with ``compute_loss_actor``.
-        """
-        self._validate_reference(reference_action, "reference_action")
-        sampled, _ = self.actor(
-            rl_token, proprioception, self._apply_ref_dropout(reference_action)
-        )
-        target = self.actor.normalize_action(
-            action[:, : self.predicted_action_dim], proprioception
-        ).clamp(-1.0, 1.0)
-        loss = ((sampled - target).square() * self._bc_mask).sum(dim=-1)
-        if self.bc_deviation_max > 0:
-            normalized_reference = self.actor.normalize_action(
-                reference_action[:, : self.predicted_action_dim], proprioception
-            ).clamp(-1.0, 1.0)
-            spread = (sampled - normalized_reference).norm(dim=-1)
-            overshoot = (spread - self.bc_deviation_max).clamp_min(0.0)
-            loss = loss + self.bc_deviation_weight * overshoot.square()
-        if self.jerk_lambda > 0:
-            loss = loss + self.jerk_lambda * self.jerk_penalty(
-                sampled, proprioception
-            )
-        return loss.mean()
-
     @torch.no_grad()
     def select_action(
         self,
@@ -113,8 +76,8 @@ class RLTPolicy(nn.Module):
         *,
         deterministic: bool = False,
     ) -> Tensor:
-        """The deterministic chunk or, without ``deterministic``, that chunk
-        plus its exploration noise."""
+        """Unnormalized action chunk: the actor mean, plus exploration noise
+        unless ``deterministic``."""
         was_training = self.training
         self.eval()
         try:
@@ -131,7 +94,6 @@ class RLTPolicy(nn.Module):
             self.train(was_training)
 
     def load_policy_state(self, state_dict: dict[str, Tensor]) -> None:
-        """Load a learner ``policy_state_dict``."""
         self.load_state_dict(state_dict)
 
     def _apply_ref_dropout(self, reference_action: Tensor) -> Tensor:
@@ -253,13 +215,6 @@ class RLTPolicy(nn.Module):
         return (
             second_difference.square() * self._jerk_joint_weights
         ).sum(dim=(-2, -1))
-
-    def _jerk_penalty(
-        self,
-        action: Tensor,
-        proprioception: Tensor | None = None,
-    ) -> Tensor:
-        return self.jerk_penalty(action, proprioception)
 
     def compute_loss_actor(
         self,
