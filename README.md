@@ -309,6 +309,22 @@ Set in the environment or in `.env`; the environment takes precedence.
 Rail and lightbox brightness are checked against the cell's published envelope before a
 job is queued.
 
+## Watching a run live
+
+The cell job can stream its camera frames, joint state and actions to a
+[Rerun](https://rerun.io) viewer on the machine that submitted it, one recording per
+episode, named by its outcome when it ends. The scripts turn it off; pass it to the
+training actor with
+
+```bash
+CELL=cell-03 scripts/run.sh dsrl --actor-args "--use-rerun"
+```
+
+or add `--use-rerun` to `rlt-submit-actor` / `rlt-submit-eval` directly. It needs a
+display for the viewer window; without one it serves the web viewer on port 9090 (data on
+9876). It does not work with `--detach`, and episode recording (`RECORD_REPO`) does not
+depend on it.
+
 ## Code
 
 | What | Where |
