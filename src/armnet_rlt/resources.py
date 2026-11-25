@@ -143,6 +143,20 @@ def remote_policy_job_args(
     }
 
 
+def record_labels(values: list[str] | None) -> dict[str, Any]:
+    """``KEY=VALUE`` pairs; a value is read as JSON when it parses."""
+    labels: dict[str, Any] = {}
+    for item in values or ():
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise ValueError(f"--record-label must be KEY=VALUE, got {item!r}")
+        try:
+            labels[key] = json.loads(value)
+        except json.JSONDecodeError:
+            labels[key] = value
+    return labels
+
+
 def scheduled_cell(require_cell: str) -> str | None:
     """The cell to dispatch to when ``require_cell`` names exactly one."""
     cells = [name.strip() for name in require_cell.split(",") if name.strip()]

@@ -24,6 +24,7 @@ from armnet_rlt.resources import (
     device_override_args,
     preflight_device_overrides,
     read_rendezvous,
+    record_labels,
     remote_policy_job_args,
     rendezvous_location,
     variation_curriculum_job_args,
@@ -284,6 +285,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Explicit HuggingFace dataset repo id (defaults to eval_rlt_<task>_<timestamp>)",
     )
     parser.add_argument(
+        "--record-append",
+        action="store_true",
+        help="Append the episodes to the dataset --record-dataset-repo-id on the Hub "
+        "(created if missing) instead of creating it",
+    )
+    parser.add_argument(
+        "--record-label",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Field added to each episode's label in meta/armnet_rollouts.jsonl; repeatable",
+    )
+    parser.add_argument(
         "--record-public",
         action="store_true",
         help="Make the recorded dataset public instead of private",
@@ -471,6 +485,10 @@ def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str,
     job_args.update(variation_curriculum_job_args(args))
     if repo_id := getattr(args, "record_dataset_repo_id", None):
         job_args["record_dataset_repo_id"] = repo_id
+    if getattr(args, "record_append", False):
+        job_args["record_append"] = True
+    if labels := record_labels(getattr(args, "record_label", None)):
+        job_args["record_labels"] = labels
     if hf_user := getattr(args, "hf_user", None):
         job_args["hf_user"] = hf_user
     if bool(getattr(args, "no_push_to_hub", False)):

@@ -249,3 +249,14 @@ def test_lerobot_job_args_need_no_checkpoint_with_the_policy_server(monkeypatch)
     assert result["policy_type"] == "lerobot"
     assert "checkpoint_dir" not in result
     assert result["remote_policy_host"] == "policy.example"
+
+
+def test_job_args_append_to_the_run_dataset_with_labels() -> None:
+    result = build_job_args(
+        _args(record_dataset_repo_id="u/armnet_run", record_append=True,
+              record_label=["phase=eval", "checkpoint_episodes=100"]),
+        _entry(),
+    )
+    assert result["record_append"] is True
+    assert result["record_labels"] == {"phase": "eval", "checkpoint_episodes": 100}
+    assert "record_append" not in build_job_args(_args(), _entry())

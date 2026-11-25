@@ -849,6 +849,7 @@ def open_rollout_recording(
         create_rlt_eval_dataset,
         dataset_features,
         generate_rlt_eval_repo_id,
+        open_run_dataset,
     )
 
     eval_repo_id = str(
@@ -856,11 +857,7 @@ def open_rollout_recording(
         or generate_rlt_eval_repo_id(ctx)
     )
     features = dataset_features(robot)
-    ctx.report_progress(f"creating RLT eval dataset {eval_repo_id}")
-    eval_dataset = create_rlt_eval_dataset(
-        eval_repo_id,
-        features,
-        int(_field(cfg, "command_fps", 20)),
+    options = dict(
         streaming_encoding=bool(
             _field(args, "streaming_encoding", DEFAULT_STREAMING_ENCODING)
         ),
@@ -870,6 +867,16 @@ def open_rollout_recording(
         ),
         num_cameras=len(getattr(robot, "cameras", {})),
     )
+    fps = int(_field(cfg, "command_fps", 20))
+    # record_append: add the episodes to the run's dataset on the Hub.
+    if as_bool(_field(args, "record_append", False)) and not bool(_field(args, "no_push_to_hub", False)):
+        ctx.report_progress(f"opening the run dataset {eval_repo_id}")
+        eval_dataset = open_run_dataset(
+            eval_repo_id, features, fps, public=as_bool(_field(args, "record_public", False)), **options
+        )
+    else:
+        ctx.report_progress(f"creating RLT eval dataset {eval_repo_id}")
+        eval_dataset = create_rlt_eval_dataset(eval_repo_id, features, fps, **options)
     frame_writer = DatasetFrameWriter(
         eval_dataset,
         features=features,
@@ -984,6 +991,7 @@ def finish_rollout_recording(
         public=as_bool(_field(args, "record_public", False)),
         episode_labels=episode_labels,
         episode_frame_times=episode_frame_times,
+        job_labels=_field(args, "record_labels", None) or None,
     )
 
 
