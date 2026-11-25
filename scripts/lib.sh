@@ -14,9 +14,9 @@
 #   WANDB_PROJECT     log learners to this Weights & Biases project
 #   RECORD_REPO       <hf user or org>/<prefix> (setup.sh: <your user>/armnet): the cell
 #                     records training and evaluation episodes, all three cameras and a
-#                     label per episode (meta/armnet_rollouts.jsonl), as public LeRobot
-#                     datasets <prefix>_<run or label>_...; RECORD_PUBLIC=0 keeps them
-#                     private, RECORD=0 turns recording off
+#                     label per episode (meta/armnet_rollouts.jsonl); a run's episodes are
+#                     recorded to one LeRobot dataset <prefix>_<run> (eval.sh: <prefix>_<label>),
+#                     public unless RECORD_PUBLIC=0; RECORD=0 turns recording off
 #   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661; cell-01 pan
 #                     0.405, tilt 0.175; both give the same top view of the busybox)
 #   RLT_CELL_RAIL     ID rail range per cell, <cell>=LOW,HIGH[;...] (default: cell-01
@@ -156,12 +156,15 @@ actor_common() {
   return 0
 }
 
-# Recording flags for one cell job in RECORD_ARGS: a dataset <RECORD_REPO>_<name>, public
-# unless RECORD_PUBLIC=0, or none when RECORD=0 or RECORD_REPO is unset.
-record_args() {  # <name>
+# Recording flags for one cell job in RECORD_ARGS: its episodes are appended to the
+# LeRobot dataset <RECORD_REPO>_<run>, each labelled with the KEY=VALUE pairs; public unless
+# RECORD_PUBLIC=0, none when RECORD=0 or RECORD_REPO is unset.
+record_args() {  # <run> [KEY=VALUE...]
   RECORD_ARGS=()
   [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ] || return 0
-  RECORD_ARGS=(--record-dataset --record-dataset-repo-id "${RECORD_REPO}_$1")
+  local run=$1 label; shift
+  RECORD_ARGS=(--record-dataset --record-dataset-repo-id "${RECORD_REPO}_$run" --record-append)
+  for label in "$@"; do RECORD_ARGS+=(--record-label "$label"); done
   [ "${RECORD_PUBLIC:-1}" = 0 ] || RECORD_ARGS+=(--record-public)
 }
 
@@ -206,18 +209,24 @@ wait_cell() {
   done
 }
 
-# Stops the cell job a submit log reports, if it is still queued or running.
+# Stops the cell job a submit log reports, if it is still queued or running, and waits up
+# to 15 minutes for it to end (it uploads its recording last; the next job of the run
+# appends to the same dataset).
 stop_cell_job() {
   local id
   id=$(grep -oE "job [0-9a-f-]{36} dispatched|job queued: [0-9a-f-]{36}" "$1" 2>/dev/null | tail -1 | grep -oE "[0-9a-f-]{36}" || true)
   [ -n "$id" ] || return 0
   py "$id" <<'PY'
-import sys
+import sys, time
 from armnet_client import OrchestratorClient
+ACTIVE = ("running", "queued", "dispatched", "submitted")
 client = OrchestratorClient()
 try:
-    if client.get(sys.argv[1]).status.value in ("running", "queued", "dispatched", "submitted"):
+    if client.get(sys.argv[1]).status.value in ACTIVE:
         client.stop_job(sys.argv[1], reason="finished")
+        deadline = time.time() + 900
+        while client.get(sys.argv[1]).status.value in ACTIVE and time.time() < deadline:
+            time.sleep(10)
 except Exception as exc:
     print(f"stop {sys.argv[1]}: {exc}", file=sys.stderr)
 PY
@@ -427,7 +436,11 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       local first=${EVAL_SEEDS%% *}
       local seeded=(--armnet.variation-seed "$first" --armnet.variation-episode-offset "$done"
         --action-noise-seed "$first" --timeout-seconds 7200 "${group_args[@]}")
-      record_args "${label}_${group}_${done}"
+      # A run.sh evaluation (<run>-ep<N>) records to the run's dataset, eval.sh to <label>.
+      case "$label" in
+        *-ep[0-9]*) record_args "${label%-ep*}" phase=eval "checkpoint_episodes=${label##*-ep}" "job=$group" ;;
+        *) record_args "$label" phase=eval "checkpoint=$label" "job=$group" ;;
+      esac
       seeded+=("${RECORD_ARGS[@]}")
       if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
         RLT_POLICY_INSTANCE=$instance "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
