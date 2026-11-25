@@ -24,6 +24,8 @@ export HF_TOKEN=<token> HF_USERNAME=<your HF user or org>
    accumulation 4, lr 2e-5 with 10 % warmup, 8 frames per trajectory, discrete progress in
    10 bins, progress, preference and success heads trained.
 
-`robometer.patch` registers the dataset with Robometer: success cutoff 0.9 and a short
-name for the evaluation metrics. The checkpoint lands in `<work dir>/runs`; serve it as in
-the main README.
+`robometer.patch` registers the dataset with Robometer: success cutoff 0.9 and the short
+name `busybox_demo39` for the evaluation metrics (the checkpoint is selected on
+`eval_rew_align/pearson_busybox_demo39`). The patch maps `AutoRLBench`'s dataset;
+`train.sh` adds the same mapping for `<HF_USERNAME>`. The checkpoint lands in
+`<work dir>/runs`; serve it as in the main README.
