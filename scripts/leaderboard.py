@@ -36,6 +36,23 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+
+def load_dotenv(path: Path) -> None:
+    """Sets the KEY=VALUE lines of path that the environment does not set."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        key, sep, value = line.strip().removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or key.startswith("#") or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 LEADERBOARD = os.environ.get("LEADERBOARD_REPO", "AutoRLBench/armnet-leaderboard")
 CELLS = ("cell-01", "cell-03")
 CHECKPOINTS = (100, 200, 300, 400)
