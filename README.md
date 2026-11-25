@@ -18,8 +18,10 @@ Baselines:
 - **RLT**: a TD3 head reads π0.5's RL token and joint state and outputs a residual on
   π0.5's action chunk.
 
-The learner and the policy server run on your GPU (`rlt-local`). The actor runs on the
-cell as an Armnet job and talks to both over gRPC.
+The learner and the policy server run on your GPU (`rlt-local`); the policy server runs
+π0.5 and the RL algorithm's actor. The actor job runs on the cell, executes the chunks
+the policy server returns and sends the episodes to the learner, all over gRPC. Your own
+RL algorithm plugs in without changing this code (see [Your own RL algorithm](#your-own-rl-algorithm)).
 
 ## Install
 
@@ -35,7 +37,8 @@ scripts/setup.sh
 
 1. creates `.env` from `.env.example` and asks for `ARMNET_API_KEY` and `HF_TOKEN`;
 2. runs `uv sync`, builds `envs/venv-learner`, `envs/venv-openpi` and `envs/venv-lerobot`
-   (`scripts/setup_local.sh`) and installs the policy plugins under `plugins/`;
+   (`scripts/setup_local.sh`) and installs the plugins under `plugins/` (LeRobot
+   policies into the lerobot environment, RL algorithms into the learner and openpi ones);
 3. creates the learner auth token and the two Armnet secrets;
 4. downloads the base π0.5 checkpoint (`--model`, default
    `AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k`) and builds its normalization stats
@@ -67,7 +70,7 @@ episodes. Ctrl-C stops everything, the cell job included.
 | Output | Path |
 |---|---|
 | Logs | `experiment-data/logs/<run-id>/` |
-| Checkpoints | `experiment-data/tasks/<config>/rlt_checkpoints/<run-id>` (rlt, dsrl), `experiment-data/lerobot-sbc/<run-id>` (dit) |
+| Checkpoints | `experiment-data/tasks/<config>/rlt_checkpoints/<run-id>` (rlt, dsrl, rl), `experiment-data/lerobot-sbc/<run-id>` (dit) |
 | Evaluations | `experiment-data/eval/<run-id>-ep<episodes>/results.jsonl` |
 
 ## Baselines
@@ -80,7 +83,7 @@ CELL=cell-03 scripts/run.sh dsrl
 
 SAC over π0.5's noise, online only: 5 noise rows (the last repeated over the chunk),
 noise bound 1.5, exploration std 0.5, trip penalty 2, 400000 learner steps. The policy
-server takes the DSRL actor from the learner's parameter stream.
+server runs the DSRL actor and takes its weights from the learner's parameter stream.
 
 ### DSRL + Robometer reward
 
@@ -145,27 +148,88 @@ head outputs `reference + 0.1 * tanh(head)`, so training starts at π0.5's chunk
 critic sees the residual. RLT pretrains on the demo cache that `scripts/setup.sh` builds
 from the 39 green-button demos (`AutoRLBench/busybox_push_green_button_426x240`) through
 the base (`experiment-data/tasks/<config>/demo/rlt_demo_cache.pt`); without it, training starts
-online right away. Exploration std 0.5, trip penalty 5, 30000 learner steps.
+online right away. Exploration std 0.5, trip penalty 5, 30000 learner steps. The head
+runs in the policy server, which takes its weights from the learner.
 
 ### run.sh options
 
-`CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit> [options]`; `--help` prints them.
+`CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit> [options]`, or
+`scripts/run.sh rl --algorithm <name> [options]` for any RL algorithm; `--help` prints them.
 
 | Option | Meaning |
 |---|---|
+| `--algorithm <name>` | rl: the algorithm's entry-point name (`rlt`, `dsrl`, a plugin) or `module:Class` |
 | `--episodes N` | Training episodes (400) |
 | `--eval-every N` | Evaluate after every N training episodes (100); 0 disables |
 | `--skip-eval` | Save the checkpoints but do not evaluate; they are listed in `experiment-data/logs/<run-id>/checkpoints.txt` |
-| `--model <dir or HF repo>` | Starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl (default `AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k`), a LeRobot `pretrained_model` for dit |
+| `--model <dir or HF repo>` | Starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl/rl (default `AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k`), a LeRobot `pretrained_model` for dit |
 | `--policy-type <type>` | dit: LeRobot policy trained from the demos (`multi_task_dit`) |
-| `--steps N` | rlt/dsrl learner step cap, which also sets the learning-rate schedule (rlt 30000, dsrl 400000) |
-| `--std X` | rlt/dsrl exploration std (0.5) |
-| `--trip-penalty X` | rlt/dsrl: a safety-tripped episode ends X success-failure reward gaps below a failure (rlt 5, dsrl 2) |
-| `--run-id ID` | Run name (`<method>-<UTC time>`) |
-| `--resume ID` | Continue rlt/dsrl run ID from its newest checkpoint |
-| `--reward-plugin M:F` | rlt/dsrl: rewrite each episode's rewards with function F of module M |
+| `--steps N` | rlt/dsrl/rl learner step cap, which also sets the learning-rate schedule (rlt 30000, dsrl and rl 400000) |
+| `--std X` | rlt/dsrl/rl exploration std (0.5), the actor's `exploration_scale` |
+| `--trip-penalty X` | rlt/dsrl/rl: a safety-tripped episode ends X success-failure reward gaps below a failure (rlt 5, dsrl and rl 2) |
+| `--run-id ID` | Run name (`<method>-<UTC time>`; rl: `<algorithm>-<UTC time>`) |
+| `--resume ID` | Continue an rlt/dsrl/rl run ID from its newest checkpoint |
+| `--reward-plugin M:F` | rlt/dsrl/rl: rewrite each episode's rewards with function F of module M |
 | `--learner-args "..."`, `--actor-args "..."` | Extra flags for the learner (`rlt-local online` or `lerobot-streaming-bc`) and for `rlt-submit-actor` |
 | `--leaderboard NAME`, `--leaderboard-tag TAG`, `--leaderboard-code URL`, `--leaderboard-notes TEXT` | Submit to the leaderboard after the last evaluation |
+
+## Your own RL algorithm
+
+Three routes, from least to most code of yours:
+
+- **A LeRobot policy** trained by iterative BC: see [Iterative DiT](#iterative-dit).
+- **An RL algorithm on top of π0.5**: your actor gets π0.5's RL token and chunk and
+  returns the chunk to execute; it may also choose π0.5's initial flow noise, as DSRL
+  does. Example: `plugins/rl_algorithm_example` (`residual_td3`, a residual MLP on π0.5's
+  chunk, TD3).
+- **An RL algorithm from scratch**: no π0.5 at all; your actor gets the three camera
+  images and the joint positions. Example: `plugins/rl_algorithm_from_scratch`
+  (`pixel_sac`, a CNN on the cameras, SAC).
+
+rlt and dsrl are built the same way (`src/armnet_rlt/algorithms/`). Copy an example to
+`plugins/rl_algorithm_<name>`, rename the package and the entry point in its
+`pyproject.toml`, and implement the interface in `src/armnet_rlt/algorithm.py`:
+
+| Part | Where it runs | What it does |
+|---|---|---|
+| `Algorithm.make_actor()` / `build_actor(spec, config)` | learner, policy server | The actor, an `nn.Module` |
+| `Actor.noise(obs, explore)` | policy server, before π0.5 | Optional initial noise for π0.5's flow sampler; leave it out to let π0.5 draw its own |
+| `Actor.act(obs, base_chunk, explore)` | policy server, after π0.5 | `ActorOutput(chunk [L, 6], extras)`: absolute joint targets the cell executes; `extras` come back in batches |
+| `Algorithm.update(batch)` | learner | One learner step; returns metrics (`critic_loss`, `actor_loss`, ...) |
+| `Algorithm.actor_state()` | learner | Actor weights, pushed to the policy server every `--push-interval-s` |
+| `state_dict()` / `load_state_dict()` | learner | Checkpoint contents; `--resume` restores them |
+| `pretrain(demo_batch)`, `relabel(episode)` | learner | Optional: demo-cache pretraining (with `uses_demos`); reward relabelling |
+
+Class attributes: `needs_images` (False) puts the top, front and wrist images in
+`ActorInput.images` and in batches; `uses_base` (True) runs π0.5, False skips it (then
+`rl_token` and `base_chunk` are None and `image_size` sets the image size);
+`updates_per_transition`, `uses_demos`, `keeps_partial_chunks`. `explore=False` is the
+deterministic evaluation mode; `obs.exploration_scale` is the run's `--std`.
+
+A batch has `state` / `next_state` (`rl_token` [B, 2048], `proprioception` [B, 6],
+`reference_action` [B, 180]: π0.5's chunk), `action` [B, L * 6] (the chunk as executed),
+`reward`, `done`, `extras`, and with `needs_images` `images` / `next_images` (view to
+uint8 [B, H, W, 3]). Without π0.5, `rl_token` and `reference_action` are [B, 0]. Images
+are the ones the policy server saw (π0.5's 224x224, or the algorithm's `image_size`),
+sent as JPEG: about 10 KB more per transition at 96x96, 30 KB at 224x224. Options
+reach the algorithm as `config.algorithm_options` through
+`--learner-args "--algorithm-option KEY=VALUE"`.
+
+The episode loop, rewards and `--reward-plugin`, the replay buffer, checkpoints, metrics,
+transport and the cell's safety logic stay the same for every algorithm.
+
+```bash
+scripts/setup.sh                                           # installs plugins/rl_algorithm_*
+CELL=cell-03 scripts/run.sh rl --algorithm residual_td3    # 400 episodes, evaluated every 100
+CELL=cell-03 scripts/run.sh rl --algorithm pixel_sac --leaderboard pixel-sac
+CELL=cell-03 scripts/eval.sh <run-id>                      # evaluate a run's newest checkpoint
+```
+
+`--algorithm module:Class` runs a class that is on the Python path without installing
+it. `rlt-local policy-server --algorithm <name>` serves an algorithm on its own
+(`--checkpoint` is the π0.5 checkpoint, not needed without the base;
+`--actor-checkpoint <frozen .pt>` serves a frozen actor for evaluation). The actor image
+does not contain your plugin: the cell only executes the chunks, so no rebuild is needed.
 
 ## Evaluation protocol
 
@@ -249,17 +313,19 @@ job is queued.
 
 | What | Where |
 |---|---|
+| RL algorithm interface | `src/armnet_rlt/algorithm.py`; rlt and dsrl in `src/armnet_rlt/algorithms/`; the actor in the policy server in `src/armnet_rlt/policy_actor.py` |
 | RLT actor and critic | `src/armnet_rlt/networks.py`; sizes and defaults in `RLTNetworkConfig`, `src/armnet_rlt/config.py` |
 | DSRL noise actor and critics | `src/armnet_rlt/dsrl.py`; layer sizes in `DSRL_HIDDEN_DIMS`, `src/armnet_rlt/config.py` |
 | Learner hyperparameters | RLT defaults in `RLTConfig`, `src/armnet_rlt/config.py`; DSRL overrides in `src/armnet_rlt/learner_config.py` |
-| LeRobot policies | `third_party/lerobot` (upstream 0.5.2), `plugins/` |
+| LeRobot policies, RL algorithm plugins | `third_party/lerobot` (upstream 0.5.2), `plugins/` |
 | Scripts | `scripts/run.sh`, `scripts/eval.sh`; helpers and the evaluation protocol in `scripts/lib.sh` |
 
 The scripts call these commands, which also run on their own (`--help` on each):
 
 - `rlt-local online`, `rlt-local lerobot-streaming-bc`, `rlt-local checkpoint-eval`: learners;
-- `rlt-local policy-server`: serves π0.5 or a LeRobot policy (`--policy-type lerobot`);
-  `--steering-from-learner` takes the DSRL actor or LeRobot weights from a local learner.
+- `rlt-local policy-server`: serves π0.5 with an RL algorithm's actor, or a LeRobot policy
+  (`--policy-type lerobot`); `--steering-from-learner` takes the actor or LeRobot weights
+  from a local learner, `--actor-checkpoint` a frozen actor.
   Run one server per port: gRPC binds with `SO_REUSEPORT`, so a second server on the same
   port starts without error and takes part of the traffic;
 - `rlt-submit-actor`, `rlt-submit-eval`: training and evaluation cell jobs;

@@ -1,0 +1,17 @@
+[project]
+name = "rl_algorithm_example"
+version = "0.1.0"
+description = "Example RL algorithm plugin for armnet-rlt: a residual MLP on π0.5's chunk, TD3"
+requires-python = ">=3.12"
+
+# The learner, the policy server and rlt-local find the algorithm by this name:
+# --algorithm residual_td3.
+[project.entry-points."armnet_rlt.algorithms"]
+residual_td3 = "rl_algorithm_example:ResidualTD3"
+
+[build-system]
+requires = ["setuptools>=71"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["rl_algorithm_example"]
