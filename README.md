@@ -29,8 +29,7 @@ Requirements:
 
 - Linux, Python 3.12, [`uv`](https://docs.astral.sh/uv/), Docker (actor image);
 - a GPU for the learner and the policy server, one of
-  - your own NVIDIA GPU and a public TLS address the cell can reach: ngrok, or your own
-    ingress (`PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY`);
+  - your own NVIDIA GPU and one public TLS address the cell can reach (see below);
   - a [Modal](https://modal.com) account (see [Running on Modal](#running-on-modal));
 - an [Armnet](https://armnet.dev) account and API key, in `.env` as `ARMNET_API_KEY`
   ([client docs](https://docs.armnet.dev/packages/client/));
@@ -59,9 +58,19 @@ BACKEND=modal scripts/setup.sh   # Modal
 5. builds and pushes the actor image and writes `IMAGE_REF` to `.env` (`--skip-image`
    skips it; without Docker it prints the command to run elsewhere).
 
-The cell reaches your machine through ngrok: install it and run
-`ngrok config add-authtoken <token>` once, or set `PUBLIC_HOST`, `TLS_CERT` and `TLS_KEY`
-for your own TLS ingress. `setup.sh` also sets `RECORD_REPO=<your HF user>/armnet`; a run's episodes are
+The cell needs one TLS address to this machine: the run's front (`rlt-local front`,
+local port `FRONT_PORT`) passes its calls to the learner and the policy server. One of
+
+- ngrok (default): one HTTPS endpoint; install ngrok and run
+  `ngrok config add-authtoken <token>` once;
+- Tailscale Funnel (`TUNNEL=tailscale`): free; needs Funnel enabled for the tailnet;
+  the scripts take the machine's tailnet name and certificate and open a TCP funnel on
+  `PUBLIC_PORT` (443) to `FRONT_PORT`;
+- your own ingress: `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY`, raw TCP from
+  `PUBLIC_HOST:PUBLIC_PORT` to `FRONT_PORT`;
+- Modal (`BACKEND=modal`, below).
+
+`setup.sh` also sets `RECORD_REPO=<your HF user>/armnet`; a run's episodes are
 recorded to one LeRobot dataset `<RECORD_REPO>_<run>`.
 
 The actor image contains `src/armnet_rlt`; rerun `scripts/setup.sh` after changing it
@@ -359,8 +368,8 @@ CELL=cell-03 scripts/eval.sh <run-id>
 
 Each `run.sh` or `eval.sh` redeploys the app with your current code and plugins
 (`plugins/` is installed into the images). One container runs the run's learner and
-policy server, the same `rlt-local` commands as on your GPU, with one Modal TLS endpoint
-each; the endpoints are in the Modal Dict `armnet-rlt-rendezvous`. Each evaluation gets a
+policy server, the same `rlt-local` commands as on your GPU, behind one Modal TLS endpoint
+to the container's front; the endpoints are in the Modal Dict `armnet-rlt-rendezvous`. Each evaluation gets a
 second container with a policy server. `run.sh dit` runs the same way in a LeRobot image.
 
 | What | Where |
@@ -395,8 +404,10 @@ Set in the environment or in `.env`; the environment takes precedence.
 | `CELL`, `GPU` | Cell to run on (`cell-01` or `cell-03`; `run.sh` and `eval.sh` need it) and local GPU index |
 | `BACKEND` | `local` (default) or `modal` ([Running on Modal](#running-on-modal)) |
 | `RLT_MODAL_GPU`, `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET`, `RLT_MODAL_HF_SECRET`, `RLT_MODAL_APP` | Modal GPU type (`L40S`) and resource names (`armnet-rlt-data`, `armnet-rlt-rendezvous`, `armnet-rlt-auth`, `huggingface-secret`, `armnet-rlt`) |
-| `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of ngrok; ports `PUBLIC_LEARNER_PORT` (443), `PUBLIC_POLICY_PORT` (8443) |
-| `LEARNER_PORT`, `POLICY_PORT` | Local ports (50051, 50052) |
+| `TUNNEL`, `TAILSCALE` | `ngrok` (default) or `tailscale` (Funnel); the tailscale CLI (`tailscale`) |
+| `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of a tunnel |
+| `PUBLIC_PORT` | Public port with `PUBLIC_HOST` or Funnel (443); `PUBLIC_POLICY_PORT` gives the policy server its own address |
+| `FRONT_PORT`, `LEARNER_PORT`, `POLICY_PORT` | Local ports of the front, the learner and the policy server (50050, 50051, 50052) |
 | `RECORD_REPO`, `RECORD_PUBLIC`, `RECORD` | Episodes are recorded (three cameras, one label per episode in `meta/armnet_rollouts.jsonl`) in one public LeRobot dataset `<RECORD_REPO>_<run>` per run (`eval.sh`: `<RECORD_REPO>_<label>`); `RECORD_PUBLIC=0` keeps it private, `RECORD=0` turns recording off |
 | `WANDB_PROJECT` | Log learners to this Weights & Biases project |
 | `RLT_DATA_ROOT` | Data root (`./experiment-data`) |
@@ -446,6 +457,8 @@ The scripts call these commands, which also run on their own (`--help` on each):
   from a local learner, `--actor-checkpoint` a frozen actor.
   Run one server per port: gRPC binds with `SO_REUSEPORT`, so a second server on the same
   port starts without error and takes part of the traffic;
+- `rlt-local front`: one endpoint for both: `armnet_rlt.RemotePolicy` calls to
+  `--policy-port`, the others to `--learner-port`;
 - `rlt-submit-actor`, `rlt-submit-eval`: training and evaluation cell jobs;
 - `rlt-freeze-checkpoint`: exports a learner checkpoint as a frozen actor, optionally
   uploaded to an Armnet volume.

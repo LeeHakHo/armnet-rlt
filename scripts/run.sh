@@ -3,8 +3,8 @@
 # during training: starts the policy server and the learner on this machine's GPU, and
 # submits the actor in segments of --eval-every episodes. After each segment the learner
 # saves a checkpoint and the scripts/eval.sh protocol (30 ID + 30 OOD rollouts) runs on
-# it; evaluation rollouts are not training episodes. Ctrl-C stops everything, the cell
-# job included.
+# it; evaluation rollouts are not training episodes. The cell reaches both servers at one
+# address (scripts/lib.sh). Ctrl-C stops everything, the cell job included.
 #
 #   CELL=<cell-01|cell-03> scripts/run.sh <rlt|dsrl|dit> [options]
 #   CELL=<cell-01|cell-03> scripts/run.sh rl --algorithm <name> [options]
@@ -103,6 +103,7 @@ cleanup() {
   kill "${PIDS[@]}" "${EVAL_PIDS[@]}" $SERVER_PID 2>/dev/null || true
   [ -z "$ACTOR_LOG" ] || stop_cell_job "$ACTOR_LOG"
   [ -z "$EVAL_JOB_LOG" ] || stop_cell_job "$EVAL_JOB_LOG"
+  front_stop
   if [ "$BACKEND" = modal ]; then
     for c in "$TRAIN_CALL" "${EVAL_CALLS[@]}"; do modal_stop "$c"; done
     data_pull "$LOGS/learner.log"; data_pull "$LOGS/policy-server.log"
@@ -112,6 +113,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 [ "$BACKEND" != modal ] || modal_deploy
+front_start "$LOGS/front.log"
 
 if [ "$METHOD" = dit ]; then
   BIN=$LEROBOT_BIN
