@@ -16,6 +16,12 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PY=$RBM/.venv/bin/python
 DS=${HF_USERNAME}_so101_busybox_demo39_tiled_so101_busybox_demo39_lerobot_tiled
 
+# Short name busybox_demo39 for <HF_USERNAME>'s dataset; robometer.patch maps only AutoRLBench's.
+MAP=$RBM/robometer/data/datasets/name_mapping.py
+PATCHED='    "AutoRLBench_so101_busybox_demo39_tiled_so101_busybox_demo39_lerobot_tiled": "busybox_demo39",'
+grep -qF "\"$DS\"" "$MAP" || sed -i "/^${PATCHED}\$/a\\    \"$DS\": \"busybox_demo39\"," "$MAP"
+grep -qF "\"$DS\": \"busybox_demo39\"" "$MAP" || { echo "apply robometer.patch first" >&2; exit 1; }
+
 # 1. The demos with a per-frame success column.
 $PY - "$WORK/demo39-src" <<'PY'
 import pathlib, shutil, sys

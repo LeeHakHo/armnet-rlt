@@ -21,9 +21,8 @@ returns and sends the episodes to the learner, over gRPC at one TLS address.
 - Linux, Python 3.12, [`uv`](https://docs.astral.sh/uv/).
 - An [Armnet](https://armnet.dev) account and API key
   ([client docs](https://docs.armnet.dev/packages/client/)).
-- A Hugging Face token with read access to the AutoRLBench models and datasets, write access
-  to your namespace (episode recordings) and pull requests on the dataset
-  `AutoRLBench/armnet-leaderboard` (submissions).
+- A Hugging Face token with write access to your namespace (episode recordings) and pull
+  requests on the dataset `AutoRLBench/armnet-leaderboard` (submissions).
 - One of
   - an NVIDIA GPU machine the cell reaches at one TLS address: ngrok (default; run
     `ngrok config add-authtoken <token>` once), Tailscale Funnel (`TUNNEL=tailscale`; Funnel
@@ -53,8 +52,8 @@ Safe to rerun; finished steps are skipped. It
    stats and the RLT demo cache (`--skip-cache` skips the cache);
 5. builds and pushes the actor image and writes `IMAGE_REF` (`--skip-image` skips it).
 
-The actor image contains `src/armnet_rlt`; rerun `scripts/setup.sh` after changing it. Plugins
-are not in the image.
+The actor image is built from `src/`, `third_party/lerobot`, `pyproject.toml`, `README.md` and
+`Dockerfile.actor`; rerun `scripts/setup.sh` after changing them. Plugins are not in the image.
 
 ## Train
 
@@ -72,7 +71,7 @@ included.
 | Method | What it is |
 |---|---|
 | `dsrl` | π0.5 frozen; a SAC actor picks the initial noise of its flow sampler. 5 noise rows, bound 1.5, trip penalty 2, 400000 learner steps |
-| `rlt` | TD3 head on π0.5's RL token and joint state; outputs `reference + 0.1 * tanh(head)`. Pretrains on the demo cache, trip penalty 5, 30000 learner steps |
+| `rlt` | TD3 head on π0.5's RL token, joint state and reference chunk; outputs `reference + 0.1 * tanh(head)`. Pretrains on the demo cache, trip penalty 5, 30000 learner steps |
 | `dit` | `multi_task_dit` trained on the 39 demos (300 steps), then BC on its own successes in rounds of 20 episodes and 300 steps, half of each batch from the demos |
 | `rl` | `--algorithm <name>`: an installed plugin, `rlt`, `dsrl`, or `module:Class` |
 
@@ -91,7 +90,8 @@ CELL=cell-03 scripts/run.sh dsrl --reward-plugin armnet_rlt.robometer_reward:sha
 ```
 
 Its settings (`ROBOMETER_URL`, `ROBOMETER_WEIGHT`, ...) are in
-`src/armnet_rlt/robometer_reward.py`; `reward_models/robometer/` rebuilds the model.
+`src/armnet_rlt/robometer_reward.py`; `reward_models/robometer/` rebuilds the model. With
+`BACKEND=modal`, set `ROBOMETER_URL` to an address the Modal container can reach.
 
 Options:
 
@@ -166,6 +166,7 @@ and OOD each take the best checkpoint, summed over the cells. To submit a finish
 ```bash
 envs/venv-learner/bin/python scripts/leaderboard.py submit --name "<method>" --run <run-id> \
   --cell cell-03 [--tag TAG] [--code URL] [--notes TEXT]
+uv run --extra modal python scripts/leaderboard.py submit ...    # BACKEND=modal
 ```
 
 ## Robot interface
@@ -175,7 +176,7 @@ envs/venv-learner/bin/python scripts/leaderboard.py submit --name "<method>" --r
 | Robot | SO-101, single arm, 20 Hz |
 | Cameras | `top`, `front`, `wrist`; recorded at 426x240 RGB |
 | State, action | 6 absolute joint targets: `shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll` in degrees, `gripper` 0-100 |
-| π0.5 | 224x224 images; a 30-step chunk relative to the current joints; the cell executes the first 10 steps |
+| π0.5 | 224x224 images; a 30-step chunk relative to the current joints, gripper absolute; the cell executes the first 10 steps |
 | LeRobot policies | `observation.state`, `observation.images.{top,front,wrist}` resized to the policy's shapes; return absolute joint targets |
 | Episode end | success, 30 s timeout or a safety trip |
 
@@ -289,12 +290,13 @@ Environment or `.env`; the environment takes precedence.
 | `BACKEND` | `local` | `local` or `modal` |
 | `TUNNEL`, `TAILSCALE` | `ngrok`, `tailscale` | `ngrok` or `tailscale` (Funnel); the tailscale CLI |
 | `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | | Your own TLS ingress |
-| `PUBLIC_PORT`, `PUBLIC_POLICY_PORT` | `443` | Public port with `PUBLIC_HOST` or Funnel; a separate port for the policy server |
-| `FRONT_PORT`, `LEARNER_PORT`, `POLICY_PORT` | `50050`, `50051`, `50052` | Local ports; two runs on one machine need different ones |
-| `RECORD_REPO`, `RECORD`, `RECORD_PUBLIC` | `<HF user>/armnet`, `1`, `1` | Episode datasets `<RECORD_REPO>_<run-id>` (`eval.sh`: `_<label>`); `RECORD=0` off, `RECORD_PUBLIC=0` private |
+| `PUBLIC_PORT` | `443` | Public port with `PUBLIC_HOST` or Funnel |
+| `PUBLIC_POLICY_PORT` | | `PUBLIC_HOST` only: a separate public port for the policy server |
+| `FRONT_PORT`, `LEARNER_PORT`, `POLICY_PORT` | `50050`, `50051`, `50052` | Local ports; two runs on one machine need different ones, and with Funnel a different `PUBLIC_PORT` (`443`, `8443` or `10000`) |
+| `RECORD_REPO`, `RECORD`, `RECORD_PUBLIC` | written by `setup.sh` (`<HF user>/armnet`), `1`, `1` | Episode datasets `<RECORD_REPO>_<run-id>` (`eval.sh`: `_<label>`); unset `RECORD_REPO` or `RECORD=0`: no recording; `RECORD_PUBLIC=0` private |
 | `WANDB_PROJECT` | | Weights & Biases project for the learners |
 | `RLT_DATA_ROOT` | `./experiment-data` | Data root |
-| `CONFIG`, `TASK`, `PROMPT`, `DATASET` | `pi05_rlt_busybox_multitask_singlearm_minmax`, `push_green_button`, `push the green button`, `AutoRLBench/busybox_push_green_button_426x240` | OpenPI config, task, instruction, demo dataset |
+| `CONFIG`, `TASK`, `PROMPT`, `DATASET` | `pi05_rlt_busybox_multitask_singlearm_minmax`, `push_green_button`, `push the green button`, `AutoRLBench/busybox_push_green_button_426x240` | OpenPI config, task, instruction, demo dataset for `dit` (the RLT cache always uses `AutoRLBench/busybox_push_green_button_426x240`) |
 | `OPENPI_REPO`, `OPENPI_REVISION` | `https://github.com/pravsels/openpi` | OpenPI fork with the `pi0_rl` model |
 | `RLT_MODAL_GPU`, `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET`, `RLT_MODAL_HF_SECRET`, `RLT_MODAL_APP` | `L40S`, `armnet-rlt-data`, `armnet-rlt-rendezvous`, `armnet-rlt-auth`, `huggingface-secret`, `armnet-rlt` | Modal GPU type and resource names |
 
@@ -309,8 +311,8 @@ Environment or `.env`; the environment takes precedence.
 
 ## Time per run
 
-About 3.5 h of training (400 episodes) and about 1 h per evaluation (60 rollouts), so
-7-8 h per cell, plus time waiting for the cell.
+3.5-7 h of training (400 episodes) and about 45-60 min per evaluation (60 rollouts), so
+7-11 h per cell, plus time waiting for the cell.
 
 ## Code
 
