@@ -111,19 +111,9 @@ class RLTNetworkConfig:
         return self.reference_action_len * self.action_dim
 
 
-# Fields that configs from the mixture-of-Gaussians branch carry; unused with head "mean".
-_GMM_NETWORK_FIELDS = ("num_modes", "gmm_init_std", "gmm_min_log_std", "gmm_max_log_std")
-
-
 def network_config_from_dict(raw: Mapping[str, Any]) -> RLTNetworkConfig:
-    """RLTNetworkConfig from a saved network dict. Drops the mixture-of-Gaussians
-    fields when ``head`` is "mean" and rejects any other head."""
+    """RLTNetworkConfig from a saved network dict."""
     values = dict(raw)
-    head = values.pop("head", "mean")
-    if head != "mean":
-        raise ValueError(f"actor head {head!r} is not supported; only 'mean'")
-    for name in _GMM_NETWORK_FIELDS:
-        values.pop(name, None)
     for name in ("hidden_dims", "delta_action_mask"):
         if name in values:
             values[name] = tuple(values[name])
@@ -226,9 +216,6 @@ class RLTConfig:
     batch_size: int = 256
     online_batch_fraction: float = 0.5
     q_loss_normalization: bool = False
-    # Hinge cap in normalized action space; 0 disables it.
-    bc_deviation_max: float = 0.0
-    bc_deviation_weight: float = 1.0
     q_loss_alpha: float = 2.5
     actions_to_execute: int = 10
     use_subsampling: bool = True
@@ -313,13 +300,6 @@ class RLTConfig:
             raise ValueError(
                 "jerk_joint_weights length must equal network.action_dim"
             )
-        if not math.isfinite(self.bc_deviation_max) or self.bc_deviation_max < 0:
-            raise ValueError("bc_deviation_max must be finite and nonnegative")
-        if (
-            not math.isfinite(self.bc_deviation_weight)
-            or self.bc_deviation_weight < 0
-        ):
-            raise ValueError("bc_deviation_weight must be finite and nonnegative")
         if any(
             not math.isfinite(weight) or weight < 0
             for weight in self.jerk_joint_weights

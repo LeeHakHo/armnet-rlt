@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from collections.abc import Container
 from typing import Any
 
 import numpy as np
@@ -14,12 +13,7 @@ import torch
 from armnet_rlt.artifacts import load_transition_cache
 from armnet_rlt.config import so101_network_config
 from armnet_rlt.openpi_rlt import OpenPIRLTPolicy, PolicyObservation
-from armnet_rlt.resources import (
-    GREEN_BUTTON_PROMPT,
-    MULTITASK_CHECKPOINT,
-    MULTITASK_CONFIG,
-    task_paths,
-)
+from armnet_rlt.resources import task_paths
 
 
 CAMERAS = ("front", "top", "wrist")
@@ -116,7 +110,6 @@ def build_demo_cache(
     inference_batch_size: int = 4,
     predicted_action_len: int = 10,
     reference_action_len: int = 30,
-    episode_filter: Container[int] | None = None,
 ) -> dict[str, int | float]:
     """Extract one transition per non-overlapping action chunk.
 
@@ -131,9 +124,6 @@ def build_demo_cache(
     episode_start = 0
     for episode_index, metadata in enumerate(episodes):
         episode_length = int(metadata["length"])
-        if episode_filter is not None and episode_index not in episode_filter:
-            episode_start += episode_length
-            continue
         offsets = list(range(0, episode_length, predicted_action_len))
         episode_prompt = _episode_prompt(
             dataset[episode_start],
@@ -279,87 +269,3 @@ def build_task_cache(
     print(f"[RLT cache] complete: {result}", flush=True)
     return result
 
-
-def build_rollout_cache(
-    *,
-    sources: list[dict],
-    data_root: str | os.PathLike[str],
-    inference_batch_size: int = 4,
-    prompt: str = GREEN_BUTTON_PROMPT,
-    cache_name: str = "rlt_bc_cache.pt",
-    checkpoint_repo: str = MULTITASK_CHECKPOINT,
-) -> dict:
-    """Build one cache from selected episodes of recorded rollout datasets.
-
-    ``checkpoint_repo`` is a HuggingFace repo or a local OpenPI checkpoint
-    directory; the RL tokens and reference chunks come from that policy.
-    """
-    from huggingface_hub import snapshot_download
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-    checkpoint = (
-        checkpoint_repo
-        if Path(checkpoint_repo).is_dir()
-        else snapshot_download(checkpoint_repo)
-    )
-    print(f"[RLT bc] checkpoint={checkpoint}", flush=True)
-    policy = OpenPIRLTPolicy.from_checkpoint(
-        checkpoint, MULTITASK_CONFIG, default_prompt=prompt
-    )
-    demo_cache_path, assets_dir, _ = task_paths(MULTITASK_CONFIG, data_root)
-    target = Path(demo_cache_path).with_name(cache_name)
-
-    merged: list[dict] = []
-    per_source = []
-    for source in sources:
-        repo_id = str(source["repo_id"])
-        episodes = sorted({int(index) for index in source["episodes"]})
-        if not episodes:
-            continue
-        dataset = LeRobotDataset(repo_id, revision="main", video_backend="pyav")
-        part = target.with_name(f"{target.stem}.part.pt")
-        build_demo_cache(
-            dataset=dataset,
-            policy=policy,
-            output_path=part,
-            prompt=prompt,
-            inference_batch_size=inference_batch_size,
-            episode_filter=set(episodes),
-        )
-        chunk = torch.load(part, map_location="cpu", weights_only=False)
-        merged.extend(chunk)
-        part.unlink(missing_ok=True)
-        per_source.append(
-            {"repo_id": repo_id, "episodes": len(episodes), "transitions": len(chunk)}
-        )
-        print(f"[RLT bc] {repo_id}: {len(episodes)} episodes -> {len(chunk)} transitions", flush=True)
-
-    if not merged:
-        raise ValueError("no episodes were selected, so no cache was written")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".pt.tmp")
-    torch.save(merged, temporary)
-    temporary.replace(target)
-    _, summary = load_transition_cache(target, so101_network_config())
-    copy_norm_stats(checkpoint, assets_dir)
-    result = {
-        **summary.to_dict(),
-        "cache_path": str(target),
-        "checkpoint": checkpoint_repo,
-        "sources": per_source,
-        "episodes_total": sum(item["episodes"] for item in per_source),
-    }
-    print(f"[RLT bc] complete: {result}", flush=True)
-    return result
-
-
-def manifest_sources(manifest: str | os.PathLike[str]) -> list[dict]:
-    """Read ``datasets`` (each ``repo_id`` + ``episodes``) from a JSON manifest."""
-    import json
-
-    spec = json.loads(Path(manifest).read_text())
-    return [
-        {"repo_id": entry["repo_id"], "episodes": entry["episodes"]}
-        for entry in spec["datasets"]
-        if entry.get("episodes")
-    ]

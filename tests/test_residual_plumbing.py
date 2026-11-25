@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from armnet_rlt.learner_config import learner_config
@@ -61,20 +59,6 @@ def test_rlt_local_online_accepts_the_flags() -> None:
     assert args.critic_action_residual is True
     assert args.residual_scale == 0.3
     assert args.critic_action_gain == 10.0
-
-
-def test_modal_learner_forwards_the_flags() -> None:
-    root = Path(__file__).resolve().parents[1]
-    source = (root / "src" / "armnet_rlt" / "modal_app.py").read_text()
-
-    for name in (
-        "residual_actor",
-        "residual_scale",
-        "critic_action_residual",
-        "critic_action_gain",
-    ):
-        # serve_learner -> _config and main -> serve_learner.remote.
-        assert source.count(f"{name}={name},") == 2
 
 
 def test_resume_rejects_residual_flags_that_differ_from_the_checkpoint(tmp_path) -> None:

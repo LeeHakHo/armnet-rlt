@@ -26,9 +26,7 @@ from armnet_rlt.learner import (
     _restore_replay_buffer,
     _save_replay_buffer,
     _schedule_online_updates,
-    run_bc_training,
     run_learner,
-    run_streaming_bc,
 )
 from armnet_rlt.metrics import RollingMetrics
 
@@ -120,10 +118,8 @@ class _StopAtWandb(Exception):
     "start",
     [
         lambda config: run_learner(config, wandb_project="test"),
-        lambda config: run_bc_training(config, steps=1, wandb_project="test"),
-        lambda config: run_streaming_bc(config, wandb_project="test"),
     ],
-    ids=["online", "bc", "streaming-bc"],
+    ids=["online"],
 )
 def test_auth_token_stays_out_of_wandb(tmp_path, monkeypatch, start) -> None:
     logged_configs = []

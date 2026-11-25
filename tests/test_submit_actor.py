@@ -48,7 +48,7 @@ def _args(**updates):
 
 def _entry(**updates):
     values = {
-        "host": "example.modal.run",
+        "host": "learner.example.org",
         "port": 443,
         "use_tls": True,
         "config_name": "pi05_rlt_so101_busybox",
@@ -69,9 +69,9 @@ def test_submitter_uses_conservative_rollout_and_exploration_defaults() -> None:
     assert parser.get_default("variation_demote_threshold") == 0.55
 
 
-def test_job_args_use_tls_modal_endpoint() -> None:
+def test_job_args_use_tls_endpoint() -> None:
     result = build_job_args(_args(), _entry())
-    assert result["learner_host"] == "example.modal.run"
+    assert result["learner_host"] == "learner.example.org"
     assert result["learner_port"] == 443
     assert result["use_tls"] is True
     assert result["num_rollouts"] == 3

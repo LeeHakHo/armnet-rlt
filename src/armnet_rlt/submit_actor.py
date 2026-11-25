@@ -18,7 +18,6 @@ from armnet_rlt.rerun_view import (
     start_live_view,
 )
 from armnet_rlt.resources import (
-    RENDEZVOUS_DICT,
     add_remote_policy_arguments,
     add_variation_curriculum_arguments,
     camera_aim_args,
@@ -105,7 +104,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--learner-key",
         required=True,
-        help="<config-name>:<run-id> printed by the Modal or local learner",
+        help="<config-name>:<run-id> printed by the local learner",
     )
     parser.add_argument("--num-rollouts", type=int, default=40)
     parser.add_argument("--reference-action-len", type=int, default=30)
@@ -330,23 +329,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def resolve_rendezvous(key: str) -> dict[str, Any]:
-    """Read one namespaced learner endpoint: a local learner's, else Modal's."""
+    """Read one namespaced learner endpoint registered by a local learner."""
     entry = read_local_rendezvous(key)
-    if entry is None:
-        try:
-            import modal
-
-            entry = modal.Dict.from_name(RENDEZVOUS_DICT).get(key)
-        except Exception as exc:
-            raise RuntimeError(
-                f"No local learner at {local_rendezvous_path(key)} and Modal "
-                f"Dict {RENDEZVOUS_DICT!r} is unreachable: {exc}"
-            ) from exc
     if not entry:
         raise RuntimeError(
-            f"No learner registered at {local_rendezvous_path(key)} or in Modal "
-            f"Dict {RENDEZVOUS_DICT!r} at {key!r}. Start the learner and use "
-            "the key it prints."
+            f"No learner registered at {local_rendezvous_path(key)} for "
+            f"{key!r}. Start the learner and use the key it prints."
         )
     required = {"host", "port", "use_tls", "config_name", "run_id"}
     missing = required.difference(entry)

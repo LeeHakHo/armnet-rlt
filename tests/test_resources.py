@@ -4,7 +4,7 @@ from armnet_rlt.resources import rendezvous_key, task_paths
 
 
 def test_task_paths_match_historical_volume_layout() -> None:
-    cache, assets, output = task_paths("pi05_rlt_busybox_multitask")
+    cache, assets, output = task_paths("pi05_rlt_busybox_multitask", "/data")
     assert cache == (
         "/data/tasks/pi05_rlt_busybox_multitask/demo/rlt_demo_cache.pt"
     )

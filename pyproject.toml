@@ -28,7 +28,6 @@ dev = [
 ]
 submit = [
     "armnet-client[local,viz]==0.3.7",
-    "modal>=1.5.4",
     "python-dotenv>=1.2.3",
 ]
 

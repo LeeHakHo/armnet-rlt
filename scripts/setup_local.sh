@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the `rlt-local` environments under envs/.
-#   scripts/setup_local.sh learner   torch + LeRobot transport (bc, streaming-bc, online, checkpoint-eval)
-#   scripts/setup_local.sh openpi    OpenPI/JAX (cache, bc-cache, policy-server)
+#   scripts/setup_local.sh learner   torch + LeRobot transport (online, checkpoint-eval)
+#   scripts/setup_local.sh openpi    OpenPI/JAX (cache, policy-server)
 #   scripts/setup_local.sh lerobot   full LeRobot for its policies (lerobot-train, lerobot-streaming-bc,
 #                                     checkpoint-eval, policy-server --policy-type lerobot)
 # OPENPI_REPO and OPENPI_REVISION select the OpenPI fork with the pi0_rl model.
@@ -42,7 +42,7 @@ setup_learner() {
     uv pip install --python "$venv" --upgrade --override "$overrides" \
         --extra-index-url "$TORCH_INDEX" \
         torch==2.8.0 torchvision==0.23.0
-    "$venv/bin/python" -c "import torch; from lerobot.rl.learner_service import LearnerService; from armnet_rlt.learner import run_streaming_bc; print('RLT learner env OK', torch.__version__, 'cuda', torch.cuda.is_available())"
+    "$venv/bin/python" -c "import torch; from lerobot.rl.learner_service import LearnerService; from armnet_rlt.learner import run_learner; print('RLT learner env OK', torch.__version__, 'cuda', torch.cuda.is_available())"
 }
 
 setup_openpi() {

@@ -309,9 +309,6 @@ class DSRLPolicy(nn.Module):
         self.critic_ensemble.set_norm_stats(norm_stats, use_quantiles=use_quantiles)
         self.critic_target.set_norm_stats(norm_stats, use_quantiles=use_quantiles)
 
-    def compute_loss_bc(self, *args: Any, **kwargs: Any) -> Tensor:
-        raise NotImplementedError("DSRL has no demonstration behavior cloning")
-
     @torch.no_grad()
     def select_action(
         self,

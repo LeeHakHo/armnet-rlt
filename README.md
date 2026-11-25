@@ -8,13 +8,11 @@ Armnet SO-101 robot cells.
 - **DSRL** (`--algorithm dsrl`): π0.5 stays frozen; a SAC actor chooses the
   initial noise of its flow-matching sampler, so every executed chunk is one
   π0.5 produced. Follows the official π0 DSRL agent.
-- **Streaming BC** / **offline BC**: clone successful rollouts or a recorded
-  cache into the RLT head.
 - **Checkpoint evaluation** of LeRobot policies (Diffusion Policy, SmolVLA,
   multi-task DiT) on the same cells, as baselines.
 
-The learner runs on a local GPU (`rlt-local`) or on Modal (`modal run`). The
-actor runs on the cell through Armnet and talks to the learner over gRPC.
+The learner runs on a local GPU (`rlt-local`). The actor runs on the cell
+through Armnet and talks to the learner over gRPC.
 Policy inference runs on your GPU by default: `rlt-local policy-server`
 serves π0.5 or a LeRobot policy and the cell only streams observations to it
 (`--no-remote-policy` loads the policy on the cell instead).
@@ -142,8 +140,8 @@ build), an Armnet API key, a Hugging Face token.
 ```bash
 cp .env.example .env            # fill in ARMNET_API_KEY, HF_TOKEN, RLT_HF_SECRET
 uv sync --locked                # rlt-submit-actor, rlt-submit-eval, rlt-freeze-checkpoint
-scripts/setup_local.sh learner  # envs/venv-learner: rlt-local bc, streaming-bc, online
-scripts/setup_local.sh openpi   # envs/venv-openpi: rlt-local cache, bc-cache, policy-server (π0.5)
+scripts/setup_local.sh learner  # envs/venv-learner: rlt-local online
+scripts/setup_local.sh openpi   # envs/venv-openpi: rlt-local cache, policy-server (π0.5)
 scripts/setup_local.sh lerobot  # envs/venv-lerobot: lerobot-train, lerobot-streaming-bc,
                                 #   checkpoint-eval, policy-server --policy-type lerobot
 ```
@@ -194,7 +192,6 @@ envs/venv-learner/bin/hf download AutoRLBench/pi05_busybox_minmax_step5k_rltoken
   --local-dir checkpoints/pi05_rltoken                                  # π0.5 with the RL token
 envs/venv-learner/bin/rlt-local assets --config-name "$RLT_CONFIG"      # normalization stats
 envs/venv-openpi/bin/rlt-local cache --preset multitask                 # demo cache (RLT pretraining)
-envs/venv-openpi/bin/rlt-local bc-cache --manifest manifest.json        # cache from recorded rollouts
 ```
 
 `checkpoints/pi05_rltoken` is the base policy of RLT and DSRL: π0.5 trained
@@ -255,14 +252,6 @@ envs/venv-openpi/bin/rlt-local policy-server --gpu 0 \
 Defaults: `--dsrl-noise-steps 5` (five noise rows, the last repeated over
 the 30-step chunk), `--dsrl-noise-bound 1.5`. Steps are gradient steps (30
 per transition).
-
-Streaming BC and offline BC:
-
-```bash
-envs/venv-learner/bin/rlt-local streaming-bc --gpu 0 --run-id "$RLT_RUN_ID" \
-  --episodes-per-round 30,30,10 --steps-per-round 500 --online-steps 30000
-envs/venv-learner/bin/rlt-local bc --gpu 0 --run-id "$RLT_RUN_ID"
-```
 
 `--resume` continues a run from its newest checkpoint and replay snapshot.
 
@@ -398,24 +387,6 @@ Training uses the ID settings:
 `scripts/lib.sh:eval_checkpoint` builds it. Rail positions are fractions of the usable
 rail, brightness a percentage, tilt a fraction of the mount's travel.
 
-## Modal learner
-
-```bash
-uv run modal setup
-uv run modal secret create armnet-rlt-auth RLT_LEARNER_AUTH_TOKEN="$TOKEN"
-uv run modal secret create huggingface-secret HF_TOKEN="$HF_TOKEN"
-uv run --env-file .env modal run src/armnet_rlt/modal_cache.py::build_multitask_cache
-uv run --env-file .env modal run --detach src/armnet_rlt/modal_app.py::main \
-  --config-name "$RLT_CONFIG" --run-id "$RLT_RUN_ID" --embodiment so101   # add --resume to continue; --residual-actor --critic-action-residual for residual RLT
-uv run --env-file .env modal run --detach src/armnet_rlt/modal_app.py::streaming_bc \
-  --config-name "$RLT_CONFIG" --run-id "$RLT_RUN_ID"
-uv run modal app stop -y <app-id>
-```
-
-The Modal learner registers its endpoint in the Modal Dict `RLT_MODAL_RENDEZVOUS`
-instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
-`rlt-freeze-checkpoint` without `--local` reads the Modal volume.
-
 ## Configuration
 
 | Variable | Meaning |
@@ -432,7 +403,6 @@ instead of the local rendezvous directory; `rlt-submit-actor` resolves both.
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token of the local learner; equals the `RLT_AUTH_SECRET` secret |
 | `RLT_DATA_ROOT` | Local learner data root (default `./experiment-data`) |
 | `RLT_CELL_CAMERA_AIM` | Camera aim per cell; the scripts default to `cell-03=top.tilt=0.1661;cell-01=top.tilt=0.19`, which centre the busybox in the top view |
-| `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET` | Modal resource names |
 | `OPENPI_REPO`, `OPENPI_REVISION` | OpenPI fork with the `pi0_rl` model |
 
 Camera aim values are 0-1 of each pan/tilt axis's travel. A per-cell default

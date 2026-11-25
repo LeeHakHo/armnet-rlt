@@ -223,40 +223,6 @@ def cmd_cache(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_bc_cache(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
-    from armnet_rlt.cache_builder import build_rollout_cache, manifest_sources
-
-    sources = manifest_sources(args.manifest)
-    total = sum(len(entry["episodes"]) for entry in sources)
-    print(f"[RLT bc] {len(sources)} datasets, {total} episodes -> {args.cache_name}")
-    build_rollout_cache(
-        sources=sources,
-        data_root=local_data_root(),
-        inference_batch_size=args.inference_batch_size,
-        prompt=args.prompt,
-        cache_name=args.cache_name,
-        checkpoint_repo=args.checkpoint or MULTITASK_CHECKPOINT,
-    )
-
-
-def cmd_bc(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
-    from armnet_rlt.learner import run_bc_training
-    from armnet_rlt.learner_config import resolve_init_checkpoint
-
-    ensure_norm_stats(args.config_name, args.checkpoint_repo)
-    cfg = _config(args, save_freq=args.save_freq)
-    cfg.demo_cache_path = str(Path(cfg.demo_cache_path).with_name(args.cache_name))
-    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
-    run_bc_training(
-        cfg,
-        steps=args.steps,
-        wandb_project=args.wandb_project or None,
-        init_checkpoint=init_checkpoint,
-    )
-
-
 def _learner_token() -> str:
     token = os.environ.get("RLT_LEARNER_AUTH_TOKEN", "")
     if not token:
@@ -466,43 +432,6 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             entry_path.unlink(missing_ok=True)
 
 
-def cmd_streaming_bc(args: argparse.Namespace) -> None:
-    _select_gpu(args.gpu)
-    token = _learner_token()
-    from armnet_rlt.learner import run_streaming_bc
-    from armnet_rlt.learner_config import resolve_init_checkpoint
-
-    ensure_norm_stats(args.config_name, args.checkpoint_repo)
-    cfg = _config(
-        args,
-        bc_deviation_max=args.bc_deviation_max,
-        bc_deviation_weight=args.bc_deviation_weight,
-        actor_lr=args.actor_lr,
-    )
-    if args.online_steps:
-        cfg.online_steps = args.online_steps
-    if args.cache_name:
-        cfg.demo_cache_path = str(
-            Path(cfg.demo_cache_path).with_name(args.cache_name)
-        )
-    init_checkpoint = resolve_init_checkpoint(cfg, args.init_run_id, args.init_step)
-    with _serve(args, cfg, token):
-        run_streaming_bc(
-            cfg,
-            wandb_project=args.wandb_project or None,
-            min_success_transitions=args.min_success_transitions,
-            steps_per_transition=args.steps_per_transition,
-            init_checkpoint=init_checkpoint,
-            min_shaped_reward=args.min_shaped_reward,
-            base_batch_fraction=args.base_batch_fraction,
-            episodes_per_round=args.episodes_per_round,
-            steps_per_round=args.steps_per_round,
-            idle_timeout_s=args.idle_timeout_s,
-            idle_min_episodes=args.idle_min_episodes,
-            push_unchanged_weights=False,
-        )
-
-
 def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
     _select_gpu(args.gpu)
     token = _learner_token()
@@ -679,70 +608,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     cache.add_argument("--dataset", default="", help="Overrides the preset")
     cache.add_argument("--prompt", default="", help="Overrides the preset")
-
-    bc_cache = add(
-        "bc-cache", cmd_bc_cache, "build a cache from recorded rollouts (needs OpenPI)"
-    )
-    bc_cache.add_argument(
-        "--manifest",
-        required=True,
-        help="JSON file with `datasets`, each holding `repo_id` and `episodes`",
-    )
-    bc_cache.add_argument("--inference-batch-size", type=int, default=4)
-    bc_cache.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
-    bc_cache.add_argument("--cache-name", default="rlt_bc_cache.pt")
-    bc_cache.add_argument(
-        "--checkpoint",
-        default="",
-        help="HuggingFace repo or local OpenPI checkpoint that encodes the "
-        "episodes (default: the config's checkpoint)",
-    )
-
-    bc = add("bc", cmd_bc, "train an actor by cloning a cache's recorded actions")
-    add_run(bc)
-    bc.add_argument("--steps", type=int, default=5_000)
-    bc.add_argument("--cache-name", default="rlt_bc_cache.pt")
-    bc.add_argument(
-        "--save-freq", type=int, default=None, help="Steps between checkpoints (config default 500)"
-    )
-    bc.add_argument(
-        "--init-run-id",
-        default="",
-        help="Start from this run's actor",
-    )
-    bc.add_argument("--init-step", type=int, default=0)
-
-    streaming = add(
-        "streaming-bc",
-        cmd_streaming_bc,
-        "serve a learner that clones the successes a live actor sends",
-    )
-    add_run(streaming)
-    streaming.add_argument(
-        "--cache-name",
-        default="",
-        help="Transition cache drawn with --base-batch-fraction (default: the "
-        "task's demo cache)",
-    )
-    streaming.add_argument("--min-success-transitions", type=int, default=32)
-    streaming.add_argument("--steps-per-transition", type=int, default=1)
-    streaming.add_argument("--online-steps", type=int, default=0)
-    streaming.add_argument("--init-run-id", default="")
-    streaming.add_argument("--init-step", type=int, default=0)
-    streaming.add_argument("--min-shaped-reward", type=float, default=0.0)
-    streaming.add_argument("--base-batch-fraction", type=float, default=0.0)
-    streaming.add_argument("--bc-deviation-max", type=float, default=0.0)
-    streaming.add_argument("--bc-deviation-weight", type=float, default=1.0)
-    streaming.add_argument("--episodes-per-round", default="0")
-    streaming.add_argument("--steps-per-round", type=int, default=0)
-    streaming.add_argument("--actor-lr", type=float, default=0.0)
-    streaming.add_argument("--idle-timeout-s", type=float, default=600.0)
-    streaming.add_argument("--idle-min-episodes", type=int, default=5)
-    add_transport(
-        streaming,
-        "Seconds between weight pushes while a round is training; a finished "
-        "round always pushes",
-    )
 
     lerobot_sbc = add(
         "lerobot-streaming-bc",

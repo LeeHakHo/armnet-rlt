@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 
 import numpy as np
@@ -175,8 +174,6 @@ def test_policy_losses_and_noise_have_expected_shapes() -> None:
     explored = policy.select_action(token, proprio, exploration_std=10.0)
     assert float(explored.abs().max()) <= 2.0
     assert not torch.allclose(explored, deterministic)
-    with pytest.raises(NotImplementedError):
-        policy.compute_loss_bc()
 
 
 def test_critic_target_has_no_entropy_term_and_bootstraps_through_truncation() -> None:
@@ -365,9 +362,6 @@ def test_steering_payload_round_trips_through_numpy_arrays() -> None:
         bad["meta"] = payload["meta"].replace('"schema_version": 3', f'"schema_version": {version}')
         with pytest.raises(ValueError, match="schema"):
             actor_from_steering_payload(bad)
-    meta = json.loads(payload["meta"])
-    meta["network"].update(head="mean", num_modes=5, gmm_max_log_std=0.0)
-    assert actor_from_steering_payload({**payload, "meta": json.dumps(meta)})[0].noise_steps == 2
 
 
 def test_chosen_noise_follows_the_actor_and_repeats_over_the_chunk() -> None:

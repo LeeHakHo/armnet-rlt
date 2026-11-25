@@ -1,10 +1,9 @@
-"""Learner configuration shared by the Modal and local entrypoints."""
+"""Learner configuration for the local entrypoints."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import replace
-from pathlib import Path
 
 from armnet_rlt.config import (
     BISO101_JERK_JOINT_WEIGHTS,
@@ -55,8 +54,6 @@ def learner_config(
     q_loss_normalization: bool = False,
     discount: float | None = None,
     num_critics: int | None = None,
-    bc_deviation_max: float = 0.0,
-    bc_deviation_weight: float = 1.0,
     actor_lr: float = 0.0,
     actor_lr_min: float = 0.0,
     save_freq: int | None = None,
@@ -127,8 +124,6 @@ def learner_config(
         "policy_uses_delta_actions": True,
         "online_batch_fraction": online_batch_fraction,
         "q_loss_normalization": q_loss_normalization,
-        "bc_deviation_max": bc_deviation_max,
-        "bc_deviation_weight": bc_deviation_weight,
         "safety_trip_penalty": safety_trip_penalty,
     }
     if discount is not None:
@@ -144,21 +139,3 @@ def learner_config(
         kwargs["actor_lr_min"] = actor_lr_min if actor_lr_min > 0 else actor_lr / 4
     return RLTConfig(**kwargs)
 
-
-def resolve_init_checkpoint(
-    config: RLTConfig, init_run_id: str, init_step: int = 0
-) -> Path | None:
-    """Locate ``init_run_id``'s checkpoint at ``init_step``, or its latest."""
-    if not init_run_id:
-        return None
-    root = config.checkpoint_dir.parent / init_run_id
-    if init_step:
-        checkpoint = root / f"step_{init_step:06d}" / "checkpoint.pt"
-    else:
-        found = sorted(root.glob("step_*/checkpoint.pt"))
-        if not found:
-            raise FileNotFoundError(f"no checkpoint under {root}")
-        checkpoint = found[-1]
-    if not checkpoint.exists():
-        raise FileNotFoundError(str(checkpoint))
-    return checkpoint

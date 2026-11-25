@@ -1,4 +1,4 @@
-"""Names shared by the Modal learner, local learner and Armnet submitter."""
+"""Names shared by the local learner and Armnet submitter."""
 
 from __future__ import annotations
 
@@ -6,18 +6,11 @@ import argparse
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 
-APP_NAME = "armnet-rlt-learner"
 LEARNER_PORT = 50051
-VOLUME_NAME = os.environ.get("RLT_MODAL_VOLUME", "pi0-rlt-data")
-VOLUME_MOUNT = PurePosixPath("/data")
-RENDEZVOUS_DICT = os.environ.get(
-    "RLT_MODAL_RENDEZVOUS", "armnet-rlt-rendezvous"
-)
-AUTH_SECRET_NAME = os.environ.get("RLT_MODAL_AUTH_SECRET", "armnet-rlt-auth")
 
 GREEN_BUTTON_CONFIG = "pi05_rlt_busybox_push_green_button"
 GREEN_BUTTON_CHECKPOINT = "pravsels/pi05_rlt_busybox_push_green_button"
@@ -29,13 +22,13 @@ MULTITASK_DATASET = "villekuosmanen/busybox_multitask"
 
 
 def local_data_root() -> Path:
-    """Directory a learner on this machine uses in place of the Modal volume."""
+    """Directory a learner on this machine writes its data under."""
     default = Path(__file__).resolve().parents[2] / "experiment-data"
     return Path(os.environ.get("RLT_DATA_ROOT") or default).resolve()
 
 
 def task_paths(
-    config_name: str, root: str | os.PathLike[str] = VOLUME_MOUNT
+    config_name: str, root: str | os.PathLike[str]
 ) -> tuple[str, str, str]:
     """Return demo cache, stats directory and production output directory."""
     root = Path(root) / "tasks" / config_name
