@@ -1,8 +1,8 @@
 """Check the DSRL inference path of an OpenPI checkpoint on this GPU.
 
 Compares the split prefix/denoise sampler against the combined sampler,
-installs a fresh DSRL actor through SetSteering and checks that steered
-inference uses its noise. Run inside the openpi environment:
+installs a fresh DSRL actor the way the policy server does and checks that
+its chunk comes from the actor's noise. Run inside the openpi environment:
 
     RLT_CONFIG=<config> RLT_CHECKPOINT=<dir> python scripts/dsrl_gpu_check.py
 """
@@ -19,9 +19,11 @@ import torch
 from openpi.models import model as model_module
 from openpi.models.model import IMAGE_RESOLUTION
 
-from armnet_rlt.config import DSRL_HIDDEN_DIMS, so101_network_config
-from armnet_rlt.dsrl import DSRLActor, steering_payload
+from armnet_rlt.algorithm import AlgorithmSpec, actor_meta, actor_payload
+from armnet_rlt.algorithms.dsrl import DSRLAlgorithm
+from armnet_rlt.config import DSRL_HIDDEN_DIMS, RLTConfig, so101_network_config
 from armnet_rlt.openpi_rlt import OpenPIRLTPolicy, PolicyObservation
+from armnet_rlt.policy_actor import AlgorithmPolicy
 from armnet_rlt.resources import GREEN_BUTTON_PROMPT, MULTITASK_CONFIG
 
 CONFIG = os.environ.get("RLT_CONFIG", MULTITASK_CONFIG)
@@ -68,33 +70,42 @@ def main() -> None:
     network = so101_network_config(
         reference_action_len=rows, predicted_action_len=rows, hidden_dims=DSRL_HIDDEN_DIMS
     )
-    actor = DSRLActor(network, noise_bound=NOISE_BOUND, noise_steps=1)
+    config = RLTConfig(
+        network=network,
+        algorithm="dsrl",
+        dsrl_noise_bound=NOISE_BOUND,
+        dsrl_noise_steps=1,
+        max_demo_pretrain_steps=0,
+        online_batch_fraction=1.0,
+        policy_uses_delta_actions=policy.uses_delta_actions,
+        device="cpu",
+    )
+    actor = DSRLAlgorithm.build_actor(AlgorithmSpec(), config)
     actor.set_norm_stats(policy.norm_stats, use_quantiles=policy.use_quantile_norm)
     actor.eval()
-    step = policy.set_steering(
-        steering_payload(
+    runner = AlgorithmPolicy(policy, device="cuda" if torch.cuda.is_available() else "cpu")
+    step = runner.install(
+        actor_payload(
             actor.state_dict(),
-            network=network,
-            noise_bound=NOISE_BOUND,
-            noise_steps=1,
+            actor_meta("dsrl", AlgorithmSpec(base_chunk_len=rows), config),
             learner_step=1,
         )
     )
-    result = policy.infer(obs, exploration_std=0.0)
+    result = runner.act(obs, explore=False)
     with torch.inference_mode():
         _, mean = actor(
             torch.from_numpy(result.rl_token)[None], torch.from_numpy(obs.state)[None]
         )
     expected = np.repeat(mean.numpy().reshape(1, cols) * NOISE_BOUND, rows, axis=0)
     print(
-        "steering step",
+        "actor step",
         step,
-        result.steering_step,
+        result.actor_step,
         " noise==actor mean:",
-        bool(np.allclose(result.noise, expected, atol=1e-5)),
+        bool(np.allclose(result.extras["noise"], expected, atol=1e-5)),
         flush=True,
     )
-    print("steered chunk[0]", np.round(result.action_chunk[0], 2), flush=True)
+    print("steered chunk[0]", np.round(result.chunk[0], 2), flush=True)
     print("plain chunk[0]", np.round(plain.action_chunk[0], 2), flush=True)
 
 

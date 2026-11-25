@@ -110,10 +110,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-action-len", type=int, default=30)
     parser.add_argument(
         "--algorithm",
-        choices=("rlt", "dsrl"),
         default="rlt",
-        help="Must match the learner: rlt refines the base chunk, dsrl steers "
-        "the base policy's noise through the policy server",
+        help="The learner's algorithm (rlt, dsrl or a plugin), recorded with the "
+        "job; the policy server runs its actor",
     )
     parser.add_argument(
         "--dsrl-noise-bound",

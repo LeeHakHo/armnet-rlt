@@ -15,12 +15,12 @@ from armnet_rlt import actor_job
 from armnet_rlt.config import RLTConfig, so101_network_config
 from armnet_rlt.frozen import freeze_learner_checkpoint
 from armnet_rlt.policy import RLTPolicy
+from armnet_rlt.algorithms.rlt import _refine_chunk
 from armnet_rlt.so101_actor import (
     LearnerTransport,
     _button_press_counts,
     _delta_action_mode,
     _load_parameters,
-    _refine_chunk,
     _shape_button_reward,
 )
 

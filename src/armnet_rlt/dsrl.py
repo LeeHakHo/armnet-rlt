@@ -2,16 +2,15 @@
 
 The actor maps the RL token and proprioception to the initial noise of the
 base policy's flow; the base policy turns that noise into the executed chunk.
-Transitions carry the chunk noise as ``action`` and the resulting chunk as
-``reference_action``. The learner is soft actor-critic.
+Transitions carry the chunk noise as the ``noise`` extra and the resulting
+chunk as ``reference_action``. The learner is soft actor-critic
+(``armnet_rlt.algorithms.dsrl``).
 """
 
 from __future__ import annotations
 
 import copy
-import json
 import math
-from dataclasses import asdict
 from typing import Any, Mapping
 
 import numpy as np
@@ -20,10 +19,8 @@ import torch.nn as nn
 from torch import Tensor
 
 from armnet_rlt.artifacts import NormStats
-from armnet_rlt.config import RLTConfig, RLTNetworkConfig, network_config_from_dict
+from armnet_rlt.config import RLTConfig, RLTNetworkConfig
 from armnet_rlt.networks import _norm, _register_norm_buffers, _set_state_buffers
-
-STEERING_SCHEMA_VERSION = 3
 
 LOG_STD_MIN = -20.0
 LOG_STD_MAX = 2.0
@@ -441,50 +438,6 @@ def relabel_episode(
             dtype=torch.float32,
         )
         transitions[-1]["done"] = torch.tensor(1.0, dtype=torch.float32)
-
-
-def steering_payload(
-    actor_state: Mapping[str, Any],
-    *,
-    network: RLTNetworkConfig,
-    noise_bound: float,
-    learner_step: int | None,
-    noise_steps: int = 1,
-) -> dict[str, Any]:
-    """Flat ``np.savez``-able description of a DSRL actor for a policy server."""
-    meta = {
-        "schema_version": STEERING_SCHEMA_VERSION,
-        "network": asdict(network),
-        "noise_bound": float(noise_bound),
-        "noise_steps": int(noise_steps),
-        "learner_step": learner_step,
-    }
-    payload: dict[str, Any] = {"meta": json.dumps(meta)}
-    for name, value in actor_state.items():
-        array = value.detach().cpu().numpy() if isinstance(value, Tensor) else np.asarray(value)
-        payload[f"param/{name}"] = array
-    return payload
-
-
-def actor_from_steering_payload(payload: Mapping[str, Any]) -> tuple[DSRLActor, int | None]:
-    """Rebuild the actor a ``steering_payload`` describes, in eval mode on CPU."""
-    meta = json.loads(str(payload["meta"]))
-    if meta.get("schema_version") != STEERING_SCHEMA_VERSION:
-        raise ValueError(f"unsupported steering schema {meta.get('schema_version')!r}")
-    actor = DSRLActor(
-        network_config_from_dict(meta["network"]),
-        noise_bound=float(meta["noise_bound"]),
-        noise_steps=int(meta["noise_steps"]),
-    )
-    state = {
-        key.removeprefix("param/"): torch.as_tensor(np.asarray(value))
-        for key, value in payload.items()
-        if key.startswith("param/")
-    }
-    actor.load_state_dict(state)
-    actor.eval()
-    step = meta.get("learner_step")
-    return actor, (int(step) if step is not None else None)
 
 
 def choose_noise(

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import socket
-from dataclasses import dataclass
 
 import grpc
 import numpy as np
 import pytest
 
-from armnet_rlt.openpi_rlt import PolicyObservation, PolicyOutput
+from armnet_rlt.openpi_rlt import PolicyObservation
+from fakes import FakeBase
 from armnet_rlt.remote_policy import (
     MAX_MESSAGE_BYTES,
     RemoteOpenPIRLTPolicy,
@@ -17,61 +17,6 @@ from armnet_rlt.remote_policy import (
     unpack,
 )
 from armnet_rlt.so101_actor import _auth_interceptor, _grpc_channel
-
-
-@dataclass
-class _Stats:
-    mean: np.ndarray
-    std: np.ndarray
-    q01: np.ndarray | None = None
-    q99: np.ndarray | None = None
-
-
-class _FakePolicy:
-    rl_token_dim = 2048
-    use_quantile_norm = True
-    uses_delta_actions = True
-
-    def __init__(self) -> None:
-        self.norm_stats = {
-            "state": _Stats(np.arange(6.0), np.ones(6), np.zeros(6), np.full(6, 2.0)),
-            "actions": _Stats(np.zeros((30, 6)), np.ones((30, 6))),
-        }
-        self.observations: list[PolicyObservation] = []
-        self.steered: list[tuple[float, bool]] = []
-        self.steering_payloads: list[dict] = []
-        self.steering_step: int | None = None
-        self.resets = 0
-
-    def infer(
-        self,
-        observation: PolicyObservation,
-        *,
-        exploration_std: float | None = None,
-        steer: bool = True,
-    ) -> PolicyOutput:
-        self.observations.append(observation)
-        if exploration_std is None:
-            return PolicyOutput(
-                action_chunk=np.full((30, 6), observation.state[0], dtype=np.float32),
-                rl_token=np.arange(2048, dtype=np.float32),
-            )
-        self.steered.append((exploration_std, steer))
-        return PolicyOutput(
-            action_chunk=np.full((30, 6), -observation.state[0], dtype=np.float32),
-            rl_token=np.arange(2048, dtype=np.float32),
-            noise=np.full((30, 6), exploration_std, dtype=np.float32),
-            steering_step=self.steering_step if steer else None,
-        )
-
-    def set_steering(self, payload: dict) -> int | None:
-        self.steering_payloads.append(payload)
-        meta = json.loads(str(payload["meta"]))
-        self.steering_step = meta["learner_step"]
-        return self.steering_step
-
-    def reset(self) -> None:
-        self.resets += 1
 
 
 def _free_port() -> int:
@@ -107,7 +52,7 @@ def test_pack_round_trip_needs_no_pickle() -> None:
 
 
 def test_remote_policy_matches_the_served_policy() -> None:
-    policy = _FakePolicy()
+    policy = FakeBase()
     port = _free_port()
     with serve(
         policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
@@ -123,7 +68,7 @@ def test_remote_policy_matches_the_served_policy() -> None:
     assert remote.norm_stats["actions"].q01 is None
     assert remote.norm_stats["actions"].mean.shape == (30, 6)
     np.testing.assert_array_equal(result.action_chunk, np.full((30, 6), 3.0))
-    np.testing.assert_array_equal(result.rl_token, np.arange(2048))
+    np.testing.assert_array_equal(result.rl_token, np.arange(2048) / 2048.0)
     served = policy.observations[0]
     assert served.prompt == observation.prompt
     np.testing.assert_array_equal(served.state, observation.state)
@@ -135,7 +80,7 @@ def test_remote_policy_matches_the_served_policy() -> None:
 def test_remote_policy_rejects_a_wrong_token() -> None:
     port = _free_port()
     with serve(
-        _FakePolicy(),
+        FakeBase(),
         bind=f"127.0.0.1:{port}",
         image_size=(224, 224),
         auth_token="secret",
@@ -145,43 +90,69 @@ def test_remote_policy_rejects_a_wrong_token() -> None:
     assert error.value.code() == grpc.StatusCode.UNAUTHENTICATED
 
 
-def test_remote_policy_forwards_steering_and_noise() -> None:
-    policy = _FakePolicy()
+def _dsrl_payload(step: int, hidden: int = 8) -> dict:
+    import torch
+
+    from armnet_rlt.algorithm import AlgorithmSpec, actor_meta, actor_payload
+    from armnet_rlt.algorithms.dsrl import DSRLAlgorithm
+    from armnet_rlt.config import RLTConfig, so101_network_config
+
+    config = RLTConfig(
+        network=so101_network_config(
+            hidden_dims=(hidden,), reference_action_len=30, predicted_action_len=30
+        ),
+        algorithm="dsrl",
+        actions_to_execute=10,
+        max_demo_pretrain_steps=0,
+        online_batch_fraction=1.0,
+        dsrl_noise_steps=5,
+        policy_uses_delta_actions=True,
+        device="cpu",
+    )
+    torch.manual_seed(step)
+    state = DSRLAlgorithm.build_actor(AlgorithmSpec(), config).state_dict()
+    return actor_payload(state, actor_meta("dsrl", AlgorithmSpec(), config), learner_step=step)
+
+
+def test_remote_policy_runs_the_actor_the_cell_sends() -> None:
+    policy = FakeBase()
     port = _free_port()
     with serve(
         policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
     ):
         remote = RemoteOpenPIRLTPolicy(_channel(port, "secret"), image_codec="raw")
-        plain = remote.infer(_observation())
-        step = remote.set_steering(
-            {"meta": json.dumps({"learner_step": 7}), "param/w": np.ones((2, 3))}
-        )
-        steered = remote.infer(_observation(), exploration_std=0.5)
-        unsteered = remote.infer(_observation(), exploration_std=1.0, steer=False)
+        assert remote.actor_source == "client" and not remote.steering_from_learner
+        with pytest.raises(grpc.RpcError, match="no actor"):
+            remote.act(_observation(), explore=True, exploration_scale=0.5)
+        step = remote.set_steering(_dsrl_payload(7))
+        steered = remote.act(_observation(), explore=True, exploration_scale=0.5)
+        base = remote.act(_observation(), explore=False, base=True)
 
-    assert plain.noise is None and plain.steering_step is None
     assert step == 7 and remote.steering_step == 7
-    np.testing.assert_array_equal(policy.steering_payloads[0]["param/w"], np.ones((2, 3)))
-    assert policy.steered == [(0.5, True), (1.0, False)]
-    np.testing.assert_array_equal(steered.action_chunk, np.full((30, 6), -3.0))
-    np.testing.assert_array_equal(steered.noise, np.full((30, 6), 0.5))
-    assert steered.steering_step == 7
-    assert unsteered.steering_step is None
-    np.testing.assert_array_equal(unsteered.noise, np.full((30, 6), 1.0))
+    assert steered.actor_step == 7
+    noise = steered.extras["noise"]
+    assert noise.shape == (30, 6) and np.abs(noise).max() <= 1.5
+    np.testing.assert_array_equal(policy.noises[0], noise)
+    # The fake base adds the first state entry to the noise.
+    np.testing.assert_allclose(steered.base_chunk, noise + 3.0)
+    np.testing.assert_allclose(steered.chunk, steered.base_chunk[:10])
+    np.testing.assert_allclose(steered.rl_token, np.arange(2048) / 2048.0)
+    assert not steered.needs_images and steered.frames is None
+    # Base episodes draw unsteered noise, one row per step.
+    assert not np.array_equal(base.extras["noise"][0], base.extras["noise"][1])
 
 
 def test_actor_channel_carries_a_steering_payload_over_4mb() -> None:
-    policy = _FakePolicy()
+    policy = FakeBase()
     port = _free_port()
-    weights = np.ones((2048, 1024), dtype=np.float32)  # 8 MiB
+    payload = _dsrl_payload(2, hidden=1024)
+    assert payload["param/trunk.0.weight"].nbytes > 8 * 1024 * 1024
     with serve(
         policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
     ):
         lerobot_default = _grpc_channel("127.0.0.1", port, use_tls=False, token="secret")
         with pytest.raises(grpc.RpcError) as error:
-            RemoteOpenPIRLTPolicy(lerobot_default).set_steering(
-                {"meta": json.dumps({"learner_step": 1}), "param/w": weights}
-            )
+            RemoteOpenPIRLTPolicy(lerobot_default).set_steering(payload)
         channel = _grpc_channel(
             "127.0.0.1",
             port,
@@ -189,13 +160,10 @@ def test_actor_channel_carries_a_steering_payload_over_4mb() -> None:
             token="secret",
             max_message_bytes=MAX_MESSAGE_BYTES,
         )
-        step = RemoteOpenPIRLTPolicy(channel).set_steering(
-            {"meta": json.dumps({"learner_step": 2}), "param/w": weights}
-        )
+        step = RemoteOpenPIRLTPolicy(channel).set_steering(payload)
 
     assert error.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
     assert step == 2
-    assert policy.steering_payloads[0]["param/w"].shape == (2048, 1024)
 
 
 def test_jpeg_requests_are_much_smaller_than_png() -> None:
@@ -232,7 +200,7 @@ def test_policy_server_can_terminate_tls_itself(tmp_path) -> None:
     certificate, key = ensure_tls_certificate(tmp_path)
     port = _free_port()
     with serve(
-        _FakePolicy(),
+        FakeBase(),
         bind=f"127.0.0.1:{port}",
         image_size=(224, 224),
         auth_token="secret",
@@ -255,7 +223,7 @@ def test_policy_server_can_terminate_tls_itself(tmp_path) -> None:
 
 
 def test_server_fed_by_the_learner_tells_actors_to_skip_the_upload() -> None:
-    policy = _FakePolicy()
+    policy = FakeBase()
     port = _free_port()
     with serve(
         policy,
@@ -265,12 +233,17 @@ def test_server_fed_by_the_learner_tells_actors_to_skip_the_upload() -> None:
         steering_from_learner=True,
     ) as server:
         remote = RemoteOpenPIRLTPolicy(_channel(port, "secret"), image_codec="raw")
-        assert remote.steering_from_learner
-        step = server.apply_steering(
-            {"meta": json.dumps({"learner_step": 11}), "param/w": np.ones((2, 3))}
-        )
-        steered = remote.infer(_observation(), exploration_std=0.5)
-    assert step == 11 and steered.steering_step == 11
+        assert remote.steering_from_learner and remote.actor_source == "learner"
+        assert not remote.wait_for_actor(0.0)
+        step = server.apply_steering(_dsrl_payload(11))
+        assert remote.wait_for_actor(0.0)
+        steered = remote.act(_observation(), explore=True, exploration_scale=0.5)
+        # An actor that arrives during an episode waits for its end.
+        server.apply_steering(_dsrl_payload(12))
+        assert remote.act(_observation(), explore=True).actor_step == 11
+        remote.reset()
+        assert remote.act(_observation(), explore=True).actor_step == 12
+    assert step == 11 and steered.actor_step == 11
 
     with serve(
         policy, bind=f"127.0.0.1:{port}", image_size=(224, 224), auth_token="secret"
@@ -278,30 +251,40 @@ def test_server_fed_by_the_learner_tells_actors_to_skip_the_upload() -> None:
         assert not RemoteOpenPIRLTPolicy(_channel(port, "secret")).steering_from_learner
 
 
-def test_actor_skips_the_steering_upload_for_a_fed_server(capsys) -> None:
+def test_actor_skips_the_upload_for_a_fed_server(capsys) -> None:
     import torch
 
-    from armnet_rlt.so101_actor import _sync_steering
+    from armnet_rlt.so101_actor import _LearnerActorState, _sync_actor
 
     class Fed:
-        steering_from_learner = True
+        actor_source = "learner"
         calls = 0
 
         def set_steering(self, payload):
             self.calls += 1
 
-    class Actor:
-        noise_bound = torch.tensor(1.5)
-        noise_steps = 1
+    class Client(Fed):
+        actor_source = "client"
+        payloads: list = []
 
-        def state_dict(self):
-            return {"w": torch.ones(2)}
+        def set_steering(self, payload):
+            self.payloads.append(payload)
 
+    state = _LearnerActorState()
+    state.load_state_dict({"w": torch.ones(2)})
     policy = Fed()
-    _sync_steering(policy, Actor(), network=None, learner_step=3)
-    _sync_steering(policy, Actor(), network=None, learner_step=4)
+    _sync_actor(policy, state, learner_step=3)
+    _sync_actor(policy, state, learner_step=4)
     assert policy.calls == 0
-    assert capsys.readouterr().out.count("steering from the learner") == 1
+    assert capsys.readouterr().out.count("takes its actor from the learner") == 1
+    client = Client()
+    with pytest.raises(RuntimeError, match="actor_meta"):
+        _sync_actor(client, state, learner_step=5)
+    state.meta = json.dumps({"algorithm": "rlt", "spec": {}, "config": {}})
+    _sync_actor(client, state, learner_step=6)
+    meta = json.loads(str(client.payloads[0]["meta"]))
+    assert meta["learner_step"] == 6 and meta["algorithm"] == "rlt"
+    np.testing.assert_array_equal(client.payloads[0]["param/w"], np.ones(2))
 
 
 class _Processor:

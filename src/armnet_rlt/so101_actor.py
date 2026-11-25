@@ -1,4 +1,7 @@
-"""Production single-arm SO-101 RL-token actor."""
+"""Production single-arm SO-101 actor for RL algorithms on π0.5.
+
+The cell executes the chunk the policy server returns and records one
+transition per chunk; the algorithm's actor runs in the policy server."""
 
 from __future__ import annotations
 
@@ -8,10 +11,11 @@ import math
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Queue
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -186,6 +190,27 @@ class _ChunkTransition:
     next_rl_token: torch.Tensor
     next_proprioception: torch.Tensor
     next_reference_action: torch.Tensor
+    # The extras the policy server's actor returned with this chunk.
+    extras: dict[str, torch.Tensor] = field(default_factory=dict)
+    # JPEG views of the state and next state (algorithms that need images).
+    frames: dict[str, np.ndarray] | None = None
+    next_frames: dict[str, np.ndarray] | None = None
+    # A chunk the safety gate stopped: no next observation, and the rows not
+    # executed hold the commanded targets.
+    partial: bool = False
+
+
+@dataclass
+class _InFlight:
+    """The chunk being executed and the state it was chosen in."""
+
+    rl_token: torch.Tensor
+    proprioception: torch.Tensor
+    reference: torch.Tensor
+    requested: torch.Tensor
+    executed: torch.Tensor
+    extras: dict[str, torch.Tensor]
+    frames: dict[str, np.ndarray] | None
 
 
 def _serialize_episode(
@@ -200,6 +225,10 @@ def _serialize_episode(
     The reward goes on the last transition. ``safety_trip`` marks an episode the
     cell's safety gate stopped (a terminal failure for the learner). ``frames``
     (JPEG views per policy call) ride on the first transition as ``episode_frames``.
+    Each transition's extras go in its state as ``extra/<name>``; its JPEG views
+    as ``image/<view>``, the last transition's next views as ``next_image/<view>``
+    (the learner takes the others from the following transition); a partial
+    last chunk is flagged ``partial``.
     """
     if not transitions:
         return None
@@ -210,15 +239,27 @@ def _serialize_episode(
     labelled = []
     for index, item in enumerate(transitions):
         terminal = index == len(transitions) - 1
+        state = {
+            "rl_token": item.rl_token.unsqueeze(0),
+            "proprioception": item.proprioception.unsqueeze(0),
+            "reference_action": item.reference_action.unsqueeze(0),
+            "curriculum_scale": item.curriculum_scale.unsqueeze(0),
+            "safety_trip": tripped,
+        }
+        for name, value in item.extras.items():
+            state[f"extra/{name}"] = value.unsqueeze(0)
+        for view, data in (item.frames or {}).items():
+            state[f"image/{view}"] = torch.from_numpy(np.ascontiguousarray(data, dtype=np.uint8))
+        if terminal:
+            for view, data in (item.next_frames or {}).items():
+                state[f"next_image/{view}"] = torch.from_numpy(
+                    np.ascontiguousarray(data, dtype=np.uint8)
+                )
+            if item.partial:
+                state["partial"] = torch.tensor([1.0], dtype=torch.float32)
         labelled.append(
             Transition(
-                state={
-                    "rl_token": item.rl_token.unsqueeze(0),
-                    "proprioception": item.proprioception.unsqueeze(0),
-                    "reference_action": item.reference_action.unsqueeze(0),
-                    "curriculum_scale": item.curriculum_scale.unsqueeze(0),
-                    "safety_trip": tripped,
-                },
+                state=state,
                 action=item.action.unsqueeze(0),
                 reward=reward if terminal else 0.0,
                 next_state={
@@ -236,6 +277,19 @@ def _serialize_episode(
 
         labelled[0]["state"]["episode_frames"] = torch.from_numpy(pack_episode_frames(spread(frames)))
     return transitions_to_bytes(labelled)
+
+
+def _jpeg_views(images: dict[str, Any], size: tuple[int, int] | None = None) -> dict[str, np.ndarray]:
+    """JPEG of each image, resized to ``size`` (height, width) when given."""
+    from armnet_rlt.remote_policy import encode_image, resize_for_model
+
+    views = {}
+    for name, image in images.items():
+        image = np.asarray(image, dtype=np.uint8)
+        if size is not None:
+            image = resize_for_model(image, *size)
+        views[name] = encode_image(image, "jpeg", 90)
+    return views
 
 
 def _encode_frame_views(raw_obs: dict[str, Any], width: int = 426, height: int = 240) -> dict[str, np.ndarray]:
@@ -424,6 +478,7 @@ class FrozenActorTransport:
         return {
             "policy": self._artifact["actor_state_dict"],
             "learner_step": self._artifact["learner_step"],
+            "actor_meta": self._artifact.get("actor_meta"),
         }
 
     def latest_parameters(self) -> None:
@@ -465,11 +520,18 @@ def _make_policy(cfg: Any) -> Any:
     """Load the OpenPI policy locally, or connect to a remote policy server."""
     host = str(_field(cfg, "remote_policy_host", "") or "")
     if not host:
-        return OpenPIRLTPolicy.from_checkpoint(
-            str(cfg.checkpoint_dir),
-            str(cfg.config_name),
-            default_prompt=str(_field(cfg, "language_instruction", "") or ""),
-            rl_token_dim=2048,
+        from armnet_rlt.policy_actor import AlgorithmPolicy
+
+        # π0.5 on the cell; the actor the learner sends runs next to it.
+        device = str(_field(cfg, "device", "cuda"))
+        return AlgorithmPolicy(
+            OpenPIRLTPolicy.from_checkpoint(
+                str(cfg.checkpoint_dir),
+                str(cfg.config_name),
+                default_prompt=str(_field(cfg, "language_instruction", "") or ""),
+                rl_token_dim=2048,
+            ),
+            device=device if device != "cuda" or torch.cuda.is_available() else "cpu",
         )
     from armnet_rlt.remote_policy import MAX_MESSAGE_BYTES, RemoteOpenPIRLTPolicy
 
@@ -517,6 +579,23 @@ def _log_learner_rtt(stub: Any, request: Any, samples: int = 20) -> None:
     )
 
 
+class _LearnerActorState:
+    """The newest actor weights and ``actor_meta`` from the learner (or a
+    frozen checkpoint), kept for a policy server that does not take them from
+    the learner itself."""
+
+    def __init__(self) -> None:
+        self.weights: dict[str, Any] = {}
+        self.meta: str | None = None
+
+    def load_state_dict(self, weights: dict[str, Any], strict: bool = True) -> Any:
+        if strict:
+            self.weights = dict(weights)
+        else:
+            self.weights.update(weights)
+        return SimpleNamespace(unexpected_keys=[], missing_keys=[])
+
+
 def _load_parameters(actor: Any, payload: Any) -> int | None:
     if isinstance(payload, dict):
         state = payload
@@ -534,6 +613,9 @@ def _load_parameters(actor: Any, payload: Any) -> int | None:
             )
     else:
         actor.load_state_dict(weights)
+    meta = state.get("actor_meta") if isinstance(state, dict) else None
+    if meta and hasattr(actor, "meta"):
+        actor.meta = str(meta)
     raw_step = state.get("learner_step") if isinstance(state, dict) else None
     if raw_step is None:
         return None
@@ -542,31 +624,34 @@ def _load_parameters(actor: Any, payload: Any) -> int | None:
     return int(raw_step)
 
 
-def _sync_steering(
-    policy: Any, actor: Any, *, network: Any, learner_step: int | None
-) -> None:
-    """Send the DSRL actor's weights to the policy, unless the policy server
-    takes them from the learner directly."""
-    from armnet_rlt.dsrl import steering_payload
+def _actor_source(policy: Any) -> str:
+    source = getattr(policy, "actor_source", None)
+    if source:
+        return str(source)
+    return "learner" if getattr(policy, "steering_from_learner", False) else "client"
 
-    if getattr(policy, "steering_from_learner", False):
-        if not getattr(policy, "_steering_feed_logged", False):
+
+def _sync_actor(policy: Any, actor: _LearnerActorState, *, learner_step: int | None) -> None:
+    """Send the learner's actor to the policy, unless the policy server takes
+    it from the learner or a checkpoint itself."""
+    from armnet_rlt.algorithm import actor_payload
+
+    source = _actor_source(policy)
+    if source != "client":
+        if not getattr(policy, "_actor_feed_logged", False):
             print(
-                "[rlt] policy server takes its steering from the learner; "
-                "not uploading the actor",
+                f"[rlt] policy server takes its actor from the {source}; "
+                "not uploading it",
                 flush=True,
             )
-            policy._steering_feed_logged = True
+            policy._actor_feed_logged = True
         return
-    policy.set_steering(
-        steering_payload(
-            actor.state_dict(),
-            network=network,
-            noise_bound=float(actor.noise_bound),
-            noise_steps=int(actor.noise_steps),
-            learner_step=learner_step,
+    if not actor.weights or not actor.meta:
+        raise RuntimeError(
+            "the learner sent no actor_meta, so its actor cannot be forwarded "
+            "to the policy server; start the policy server with --steering-from-learner"
         )
-    )
+    policy.set_steering(actor_payload(actor.weights, actor.meta, learner_step=learner_step))
 
 
 def _await_learner_round(
@@ -724,92 +809,6 @@ def _button_press_counts(robot: Any) -> dict[str, int]:
         str(name): max(0, int(count))
         for name, count in counts.items()
     }
-
-
-def _correlated_noise(
-    predicted_len: int,
-    action_dim: int,
-    correlation: float,
-    *,
-    device: Any,
-    dtype: Any,
-) -> torch.Tensor:
-    """``(1, predicted_len, action_dim)`` AR(1) Gaussian noise with unit
-    marginal std and lag-one ``correlation``."""
-    innovations = torch.randn((1, predicted_len, action_dim), device=device, dtype=dtype)
-    noise = torch.empty_like(innovations)
-    noise[:, 0] = innovations[:, 0]
-    innovation_scale = math.sqrt(1.0 - correlation**2)
-    for index in range(1, predicted_len):
-        noise[:, index] = (
-            correlation * noise[:, index - 1] + innovation_scale * innovations[:, index]
-        )
-    return noise
-
-
-def _jitter_chunk(
-    actor: Any,
-    chunk: torch.Tensor,
-    proprioception: torch.Tensor,
-    *,
-    predicted_len: int,
-    action_dim: int,
-    exploration_correlation: float,
-    exploration_scale: float,
-) -> torch.Tensor:
-    """``chunk`` plus correlated exploration noise added in normalized action space."""
-    with torch.inference_mode():
-        normalized = actor.normalize_action(
-            chunk.flatten().unsqueeze(0), proprioception.unsqueeze(0)
-        )
-        noise = _correlated_noise(
-            predicted_len,
-            action_dim,
-            exploration_correlation,
-            device=normalized.device,
-            dtype=normalized.dtype,
-        )
-        jittered = (
-            normalized
-            + noise.flatten(1) * actor.action_std.reshape(1, -1) * exploration_scale
-        ).clamp(-1.0, 1.0)
-        action = actor.unnormalize_action(jittered, proprioception.unsqueeze(0))
-    return action.reshape(predicted_len, action_dim).detach()
-
-
-def _refine_chunk(
-    actor: Any,
-    token: torch.Tensor,
-    proprioception: torch.Tensor,
-    reference: torch.Tensor,
-    *,
-    predicted_len: int,
-    action_dim: int,
-    exploration_correlation: float,
-    exploration_scale: float = 1.0,
-) -> torch.Tensor:
-    with torch.inference_mode():
-        _, mean = actor(
-            token.unsqueeze(0),
-            proprioception.unsqueeze(0),
-            reference.flatten().unsqueeze(0),
-            sample=False,
-        )
-        std = actor.action_std.reshape(1, -1)
-        noise = _correlated_noise(
-            predicted_len,
-            action_dim,
-            exploration_correlation,
-            device=mean.device,
-            dtype=mean.dtype,
-        )
-        normalized = (
-            mean + noise.flatten(1) * std * exploration_scale
-        ).clamp(-1.0, 1.0)
-        action = actor.unnormalize_action(
-            normalized, proprioception.unsqueeze(0)
-        )
-    return action.reshape(predicted_len, action_dim).detach()
 
 
 def _close_robot_and_cell(robot: Any, cell: Any) -> None:
@@ -997,17 +996,15 @@ def run_actor(
     policy: OpenPIRLTPolicy | None = None,
     transport: LearnerTransport | None = None,
 ) -> dict[str, Any]:
-    """Run chunk-level online RLT or DSRL rollouts on one Armnet SO-101 cell
-    until the operator stops; returns the job result dict."""
+    """Run chunk-level online rollouts of an RL algorithm on one Armnet SO-101
+    cell until the operator stops; returns the job result dict.
+
+    The policy (a remote policy server, or π0.5 with the actor on the cell)
+    returns each chunk to execute; the cell records one transition per chunk
+    with the policy's extras and sends each episode to the learner."""
     network = cfg.network
     action_dim = int(network.action_dim)
-    predicted_len = int(network.predicted_action_len)
     reference_len = int(network.reference_action_len)
-    dsrl = str(_field(cfg, "algorithm", "rlt")) == "dsrl"
-    # DSRL's actor covers the whole base chunk and executes a prefix of it.
-    execute_len = int(_field(cfg, "actions_to_execute", predicted_len)) if dsrl else predicted_len
-    if not 1 <= execute_len <= reference_len:
-        raise ValueError("actions_to_execute must be within the reference chunk")
     if action_dim != 6 or int(network.proprioception_dim) != 6:
         raise ValueError("production SO-101 actor requires 6-D action and proprioception")
     if int(network.rl_token_dim) != 2048:
@@ -1035,34 +1032,9 @@ def run_actor(
             policy = _make_policy(cfg)
 
         delta_actions = _delta_action_mode(cfg, policy)
-        if dsrl:
-            from armnet_rlt.dsrl import DSRLActor
-
-            # The noise actor is evaluated inside the policy server; this copy
-            # only receives learner updates and forwards them there.
-            actor: Any = DSRLActor(
-                network,
-                noise_bound=float(_field(cfg, "dsrl_noise_bound", 2.5)),
-                noise_steps=int(_field(cfg, "dsrl_noise_steps", 1)),
-            )
-            actor.set_norm_stats(
-                policy.norm_stats,
-                use_quantiles=policy.use_quantile_norm,
-            )
-            actor.eval()
-        else:
-            from armnet_rlt.networks import RLTActor
-
-            actor = RLTActor(
-                network,
-                delta_actions=delta_actions,
-            )
-            actor.set_norm_stats(
-                policy.norm_stats,
-                use_quantiles=policy.use_quantile_norm,
-            )
-            # RLTActor samples its fixed exploration noise only in training mode.
-            actor.to(device).train()
+        # The learner's actor weights: the policy server runs them; the cell
+        # forwards them when the server does not take them from the learner.
+        actor = _LearnerActorState()
         log.info("RLT actor delta-action mode: %s", delta_actions)
     except Exception:
         _close_robot_and_cell(robot, ctx.cell)
@@ -1154,7 +1126,7 @@ def run_actor(
     # JPEG views at each policy call, sent with the episode for a reward plugin.
     send_frames = bool(_field(cfg, "episode_frames", False))
     episode_frames: list[dict[str, np.ndarray]] = []
-    previous: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+    previous: _InFlight | None = None
     chunk: torch.Tensor | None = None
     chunk_index = 0
     current_policy_step: int | None = None
@@ -1178,22 +1150,30 @@ def run_actor(
     safety_trip_unlockable = False
 
     def abort_episode_on_trip(exc: BaseException) -> None:
-        # The episode ends as a failure. An in-flight DSRL chunk is kept (its
-        # action is the noise); a partly executed RLT chunk is dropped.
-        if dsrl and previous is not None and bool(torch.isfinite(previous[3]).all()):
-            prev_token, prev_prop, prev_reference, executed = previous
+        # The episode ends as a failure. The in-flight chunk is sent flagged
+        # partial, its state as its next state and the commanded targets in
+        # the rows not executed; the learner keeps it only for an algorithm
+        # with keeps_partial_chunks.
+        if previous is not None:
+            executed = torch.where(
+                torch.isfinite(previous.executed), previous.executed, previous.requested
+            )
             transitions.append(
                 _ChunkTransition(
-                    rl_token=prev_token.cpu(),
-                    proprioception=prev_prop.cpu(),
-                    reference_action=prev_reference.flatten().cpu(),
+                    rl_token=previous.rl_token.cpu(),
+                    proprioception=previous.proprioception.cpu(),
+                    reference_action=previous.reference.flatten().cpu(),
                     curriculum_scale=torch.tensor(
                         episode_curriculum_scale, dtype=torch.float32
                     ),
                     action=executed.flatten().cpu(),
-                    next_rl_token=prev_token.cpu(),
-                    next_proprioception=prev_prop.cpu(),
-                    next_reference_action=prev_reference.flatten().cpu(),
+                    next_rl_token=previous.rl_token.cpu(),
+                    next_proprioception=previous.proprioception.cpu(),
+                    next_reference_action=previous.reference.flatten().cpu(),
+                    extras=previous.extras,
+                    frames=previous.frames,
+                    next_frames=previous.frames,
+                    partial=True,
                 )
             )
         print(
@@ -1207,18 +1187,18 @@ def run_actor(
         current_policy_step = _load_parameters(
             actor, transport.wait_for_initial_parameters()
         )
-        if dsrl:
-            _sync_steering(policy, actor, network=network, learner_step=current_policy_step)
+        _sync_actor(policy, actor, learner_step=current_policy_step)
         operator.start()
 
-        # Compile the combined Pi0RL path before opening the first rollout.
+        # A server fed by the learner may not have the first actor yet.
+        wait_for_actor = getattr(policy, "wait_for_actor", None)
+        if _actor_source(policy) != "client" and callable(wait_for_actor):
+            if not wait_for_actor(180.0):
+                raise RuntimeError("the policy server has no actor after 180 s")
+        # Compile the policy server's path before opening the first rollout.
         warm_obs = robot.get_observation()
-        if dsrl:
-            policy.infer(
-                build_policy_observation(warm_obs, instruction), exploration_std=0.0
-            )
-        else:
-            policy.infer(build_policy_observation(warm_obs, instruction))
+        policy.act(build_policy_observation(warm_obs, instruction), explore=False)
+        policy.reset()
 
         rounds_done = 0
         next_round_at = (
@@ -1259,10 +1239,8 @@ def run_actor(
                     timeout_s=round_wait_timeout_s,
                 )
                 policy_reload_count += applied
-                if dsrl and applied:
-                    _sync_steering(
-                        policy, actor, network=network, learner_step=current_policy_step
-                    )
+                if applied:
+                    _sync_actor(policy, actor, learner_step=current_policy_step)
                 release = getattr(operator, "release_round_retries", None)
                 released = release() if callable(release) else 0
                 print(
@@ -1289,13 +1267,7 @@ def run_actor(
                     if loaded_step is not None:
                         current_policy_step = loaded_step
                     policy_reload_count += 1
-                    if dsrl:
-                        _sync_steering(
-                            policy,
-                            actor,
-                            network=network,
-                            learner_step=current_policy_step,
-                        )
+                    _sync_actor(policy, actor, learner_step=current_policy_step)
                 episode_started_at = datetime.now(UTC).isoformat()
                 episode_policy_step_start = current_policy_step
                 policy_variant = _policy_variant(
@@ -1512,106 +1484,101 @@ def run_actor(
                 recording["frames"] += 1
                 recording["waited"] = True
 
-            if chunk is None or chunk_index >= execute_len:
-                if dsrl:
-                    # Base: unsteered unit noise. Steered: the actor's noise with
-                    # exploration_scale as its deviation.
-                    steer = policy_variant != "base"
-                    policy_obs = build_policy_observation(raw_obs, instruction)
-                    result = call_while_recording(
-                        lambda: policy.infer(
-                            policy_obs,
-                            exploration_std=exploration_scale if steer else 1.0,
-                            steer=steer,
-                        ),
-                        period_s,
-                        record_wait,
-                    )
-                    if result.noise is None:
-                        raise RuntimeError("policy server returned no DSRL noise")
-                else:
-                    policy_obs = build_policy_observation(raw_obs, instruction)
-                    result = call_while_recording(
-                        lambda: policy.infer(policy_obs), period_s, record_wait
-                    )
+            if chunk is None or chunk_index >= chunk.shape[0]:
+                # A base episode (warmup, or the base half of a paired
+                # evaluation) uses the base exploration scale.
+                base_variant = policy_variant == "base"
+                scale = (
+                    (base_exploration_scale if frozen_eval else warmup_exploration_scale)
+                    if base_variant
+                    else exploration_scale
+                )
+                policy_obs = build_policy_observation(raw_obs, instruction)
+                result = call_while_recording(
+                    lambda: policy.act(
+                        policy_obs,
+                        explore=scale > 0,
+                        exploration_scale=scale,
+                        exploration_correlation=exploration_correlation,
+                        base=base_variant,
+                    ),
+                    period_s,
+                    record_wait,
+                )
                 if send_frames:
                     episode_frames.append(_encode_frame_views(raw_obs))
-                token = torch.from_numpy(result.rl_token).float().to(device)
-                reference_np = result.action_chunk[:reference_len, :action_dim]
-                if reference_np.shape != (reference_len, action_dim):
-                    raise RuntimeError(
-                        f"Pi0RL reference chunk has shape {reference_np.shape}, "
-                        f"expected {(reference_len, action_dim)}"
+                frames = None
+                if result.needs_images:
+                    frames = (
+                        result.frames
+                        if result.frames is not None
+                        else _jpeg_views(policy_obs.images, getattr(policy, "image_size", None))
                     )
-                reference = torch.from_numpy(reference_np).float().to(device)
+                token = (
+                    torch.from_numpy(np.asarray(result.rl_token)).float().to(device)
+                    if result.rl_token is not None
+                    else torch.zeros(0, device=device)
+                )
+                if result.base_chunk is not None:
+                    reference_np = np.asarray(result.base_chunk)[:reference_len, :action_dim]
+                    if reference_np.shape != (reference_len, action_dim):
+                        raise RuntimeError(
+                            f"Pi0RL reference chunk has shape {reference_np.shape}, "
+                            f"expected {(reference_len, action_dim)}"
+                        )
+                    reference = torch.from_numpy(reference_np).float().to(device)
+                else:
+                    reference = torch.zeros((0, action_dim), device=device)
                 if previous is not None:
-                    prev_token, prev_prop, prev_reference, executed = previous
-                    if not torch.isfinite(executed).all():
+                    if not torch.isfinite(previous.executed).all():
                         raise RuntimeError(
                             "previous action chunk was not fully executed"
                         )
                     transitions.append(
                         _ChunkTransition(
-                            rl_token=prev_token.cpu(),
-                            proprioception=prev_prop.cpu(),
-                            reference_action=prev_reference.flatten().cpu(),
+                            rl_token=previous.rl_token.cpu(),
+                            proprioception=previous.proprioception.cpu(),
+                            reference_action=previous.reference.flatten().cpu(),
                             curriculum_scale=torch.tensor(
                                 episode_curriculum_scale,
                                 dtype=torch.float32,
                             ),
-                            action=executed.flatten().cpu(),
+                            action=previous.executed.flatten().cpu(),
                             next_rl_token=token.cpu(),
                             next_proprioception=proprioception.cpu(),
                             next_reference_action=reference.flatten().cpu(),
+                            extras=previous.extras,
+                            frames=previous.frames,
+                            next_frames=frames,
                         )
                     )
-                if dsrl:
-                    chunk = reference[:execute_len].detach().clone()
-                elif policy_variant == "base":
-                    chunk = reference[:predicted_len].detach().clone()
-                    base_scale = (
-                        base_exploration_scale
-                        if frozen_eval
-                        else warmup_exploration_scale
+                chunk = torch.from_numpy(np.asarray(result.chunk)).float().to(device)
+                if chunk.ndim != 2 or chunk.shape[1] != action_dim or not chunk.shape[0]:
+                    raise RuntimeError(
+                        f"policy returned a chunk of shape {tuple(chunk.shape)}"
                     )
-                    if base_scale > 0:
-                        chunk = _jitter_chunk(
-                            actor,
-                            chunk,
-                            proprioception,
-                            predicted_len=predicted_len,
-                            action_dim=action_dim,
-                            exploration_correlation=exploration_correlation,
-                            exploration_scale=base_scale,
-                        )
-                else:
-                    chunk = _refine_chunk(
-                        actor,
-                        token,
-                        proprioception,
-                        reference,
-                        predicted_len=predicted_len,
-                        action_dim=action_dim,
-                        exploration_correlation=exploration_correlation,
-                        exploration_scale=exploration_scale,
+                if reference.shape[0]:
+                    rows = min(chunk.shape[0], reference.shape[0])
+                    deviation = (
+                        chunk[:rows] - reference[:rows]
+                    ).detach().abs().double().cpu()
+                    deviation_sum += deviation.sum(dim=0)
+                    deviation_count += int(deviation.shape[0])
+                    deviation_max = max(
+                        deviation_max, float(deviation.max().item())
                     )
-                deviation = (
-                    chunk - reference[: chunk.shape[0]]
-                ).detach().abs().double().cpu()
-                deviation_sum += deviation.sum(dim=0)
-                deviation_count += int(deviation.shape[0])
-                deviation_max = max(
-                    deviation_max, float(deviation.max().item())
-                )
-                previous = (
-                    token.detach().clone(),
-                    proprioception.detach().clone(),
-                    reference.detach().clone(),
-                    # DSRL's transition action is the noise itself; RLT's is the
-                    # chunk as executed, filled in step by step below.
-                    torch.from_numpy(result.noise).float().to(device)
-                    if dsrl
-                    else torch.full_like(chunk, torch.nan),
+                previous = _InFlight(
+                    rl_token=token.detach().clone(),
+                    proprioception=proprioception.detach().clone(),
+                    reference=reference.detach().clone(),
+                    requested=chunk.detach().clone(),
+                    # The chunk as executed, filled in step by step below.
+                    executed=torch.full_like(chunk, torch.nan),
+                    extras={
+                        name: torch.as_tensor(np.asarray(value)).cpu()
+                        for name, value in result.extras.items()
+                    },
+                    frames=frames,
                 )
                 chunk_index = 0
                 state_machine.episode_ctx.total_chunk_count += 1
@@ -1692,15 +1659,14 @@ def run_actor(
             ):
                 hardware_clamp_steps += 1
             assert previous is not None
-            if not dsrl:
-                previous[3][chunk_index] = torch.as_tensor(
-                    [
-                        actual_action.get(f"{name}.pos", requested_action[f"{name}.pos"])
-                        for name in MOTOR_NAMES
-                    ],
-                    dtype=chunk.dtype,
-                    device=chunk.device,
-                )
+            previous.executed[chunk_index] = torch.as_tensor(
+                [
+                    actual_action.get(f"{name}.pos", requested_action[f"{name}.pos"])
+                    for name in MOTOR_NAMES
+                ],
+                dtype=chunk.dtype,
+                device=chunk.device,
+            )
             chunk_index += 1
             command_ticks += 1
             remaining = period_s - (time.perf_counter() - tick)

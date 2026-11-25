@@ -296,7 +296,7 @@ def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
         args.checkpoint, args.config_name, default_prompt=args.prompt
     )
     height, width = IMAGE_RESOLUTION
-    # Compile the sampler and the DSRL prefix/denoise path before serving.
+    # Compile the sampler and the split prefix/denoise path before serving.
     warm_observation = PolicyObservation(
         state=np.zeros(6, dtype=np.float32),
         images={
@@ -306,8 +306,45 @@ def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
         prompt=args.prompt,
     )
     policy.infer(warm_observation)
-    policy.infer(warm_observation, exploration_std=1.0, steer=False)
+    handle, _token = policy.prefix(warm_observation)
+    policy.denoise(handle, None)
     return policy, (height, width)
+
+
+def _rl_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
+    """π0.5 (unless the algorithm does without it) and the algorithm's actor,
+    from --actor-checkpoint, the learner feed or the cell."""
+    import torch
+
+    from armnet_rlt.algorithm import load_algorithm
+    from armnet_rlt.frozen import frozen_actor_payload, load_frozen_checkpoint
+    from armnet_rlt.policy_actor import AlgorithmPolicy
+
+    frozen = load_frozen_checkpoint(args.actor_checkpoint) if args.actor_checkpoint else None
+    name = args.algorithm or (str(frozen["algorithm"]) if frozen else "")
+    if frozen and args.algorithm and str(frozen["algorithm"]) != args.algorithm:
+        raise SystemExit(
+            f"--actor-checkpoint holds a {frozen['algorithm']} actor, not {args.algorithm}"
+        )
+    uses_base = load_algorithm(name).uses_base if name else True
+    base = image_size = None
+    if uses_base:
+        if not args.checkpoint:
+            raise SystemExit("--checkpoint, the π0.5 checkpoint, is required")
+        base, image_size = _openpi_backend(args)
+    device = args.actor_device
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        device = "cpu"
+    source = "checkpoint" if frozen else "learner" if args.steering_from_learner else "client"
+    runner = AlgorithmPolicy(base, algorithm=name, device=device, actor_source=source)
+    if frozen is not None:
+        step = runner.install(frozen_actor_payload(frozen))
+        print(
+            f"[RLT] policy server runs the {frozen['algorithm']} actor of "
+            f"{args.actor_checkpoint} (learner step {step})",
+            flush=True,
+        )
+    return runner, tuple(image_size or runner.image_size)
 
 
 def _lerobot_backend(args: argparse.Namespace) -> Any:
@@ -322,6 +359,8 @@ def _lerobot_backend(args: argparse.Namespace) -> Any:
     )
     from armnet_rlt.lerobot_server import LeRobotPolicyBackend
 
+    if not args.checkpoint:
+        raise SystemExit("--policy-type lerobot needs --checkpoint")
     device = "cuda" if args.gpu != "cpu" and torch.cuda.is_available() else "cpu"
     policy, preprocessor, postprocessor = load_lerobot_policy(args.checkpoint, device)
     return LeRobotPolicyBackend(
@@ -348,7 +387,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         policy = _lerobot_backend(args)
         image_size = None
     else:
-        policy, image_size = _openpi_backend(args)
+        policy, image_size = _rl_backend(args)
     edge_tls = _edge_terminates_tls(args)
     own_tls = bool(args.tls_cert or args.tls_key)
     if own_tls and edge_tls:
@@ -370,18 +409,11 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             from armnet_rlt.steering_feed import LearnerSteeringFeed
 
             learner_host, _, learner_port = args.steering_from_learner.rpartition(":")
+            feed_options: dict[str, Any] = {}
             if args.policy_type == "lerobot":
-                feed_options: dict[str, Any] = {
-                    "installer": lambda weights, step, partial: server.run_locked(
-                        policy.apply_weights, weights, step, partial
-                    )
-                }
-            else:
-                feed_config = _config(args, algorithm="dsrl")
-                feed_options = {
-                    "network": feed_config.network,
-                    "noise_steps": feed_config.dsrl_noise_steps,
-                }
+                feed_options["installer"] = lambda weights, step, partial: server.run_locked(
+                    policy.apply_weights, weights, step, partial
+                )
             feed = LearnerSteeringFeed(
                 server.apply_steering,
                 host=learner_host or "127.0.0.1",
@@ -408,6 +440,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
                     "config_name": args.config_name,
                     "checkpoint": str(args.checkpoint),
                     "policy_type": args.policy_type,
+                    "algorithm": str(getattr(args, "algorithm", "") or ""),
                 },
                 indent=2,
             )
@@ -508,6 +541,7 @@ def cmd_online(args: argparse.Namespace) -> None:
         critic_action_residual=args.critic_action_residual,
         critic_action_gain=args.critic_action_gain,
         safety_trip_penalty=args.safety_trip_penalty,
+        algorithm_options=_algorithm_options(args.algorithm_option),
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -521,6 +555,21 @@ def cmd_online(args: argparse.Namespace) -> None:
             checkpoint_every_episodes=args.checkpoint_every_episodes,
             reward_plugin=_load_callable(args.reward_plugin) if args.reward_plugin else None,
         )
+
+
+def _algorithm_options(values: list[str] | None) -> dict[str, Any]:
+    """``KEY=VALUE`` pairs; a value is read as JSON when it parses, else kept
+    as a string."""
+    options: dict[str, Any] = {}
+    for item in values or ():
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--algorithm-option must be KEY=VALUE, got {item!r}")
+        try:
+            options[key] = json.loads(value)
+        except json.JSONDecodeError:
+            options[key] = value
+    return options
 
 
 def _load_callable(spec: str) -> Any:
@@ -721,10 +770,18 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument("--idle-min-episodes", type=int, default=5)
     online.add_argument(
         "--algorithm",
-        choices=("rlt", "dsrl"),
         default="rlt",
-        help="rlt refines the base chunk; dsrl steers the base policy's noise "
-        "(no demo pretraining, online transitions only)",
+        help="A registered RL algorithm: rlt refines the base chunk; dsrl steers "
+        "the base policy's noise (no demo pretraining, online transitions only); "
+        "an installed plugin's entry-point name; or module:Class",
+    )
+    online.add_argument(
+        "--algorithm-option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Option of a plugin algorithm (config.algorithm_options); repeatable, "
+        "values parsed as JSON where they parse",
     )
     online.add_argument(
         "--dsrl-noise-bound",
@@ -776,7 +833,7 @@ def _parser() -> argparse.ArgumentParser:
     policy_server = add(
         "policy-server",
         cmd_policy_server,
-        "serve OpenPI RLT inference to cell actors started with --remote-policy",
+        "serve π0.5 and an RL algorithm's actor to cell actors started with --remote-policy",
     )
     policy_server.add_argument("--config-name", default=MULTITASK_CONFIG)
     policy_server.add_argument(
@@ -788,9 +845,27 @@ def _parser() -> argparse.ArgumentParser:
     )
     policy_server.add_argument(
         "--checkpoint",
-        required=True,
-        help="Local OpenPI checkpoint directory, or a LeRobot pretrained_model "
-        "directory with --policy-type lerobot",
+        default="",
+        help="Local OpenPI checkpoint directory (not needed by an algorithm that "
+        "does not use π0.5), or a LeRobot pretrained_model directory with "
+        "--policy-type lerobot",
+    )
+    policy_server.add_argument(
+        "--algorithm",
+        default="",
+        help="The RL algorithm whose actor the server runs (rlt, dsrl, a plugin); "
+        "empty takes it from the actor the learner or the cell sends. Required "
+        "for an algorithm that does not use π0.5",
+    )
+    policy_server.add_argument(
+        "--actor-checkpoint",
+        default="",
+        help="Frozen actor (rlt-freeze-checkpoint output) to serve, for evaluation",
+    )
+    policy_server.add_argument(
+        "--actor-device",
+        default="cuda",
+        help="Torch device of the algorithm's actor (cpu when CUDA is missing)",
     )
     policy_server.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
     policy_server.add_argument(
@@ -841,8 +916,8 @@ def _parser() -> argparse.ArgumentParser:
     policy_server.add_argument(
         "--steering-from-learner",
         default="",
-        help="<host>:<port> of the learner; the server installs the DSRL actor "
-        "or the checkpoint-eval weights from its parameter stream",
+        help="<host>:<port> of the learner; the server installs the algorithm's "
+        "actor or the checkpoint-eval weights from its parameter stream",
     )
     policy_server.add_argument(
         "--steering-learner-tls-name",

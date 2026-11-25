@@ -300,3 +300,100 @@ def test_dsrl_actor_gives_the_old_server_noise_and_chunk(base: bool, scale: floa
     output = new.act(obs, base_chunk, explore=scale > 0)
     assert torch.equal(output.chunk, base_chunk[: config.actions_to_execute])
     assert np.array_equal(output.extras["noise"].numpy(), expected)
+
+
+def _server(config: RLTConfig, algorithm, seed: int):
+    """An AlgorithmPolicy on the fake π0.5 with the actor of a fresh algorithm."""
+    from fakes import FakeBase
+
+    from armnet_rlt.algorithm import actor_meta, actor_payload
+    from armnet_rlt.policy_actor import AlgorithmPolicy
+
+    norm_stats = _norm_stats(config.network.reference_action_len)
+    torch.manual_seed(seed)
+    learner = algorithm(AlgorithmSpec(norm_stats=norm_stats_lists(norm_stats)), config)
+    with torch.no_grad():
+        for parameter in learner.policy.actor.parameters():
+            parameter.add_(torch.randn_like(parameter) * 0.05)
+    base = FakeBase(horizon=30)
+    runner = AlgorithmPolicy(base, device="cpu")
+    runner.install(
+        actor_payload(
+            learner.actor_state(),
+            actor_meta(config.algorithm, learner.spec, config),
+            learner_step=17,
+        )
+    )
+    return learner, base, runner
+
+
+def test_rlt_through_the_policy_server_matches_the_old_cell() -> None:
+    from fakes import observation
+
+    config = _rlt_config()
+    network = so101_network_config(
+        hidden_dims=(32,), reference_action_len=30, predicted_action_len=10, residual_actor=True
+    )
+    config = RLTConfig(
+        network=network, actions_to_execute=10, use_subsampling=False, num_critics=2,
+        policy_uses_delta_actions=True, device="cpu",
+    )
+    learner, base, runner = _server(config, RLTAlgorithm, seed=4)
+    seen = observation(state0=0.4)
+
+    torch.manual_seed(21)
+    result = runner.act(seen, explore=True, exploration_scale=0.5, exploration_correlation=0.85)
+
+    old = learner.policy.actor
+    plain = base.infer(seen)
+    reference = torch.from_numpy(plain.action_chunk[:30, :6])
+    torch.manual_seed(21)
+    expected = legacy._refine_chunk(
+        old,
+        torch.from_numpy(plain.rl_token),
+        torch.from_numpy(seen.state),
+        reference,
+        predicted_len=10,
+        action_dim=6,
+        exploration_correlation=0.85,
+        exploration_scale=0.5,
+    )
+    assert np.array_equal(result.chunk, expected.numpy())
+    assert np.array_equal(result.base_chunk, reference.numpy())
+    assert np.array_equal(result.rl_token, plain.rl_token)
+    assert result.extras == {} and result.actor_step == 17
+
+
+@pytest.mark.parametrize("base_variant", [False, True])
+def test_dsrl_through_the_policy_server_matches_the_old_server(base_variant: bool) -> None:
+    from fakes import observation
+
+    network = so101_network_config(
+        hidden_dims=(32,), reference_action_len=30, predicted_action_len=30
+    )
+    config = RLTConfig(
+        network=network, algorithm="dsrl", actions_to_execute=10, use_subsampling=False,
+        num_critics=2, max_demo_pretrain_steps=0, online_batch_fraction=1.0,
+        dsrl_noise_bound=1.5, dsrl_noise_steps=5, policy_uses_delta_actions=True, device="cpu",
+    )
+    learner, base, runner = _server(config, DSRLAlgorithm, seed=4)
+    seen = observation(state0=0.4)
+    runner.actor.rng = np.random.default_rng(9)
+    result = runner.act(
+        seen, explore=True, exploration_scale=0.5, base=base_variant
+    )
+
+    rng = np.random.default_rng(9)
+    _, token = base.prefix(seen)
+    if base_variant:
+        noise = legacy.random_noise((30, 6), exploration_std=1.0, noise_bound=1.5, rng=rng)
+    else:
+        noise = legacy.choose_noise(
+            learner.policy.actor.eval(), token, seen.state,
+            exploration_std=0.5, noise_bound=1.5, rng=rng,
+        )
+    chunk = base.denoise(seen, noise).action_chunk
+    assert np.array_equal(result.extras["noise"], noise)
+    assert np.array_equal(base.noises[0], noise)
+    assert np.array_equal(result.base_chunk, chunk[:30])
+    assert np.array_equal(result.chunk, chunk[:10])

@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from armnet_rlt.grpc_util import grpc_channel
+from armnet_rlt.algorithms.rlt import _correlated_noise
 from armnet_rlt.metrics import EpisodeRecord
 from armnet_rlt.openpi_rlt import MOTOR_NAMES
 from armnet_rlt.operator_control import CellOperatorControl
@@ -23,7 +24,6 @@ from armnet_rlt.so101_actor import (
     _await_learner_round,
     _button_press_counts,
     _close_robot_and_cell,
-    _correlated_noise,
     _field,
     _load_parameters,
     _serialize_interaction,

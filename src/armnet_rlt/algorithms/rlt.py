@@ -140,9 +140,6 @@ class RLTChunkActor(RLTActor, Actor):
     """``RLTActor`` in the policy server: the refined chunk, or π0.5's chunk
     for a base episode, with correlated exploration noise."""
 
-    def noise(self, obs: ActorInput, explore: bool) -> Tensor | None:
-        return None
-
     def act(self, obs: ActorInput, base_chunk: Tensor | None, explore: bool) -> ActorOutput:
         if base_chunk is None or obs.rl_token is None:
             raise ValueError("the rlt actor needs π0.5's chunk and RL token")
