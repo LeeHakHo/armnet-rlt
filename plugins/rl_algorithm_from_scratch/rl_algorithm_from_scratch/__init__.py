@@ -1,17 +1,14 @@
 """Example RL algorithm without π0.5: a CNN on the three cameras and SAC.
 
-``uses_base = False``: the policy server does not load or run π0.5, and the
-actor gets no RL token and no base chunk. ``needs_images = True``: the actor
-sees the top, front and wrist images, and the cell sends them with each
-transition (JPEG), so batches carry ``images`` and ``next_images``.
+``uses_base = False``: the policy server skips π0.5; the actor gets no RL token
+and no base chunk. ``needs_images = True``: the actor and the batches get the
+top, front and wrist images (``images``, ``next_images``).
 
-The actor outputs a chunk of joint targets as offsets from the current joint
-positions, bounded per joint. Two critics with their own encoder score the
-offsets; the actor maximises the smaller one plus an entropy bonus whose
-temperature is learned (SAC).
+The actor outputs bounded offsets from the current joint positions; two critics
+with their own encoder score them; the entropy temperature is learned.
 
-Copy this package to start an algorithm of your own: rename it, change the
-entry point in pyproject.toml, and replace the networks and ``update``.
+To start your own: copy this package, rename it, change the entry point in
+pyproject.toml, replace the networks and ``update``.
 """
 
 from __future__ import annotations
@@ -21,7 +18,6 @@ import math
 from typing import Any, Mapping
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 
 from armnet_rlt.algorithm import Actor, ActorInput, ActorOutput, Algorithm, AlgorithmSpec
@@ -54,7 +50,7 @@ class Encoder(nn.Module):
         self.out_dim = views * features
 
     def forward(self, images: dict[str, Tensor], views: tuple[str, ...]) -> Tensor:
-        # Each view is uint8 [B, H, W, 3]; the CNN takes float [B, 3, H, W] in [0, 1].
+        # uint8 [B, H, W, 3] to float [B, 3, H, W] in [0, 1].
         encoded = [
             self.conv(images[view].permute(0, 3, 1, 2).float() / 255.0) for view in views
         ]
@@ -158,7 +154,7 @@ class PixelSAC(Algorithm):
     name = "pixel_sac"
     uses_base = False
     needs_images = True
-    # The server resizes the cameras to this (height, width) before the actor.
+    # (height, width) the server resizes the cameras to.
     image_size = (96, 96)
 
     def __init__(self, spec: AlgorithmSpec, config: Any) -> None:
