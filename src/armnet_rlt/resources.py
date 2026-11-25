@@ -56,8 +56,7 @@ def rendezvous_key(config_name: str, run_id: str) -> str:
 
 
 def local_rendezvous_path(key: str) -> Path:
-    """File a learner on this machine registers its endpoint in, under
-    ``RLT_RENDEZVOUS_DIR`` or ``<data root>/rendezvous``."""
+    """Local rendezvous file under ``RLT_RENDEZVOUS_DIR`` or ``<data root>/rendezvous``."""
     directory = os.environ.get("RLT_RENDEZVOUS_DIR") or local_data_root() / "rendezvous"
     return Path(directory) / f"{key.replace(':', '__')}.json"
 
@@ -74,8 +73,7 @@ def modal_backend() -> bool:
 
 
 def read_rendezvous(key: str) -> dict[str, Any] | None:
-    """Endpoint registered under ``key``: in the Modal Dict with RLT_BACKEND=modal,
-    else in the local rendezvous file."""
+    """Endpoint under ``key``: Modal Dict with RLT_BACKEND=modal, else the local file."""
     if not modal_backend():
         return read_local_rendezvous(key)
     import modal

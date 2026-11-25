@@ -101,9 +101,7 @@ def open_run_dataset(
     encoder_threads: int = DEFAULT_ENCODER_THREADS,
     num_cameras: int = 1,
 ) -> Any:
-    """The run's dataset on the Hub, resumed at its current commit (meta/ only is
-    downloaded), or a new one when the repo has none. ``finish_dataset`` appends the new
-    episodes in one commit on top of that commit."""
+    """The run's Hub dataset resumed at its current commit, or a new one if the repo is empty."""
     from huggingface_hub import HfApi
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -179,12 +177,8 @@ def finish_dataset(
 ) -> str | None:
     """Discard an interrupted episode, finalize, and optionally upload.
 
-    ``episode_labels`` (one dict per saved episode, in episode order, with
-    ``episode_index``, ``job_id`` and ``job_labels`` added where missing) is written to
-    ``meta/armnet_rollouts.jsonl`` and ``episode_frame_times`` (per episode, each frame's
-    time in seconds since the episode's first frame) to ``meta/armnet_frame_times.jsonl``,
-    next to the dataset and uploaded with it. A dataset from ``open_run_dataset`` appends
-    to both files and to the Hub repo.
+    ``episode_labels`` go to ``meta/armnet_rollouts.jsonl`` and ``episode_frame_times``
+    to ``meta/armnet_frame_times.jsonl``; appended for an ``open_run_dataset`` dataset.
     """
     append = getattr(dataset, "armnet_append", None)
     first = int(append["first_episode"]) if append else 0
@@ -240,8 +234,7 @@ def finish_dataset(
 
 
 def push_appended(ctx: Any, dataset: Any, *, repo_id: str, commit: str, first: int) -> str | None:
-    """Upload the episodes recorded since ``first`` in one commit whose parent is
-    ``commit``; fails without writing anything when the repo moved since."""
+    """Upload episodes from ``first`` in one commit on top of ``commit``; fails if the repo moved."""
     from huggingface_hub import HfApi
     from huggingface_hub.errors import RevisionNotFoundError
     from lerobot.datasets.dataset_metadata import CODEBASE_VERSION

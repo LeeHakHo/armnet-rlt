@@ -1,7 +1,4 @@
-"""Production single-arm SO-101 actor for RL algorithms on π0.5.
-
-The cell executes the chunk the policy server returns and records one
-transition per chunk; the algorithm's actor runs in the policy server."""
+"""SO-101 cell actor: executes policy-server chunks, one transition per chunk."""
 
 from __future__ import annotations
 
@@ -190,13 +187,11 @@ class _ChunkTransition:
     next_rl_token: torch.Tensor
     next_proprioception: torch.Tensor
     next_reference_action: torch.Tensor
-    # The extras the policy server's actor returned with this chunk.
     extras: dict[str, torch.Tensor] = field(default_factory=dict)
-    # JPEG views of the state and next state (algorithms that need images).
+    # JPEG views, for algorithms that need images.
     frames: dict[str, np.ndarray] | None = None
     next_frames: dict[str, np.ndarray] | None = None
-    # A chunk the safety gate stopped: no next observation, and the rows not
-    # executed hold the commanded targets.
+    # Stopped by the safety gate; unexecuted rows hold the commanded targets.
     partial: bool = False
 
 
@@ -220,15 +215,10 @@ def _serialize_episode(
     safety_trip: bool = False,
     frames: list[dict[str, np.ndarray]] | None = None,
 ) -> bytes | None:
-    """Serialize one episode's transitions as one learner message.
+    """One episode's transitions as one learner message; the reward goes on the last one.
 
-    The reward goes on the last transition. ``safety_trip`` marks an episode the
-    cell's safety gate stopped (a terminal failure for the learner). ``frames``
-    (JPEG views per policy call) ride on the first transition as ``episode_frames``.
-    Each transition's extras go in its state as ``extra/<name>``; its JPEG views
-    as ``image/<view>``, the last transition's next views as ``next_image/<view>``
-    (the learner takes the others from the following transition); a partial
-    last chunk is flagged ``partial``.
+    State keys: ``extra/<name>``, ``image/<view>``, ``next_image/<view>`` (last only),
+    ``partial``, and ``episode_frames`` on the first transition.
     """
     if not transitions:
         return None
@@ -293,8 +283,7 @@ def _jpeg_views(images: dict[str, Any], size: tuple[int, int] | None = None) -> 
 
 
 def _encode_frame_views(raw_obs: dict[str, Any], width: int = 426, height: int = 240) -> dict[str, np.ndarray]:
-    """The observation's top, front and wrist images, resized to ``width`` x
-    ``height`` and JPEG-encoded."""
+    """Top, front and wrist images at ``width`` x ``height``, JPEG-encoded."""
     import cv2
 
     from armnet_rlt.remote_policy import encode_image
@@ -312,14 +301,12 @@ def _encode_frame_views(raw_obs: dict[str, Any], width: int = 426, height: int =
 
 
 def _is_safety_trip(exc: BaseException) -> bool:
-    """Whether the cell's robot server stopped the arm on a current trip; the
-    connection is severed afterwards."""
+    """Whether the robot server stopped the arm on a current trip."""
     return type(exc).__name__ == "RemoteCallError" and "tripped" in str(exc).lower()
 
 
 def _is_unsafe_command(exc: BaseException) -> bool:
-    """Whether the edge rejected the commanded motion as unsafe (speed,
-    oscillation); it refuses motion until ``Cell.reset(unlock=True)``."""
+    """Whether the edge rejected the command as unsafe; motion resumes after ``Cell.reset(unlock=True)``."""
     try:
         from armnet_runtime.context import is_command_safety_violation
     except ImportError:
@@ -522,7 +509,6 @@ def _make_policy(cfg: Any) -> Any:
     if not host:
         from armnet_rlt.policy_actor import AlgorithmPolicy
 
-        # π0.5 on the cell; the actor the learner sends runs next to it.
         device = str(_field(cfg, "device", "cuda"))
         return AlgorithmPolicy(
             OpenPIRLTPolicy.from_checkpoint(
@@ -580,9 +566,7 @@ def _log_learner_rtt(stub: Any, request: Any, samples: int = 20) -> None:
 
 
 class _LearnerActorState:
-    """The newest actor weights and ``actor_meta`` from the learner (or a
-    frozen checkpoint), kept for a policy server that does not take them from
-    the learner itself."""
+    """Newest actor weights and ``actor_meta`` from the learner or a frozen checkpoint."""
 
     def __init__(self) -> None:
         self.weights: dict[str, Any] = {}
@@ -632,8 +616,7 @@ def _actor_source(policy: Any) -> str:
 
 
 def _sync_actor(policy: Any, actor: _LearnerActorState, *, learner_step: int | None) -> None:
-    """Send the learner's actor to the policy, unless the policy server takes
-    it from the learner or a checkpoint itself."""
+    """Upload the learner's actor to a policy server whose actor source is the client."""
     from armnet_rlt.algorithm import actor_payload
 
     source = _actor_source(policy)
@@ -662,12 +645,7 @@ def _await_learner_round(
     steps_per_round: int,
     timeout_s: float,
 ) -> tuple[int | None, int]:
-    """Load learner updates until the learner is ``steps_per_round`` steps past
-    ``current_step``.
-
-    Returns the loaded step (the latest one on timeout) and the number of
-    payloads applied.
-    """
+    """Load learner updates until ``steps_per_round`` past ``current_step``; returns (step, reloads)."""
     deadline = time.monotonic() + timeout_s
     reloads = 0
     latest = current_step
@@ -834,10 +812,7 @@ def open_rollout_recording(
     *,
     action_source: str,
 ) -> tuple[Any, Any, Any, str | None]:
-    """Create the eval dataset, its frame writer and the telemetry session.
-
-    Returns ``(None, None, None, None)`` when ``record_dataset`` is off.
-    """
+    """Eval dataset, frame writer, telemetry session and repo id; all None when not recording."""
     args = getattr(ctx, "args", {})
     if not bool(_field(args, "record_dataset", True)):
         return None, None, None, None
@@ -868,7 +843,6 @@ def open_rollout_recording(
         num_cameras=len(getattr(robot, "cameras", {})),
     )
     fps = int(_field(cfg, "command_fps", 20))
-    # record_append: add the episodes to the run's dataset on the Hub.
     if as_bool(_field(args, "record_append", False)) and not bool(_field(args, "no_push_to_hub", False)):
         ctx.report_progress(f"opening the run dataset {eval_repo_id}")
         eval_dataset = open_run_dataset(
@@ -899,8 +873,7 @@ def open_rollout_recording(
 
 
 def call_while_recording(call: Any, period_s: float, record_wait: Any) -> Any:
-    """Run ``call`` on a worker thread, calling ``record_wait`` every ``period_s``
-    until it returns. Returns its result or raises its exception."""
+    """Run ``call`` on a thread, calling ``record_wait`` every ``period_s`` until it returns."""
     box: dict[str, Any] = {}
 
     def run() -> None:
@@ -935,12 +908,7 @@ def record_rollout_frame(
     tick: float,
     action_write_s: float,
 ) -> None:
-    """Write one frame to the eval dataset and the telemetry sidecar.
-
-    Frames are not evenly spaced, so each frame's time since the episode's first
-    frame is appended to ``frame_writer.frame_times`` (saved as
-    meta/armnet_frame_times.jsonl).
-    """
+    """Write one frame to the dataset and telemetry; its time goes to ``frame_writer.frame_times``."""
     if frame_writer is None:
         return
     now = time.perf_counter()
@@ -974,8 +942,7 @@ def finish_rollout_recording(
     episode_labels: list[dict[str, Any]] | None = None,
     episode_frame_times: list[list[float]] | None = None,
 ) -> str | None:
-    """Finalize the eval dataset and push it unless ``no_push_to_hub`` is set
-    (public with ``record_public``). Returns the dataset URL when pushed."""
+    """Finalize the eval dataset and push it unless ``no_push_to_hub``; returns the URL."""
     if eval_dataset is None or frame_writer is None or eval_repo_id is None:
         return None
     from armnet_rlt.dataset_recording import finish_dataset
@@ -1004,12 +971,7 @@ def run_actor(
     policy: OpenPIRLTPolicy | None = None,
     transport: LearnerTransport | None = None,
 ) -> dict[str, Any]:
-    """Run chunk-level online rollouts of an RL algorithm on one Armnet SO-101
-    cell until the operator stops; returns the job result dict.
-
-    The policy (a remote policy server, or π0.5 with the actor on the cell)
-    returns each chunk to execute; the cell records one transition per chunk
-    with the policy's extras and sends each episode to the learner."""
+    """Chunk-level online rollouts on one SO-101 cell until the operator stops; returns the job result."""
     network = cfg.network
     action_dim = int(network.action_dim)
     reference_len = int(network.reference_action_len)
@@ -1131,7 +1093,7 @@ def run_actor(
     episode_labels: list[dict[str, Any]] = []
     episode_frame_times: list[list[float]] = []
     transitions: list[_ChunkTransition] = []
-    # JPEG views at each policy call, sent with the episode for a reward plugin.
+    # JPEG views per policy call, for a reward plugin.
     send_frames = bool(_field(cfg, "episode_frames", False))
     episode_frames: list[dict[str, np.ndarray]] = []
     previous: _InFlight | None = None
@@ -1144,8 +1106,7 @@ def run_actor(
     policy_variant = "online_rlt"
     episode_curriculum_scale = 0.0
     command_ticks = 0
-    # Frames written this episode, and the last tick's (requested, actual) action: frames
-    # recorded while the loop waits for an action chunk repeat it.
+    # Frames written this episode and the last (requested, actual) action.
     recording = {"frames": 0, "last_action": None}
     hardware_clamp_steps = 0
     deviation_sum = torch.zeros(action_dim, dtype=torch.float64)
@@ -1154,14 +1115,11 @@ def run_actor(
     rerun_rollout_index = 0
     rerun_variant = "online_rlt"
     safety_trip: BaseException | None = None
-    # An unsafe-command rejection, which the next reset unlocks.
+    # Unsafe-command rejection; the next reset unlocks it.
     safety_trip_unlockable = False
 
     def abort_episode_on_trip(exc: BaseException) -> None:
-        # The episode ends as a failure. The in-flight chunk is sent flagged
-        # partial, its state as its next state and the commanded targets in
-        # the rows not executed; the learner keeps it only for an algorithm
-        # with keeps_partial_chunks.
+        # Failure; the in-flight chunk is sent flagged partial.
         if previous is not None:
             executed = torch.where(
                 torch.isfinite(previous.executed), previous.executed, previous.requested
@@ -1203,7 +1161,7 @@ def run_actor(
         if _actor_source(policy) != "client" and callable(wait_for_actor):
             if not wait_for_actor(180.0):
                 raise RuntimeError("the policy server has no actor after 180 s")
-        # Compile the policy server's path before opening the first rollout.
+        # Warm-up call.
         warm_obs = robot.get_observation()
         policy.act(build_policy_observation(warm_obs, instruction), explore=False)
         policy.reset()
@@ -1218,8 +1176,7 @@ def run_actor(
                 safety_trip is not None
                 and state_machine.state is EpisodeState.END_EPISODE
             ):
-                # The tripped episode has been sent. Any trip other than an
-                # unsafe command leaves the robot latched, so the job ends.
+                # Only an unsafe-command trip can continue; others end the job.
                 if not safety_trip_unlockable:
                     raise safety_trip
                 safety_trip = None
@@ -1493,8 +1450,7 @@ def run_actor(
                 recording["waited"] = True
 
             if chunk is None or chunk_index >= chunk.shape[0]:
-                # A base episode (warmup, or the base half of a paired
-                # evaluation) uses the base exploration scale.
+                # Base episodes (warmup, paired eval) use the base exploration scale.
                 base_variant = policy_variant == "base"
                 scale = (
                     (base_exploration_scale if frozen_eval else warmup_exploration_scale)
@@ -1580,7 +1536,6 @@ def run_actor(
                     proprioception=proprioception.detach().clone(),
                     reference=reference.detach().clone(),
                     requested=chunk.detach().clone(),
-                    # The chunk as executed, filled in step by step below.
                     executed=torch.full_like(chunk, torch.nan),
                     extras={
                         name: torch.as_tensor(np.asarray(value)).cpu()
@@ -1596,8 +1551,7 @@ def run_actor(
                 requested_action = add_action_noise(
                     requested_action, action_noise_std, action_noise_rng
                 )
-            # raw_obs predates the frames recorded during the policy request;
-            # re-read it so frames stay in time order.
+            # Fresh observation after frames recorded during the policy request.
             frame_obs = raw_obs
             if recording.pop("waited", False):
                 try:
@@ -1614,8 +1568,6 @@ def run_actor(
                 safety_trip_unlockable = _is_unsafe_command(exc)
                 abort_episode_on_trip(exc)
                 if safety_trip_unlockable:
-                    # The edge returned the arm to rest and refuses motion until
-                    # a reset unlocks it.
                     ctx.report_progress(
                         f"rollout {getattr(operator, 'rollout_index', completed + 1)} "
                         "failed on an unsafe command; the next reset will unlock "

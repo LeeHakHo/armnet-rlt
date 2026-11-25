@@ -1,11 +1,6 @@
-"""One gRPC endpoint for a run: the cell's learner and policy-server calls arrive on one
-port and go to the learner or the policy server on this machine.
-
-Calls to ``armnet_rlt.RemotePolicy`` go to the policy server, all others to the learner,
-both plaintext. Requests and replies pass through as bytes, every call as a stream (a
-unary call is a stream of one message), with the caller's metadata and deadline; the
-upstream status and trailing metadata come back to the caller.
-"""
+"""One gRPC port for a run: ``armnet_rlt.RemotePolicy`` calls go to the policy server,
+all others to the learner. Calls are relayed as raw byte streams with metadata,
+deadline, status and trailers."""
 
 from __future__ import annotations
 
@@ -18,7 +13,6 @@ from typing import Any
 
 POLICY_SERVICE = "armnet_rlt.RemotePolicy"
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
-# Upstreams are local; reconnect quickly after a server restarts.
 UPSTREAM_OPTIONS = (
     ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES),
     ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
@@ -32,7 +26,6 @@ SERVER_OPTIONS = (
     ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
     # A second front on the port fails to bind.
     ("grpc.so_reuseport", 0),
-    # The actors' keepalive pings, as the learner accepts them.
     ("grpc.keepalive_permit_without_calls", 1),
     ("grpc.http2.min_ping_interval_without_data_ms", 20_000),
     ("grpc.http2.max_ping_strikes", 0),
@@ -94,9 +87,7 @@ def serve_front(
     tls_key_path: str = "",
     max_workers: int = 32,
 ) -> Iterator[Any]:
-    """Run the front on ``bind`` until the context exits; ``learner`` and ``policy``
-    are the upstream ``host:port``. With ``tls_cert_path`` and ``tls_key_path`` the
-    front terminates TLS."""
+    """Serve on ``bind`` until exit, relaying to ``learner`` and ``policy`` (``host:port``)."""
     import grpc
 
     if bool(tls_cert_path) != bool(tls_key_path):
