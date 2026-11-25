@@ -69,7 +69,7 @@ log "3/5 secrets"
 SECRETS=$("${UVRUN[@]}" armnet secret list) || die "could not list Armnet secrets"
 has_secret() { grep -qx "$1" <<< "$SECRETS"; }
 if [ -z "${RLT_LEARNER_AUTH_TOKEN:-}" ]; then
-  has_secret "$RLT_AUTH_SECRET" && die "Armnet secret $RLT_AUTH_SECRET exists: put its token in .env as RLT_LEARNER_AUTH_TOKEN, or set RLT_AUTH_SECRET to a new name"
+  has_secret "$RLT_AUTH_SECRET" && die "Armnet secret $RLT_AUTH_SECRET exists: put its token in .env as RLT_LEARNER_AUTH_TOKEN, or change RLT_AUTH_SECRET in .env to a new name"
   TOKEN=$(openssl rand -hex 32)
   "${UVRUN[@]}" armnet secret create "$RLT_AUTH_SECRET" "$TOKEN"
   set_env RLT_LEARNER_AUTH_TOKEN "$TOKEN"
@@ -125,6 +125,8 @@ fi
 log "5/5 actor image"
 if [ -n "$SKIP_IMAGE" ]; then
   log "skipping the image build"
+elif ! docker info >/dev/null 2>&1 && [ -n "${IMAGE_REF:-}" ]; then
+  log "no Docker here; using IMAGE_REF=$IMAGE_REF"
 elif ! docker info >/dev/null 2>&1; then
   log "Docker is not available here. On a machine with Docker and this checkout, run"
   log "  uv run python scripts/build_actor_image.py"
