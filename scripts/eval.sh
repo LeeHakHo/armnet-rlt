@@ -39,12 +39,15 @@ cleanup() {
   local status=$? c
   kill "${EVAL_PIDS[@]}" 2>/dev/null || true
   [ -z "$EVAL_JOB_LOG" ] || stop_cell_job "$EVAL_JOB_LOG"
+  front_stop
   for c in "${EVAL_CALLS[@]}"; do modal_stop "$c"; done
   exit $status
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 [ "$BACKEND" != modal ] || modal_deploy
+mkdir -p "$DATA/logs"
+front_start "$DATA/logs/eval-front-$FRONT_PORT.log"
 
 # With modal a LeRobot checkpoint is a local directory (uploaded) or a path on the volume.
 if [ -f "$TARGET/config.json" ] || { [ "$BACKEND" = modal ] && data_exists "$TARGET/config.json"; }; then

@@ -17,6 +17,7 @@ from armnet_rlt.modal_backend import (
     process_spec,
     remote_argv,
     supervise,
+    tunnel_port,
     volume_path,
 )
 
@@ -70,26 +71,29 @@ def test_process_spec_maps_the_log_and_forwards_the_policy_instance(data, monkey
         process_spec({"name": "x", "argv": [], "log": "/elsewhere/log"})
 
 
-def test_modal_tunnel_flags_give_the_local_command_behind_edge_tls() -> None:
-    """The learner and policy-server command lines on Modal are the PUBLIC_HOST ones with
-    TLS at the Modal edge instead of a certificate."""
-    names = ("LEARNER_TUNNEL", "POLICY_TUNNEL", "STEERING", "GPU_ARG")
+def test_modal_tunnel_flags_register_the_front_tunnel_for_both_servers() -> None:
+    """On Modal the learner and the policy server register the container's one tunnel,
+    the front's; the front serves plaintext on all interfaces behind the Modal edge."""
+    names = ("LEARNER_TUNNEL", "POLICY_TUNNEL", "STEERING", "GPU_ARG", "FRONT[*]")
     local = lib_vars(*names, PUBLIC_HOST="h.example", TLS_CERT="/c.pem", TLS_KEY="/k.pem", GPU="1")
     modal = lib_vars(*names, BACKEND="modal", GPU="1")
     assert local["GPU_ARG"] == "--gpu 1" and modal["GPU_ARG"] == ""
-    assert modal["STEERING"] == "--steering-from-learner 127.0.0.1:50051"
+    assert modal["STEERING"] == local["STEERING"] == "--steering-from-learner 127.0.0.1:50051"
     for name, port in (("LEARNER_TUNNEL", 50051), ("POLICY_TUNNEL", 50052)):
         flags = shlex.split(modal[name])
-        assert needs_tunnel(flags)
+        assert needs_tunnel(flags) and tunnel_port(flags) == 50050
         flags = container_argv(flags, "r1.modal.host:443")
-        here = shlex.split(local[name])
-        assert dict(zip(flags[::2], flags[1::2])).get("--port") == str(port)
-        assert set(flags) - set(here) == {"r1.modal.host:443", "--public-endpoint-tls", "--bind-host", "0.0.0.0"}
-        assert set(here) - set(flags) == {"h.example:443" if port == 50051 else "h.example:8443",
-                                          "--tls-cert", "/c.pem", "--tls-key", "/k.pem"}
+        assert flags == ["--tunnel", "none", "--public-endpoint", "r1.modal.host:443",
+                         "--public-endpoint-tls", "--port", str(port)]
+        assert container_argv(shlex.split(local[name]), "x") == ["--tunnel", "none", "--public-endpoint", "h.example:443",
+                                                                 "--public-endpoint-tls", "--port", str(port)]
+    front = shlex.split(modal["FRONT[*]"])
+    assert front[1:] == ["front", "--port", "50050", "--learner-port", "50051", "--policy-port", "50052",
+                         "--tunnel", "none", "--public-endpoint-tls", "--bind-host", "0.0.0.0"]
+    assert not needs_tunnel(front)
 
 
-def test_rlt_local_serves_plaintext_on_all_interfaces_behind_the_modal_edge(tmp_path, monkeypatch) -> None:
+def test_rlt_local_serves_plaintext_on_localhost_behind_the_modal_front(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("RLT_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("RLT_RENDEZVOUS_DIR", str(tmp_path / "rv"))
     flags = container_argv(shlex.split(lib_vars("LEARNER_TUNNEL", BACKEND="modal")["LEARNER_TUNNEL"]), "r1.modal.host:443")
@@ -97,18 +101,18 @@ def test_rlt_local_serves_plaintext_on_all_interfaces_behind_the_modal_edge(tmp_
     cfg = types.SimpleNamespace(actor_learner=types.SimpleNamespace())
     with local_app._serve(args, cfg, "token"):
         entry = json.loads((tmp_path / "rv" / f"{CONFIG}__run-1.json").read_text())
-    assert cfg.actor_learner.server_bind_host == "0.0.0.0"
+    assert cfg.actor_learner.server_bind_host == "127.0.0.1"
     assert not getattr(cfg.actor_learner, "tls_server_cert_path", "")
     assert entry["key"] == f"{CONFIG}:run-1"
     assert (entry["host"], entry["port"], entry["use_tls"]) == ("r1.modal.host", 443, True)
     assert "tls_root_cert_pem" not in entry
-    # Without --bind-host, edge TLS keeps the local default.
+    # --bind-host still sets the listen address.
     args = local_app._parser().parse_args(
         ["online", "--config-name", CONFIG, "--run-id", "run-2", "--tunnel", "none",
-         "--public-endpoint", "h:443", "--public-endpoint-tls"])
+         "--public-endpoint", "h:443", "--public-endpoint-tls", "--bind-host", "0.0.0.0"])
     with local_app._serve(args, cfg, "token"):
         pass
-    assert cfg.actor_learner.server_bind_host == "127.0.0.1"
+    assert cfg.actor_learner.server_bind_host == "0.0.0.0"
 
 
 CHILD = """
@@ -156,6 +160,32 @@ def test_supervise_publishes_endpoints_and_stops_with_the_first_process(tmp_path
     assert set(removed) == {"cfg:run", "policy:cfg:1", "call:fc-1"}
     assert len(commits) >= 2
     assert (tmp_path / "logs/learner.log").read_text() == "up\n"
+
+
+def test_supervise_opens_one_tunnel_for_the_front_port(tmp_path) -> None:
+    child = tmp_path / "child.py"
+    child.write_text(CHILD)
+    tunnels, published = [], {}
+
+    @contextlib.contextmanager
+    def forward(port):
+        tunnels.append(port)
+        yield f"t{port}.modal.host", 443
+
+    front = [sys.executable, "-c", "import time; time.sleep(60)", "--port", "50050"]
+    learner = [sys.executable, str(child), "--key", "cfg:run", "--sleep", "1.5",
+               "--public-endpoint", "modal:50050", "--public-endpoint-tls", "--port", "50051"]
+    server = [sys.executable, str(child), "--key", "policy:cfg:1", "--sleep", "60",
+              "--public-endpoint", "modal:50050", "--public-endpoint-tls", "--port", "50052"]
+    supervise(
+        [{"name": n, "argv": a, "log": str(tmp_path / f"logs/{n}.log"), "env": {}}
+         for n, a in (("front", front), ("learner", learner), ("policy-server", server))],
+        forward=forward, publish=published.__setitem__, unpublish=lambda key: None, commit=lambda: None,
+        call_key="call:fc-2", rendezvous_dir=tmp_path / "rv", cwd=str(tmp_path), poll_s=0.1,
+    )
+    assert tunnels == [50050]
+    assert published["cfg:run"]["endpoint"] == published["policy:cfg:1"]["endpoint"] == "t50050.modal.host:443"
+    assert published["call:fc-2"] == {"ready": True, "keys": ["cfg:run", "policy:cfg:1"]}
 
 
 def test_run_command_appends_to_its_log(tmp_path) -> None:

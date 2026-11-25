@@ -464,6 +464,43 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             entry_path.unlink(missing_ok=True)
 
 
+def cmd_front(args: argparse.Namespace) -> None:
+    import signal
+    import sys
+
+    from armnet_rlt.front import serve_front
+
+    token = _learner_token()
+    own_tls = bool(args.tls_cert or args.tls_key)
+    edge_tls = args.public_endpoint_tls or (args.tunnel == "ngrok" and not args.public_endpoint)
+    if own_tls == edge_tls:
+        raise SystemExit(
+            "the front serves the cell over TLS: --tls-cert and --tls-key, or an ngrok "
+            "tunnel or --public-endpoint-tls, not both"
+        )
+    bind = f"{args.bind_host or ('127.0.0.1' if edge_tls else '0.0.0.0')}:{args.port}"
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    upstreams = f"learner 127.0.0.1:{args.learner_port}, policy 127.0.0.1:{args.policy_port}"
+    with serve_front(
+        bind=bind,
+        learner=f"127.0.0.1:{args.learner_port}",
+        policy=f"127.0.0.1:{args.policy_port}",
+        auth_token=token,
+        tls_cert_path=args.tls_cert,
+        tls_key_path=args.tls_key,
+    ), contextlib.ExitStack() as stack:
+        label = "TLS at the edge" if edge_tls else f"TLS, {args.tls_cert}"
+        if args.tunnel == "none" and not args.public_endpoint:
+            print(f"[RLT] front on {bind} ({label}) -> {upstreams}", flush=True)
+        else:
+            host, port = stack.enter_context(_public_endpoint(args))
+            print(f"[RLT] front {host}:{port} ({label}) on {bind} -> {upstreams}", flush=True)
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            pass
+
+
 def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
     _select_gpu(args.gpu)
     token = _learner_token()
@@ -937,6 +974,36 @@ def _parser() -> argparse.ArgumentParser:
     )
     policy_server.add_argument("--run-id", default="policy-server")
     policy_server.add_argument("--embodiment", default="so101")
+
+    front = commands.add_parser(
+        "front",
+        help="One public endpoint for the learner and the policy server on this machine",
+    )
+    front.set_defaults(handler=cmd_front)
+    front.add_argument("--port", type=int, default=LEARNER_PORT - 1)
+    front.add_argument("--learner-port", type=int, default=LEARNER_PORT)
+    front.add_argument("--policy-port", type=int, default=LEARNER_PORT + 1)
+    front.add_argument(
+        "--bind-host",
+        default="",
+        help="Listen address (default 0.0.0.0, or 127.0.0.1 behind TLS at the edge)",
+    )
+    front.add_argument(
+        "--tunnel",
+        choices=("ngrok", "none"),
+        default="ngrok",
+        help="An ngrok HTTPS endpoint, or --public-endpoint",
+    )
+    front.add_argument(
+        "--public-endpoint", default="", help="<host>:<port> the cell connects to"
+    )
+    front.add_argument(
+        "--public-endpoint-tls",
+        action="store_true",
+        help="TLS is terminated before the front, which serves plaintext",
+    )
+    front.add_argument("--tls-cert", default="", help="Serve TLS with this PEM certificate chain")
+    front.add_argument("--tls-key", default="", help="Key for --tls-cert")
     return parser
 
 

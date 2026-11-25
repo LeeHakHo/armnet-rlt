@@ -89,9 +89,9 @@ if [ "$BACKEND" = modal ]; then
   "${UVRUN[@]}" modal secret create --force "${RLT_MODAL_HF_SECRET:-huggingface-secret}" --from-json "$SECRET" >/dev/null
   rm -f "$SECRET"
   log "Modal secrets ${RLT_MODAL_AUTH_SECRET:-armnet-rlt-auth} and ${RLT_MODAL_HF_SECRET:-huggingface-secret}"
-elif [ -z "${PUBLIC_HOST:-}" ] && ! ngrok config check >/dev/null 2>&1; then
+elif [ -z "${PUBLIC_HOST:-}" ] && [ "$TUNNEL" = ngrok ] && ! ngrok config check >/dev/null 2>&1; then
   log "ngrok is not configured: install it and run 'ngrok config add-authtoken <token>'"
-  log "(or set PUBLIC_HOST, TLS_CERT and TLS_KEY in .env to use your own TLS ingress)"
+  log "(or set TUNNEL=tailscale, or PUBLIC_HOST, TLS_CERT and TLS_KEY in .env for your own TLS ingress)"
 fi
 
 if ! grep -q "^RECORD_REPO=" .env; then

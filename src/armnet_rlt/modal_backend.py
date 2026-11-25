@@ -89,17 +89,32 @@ def argv_option(argv: list[str], name: str) -> str | None:
     return None
 
 
+def _is_placeholder(value: str | None) -> bool:
+    if value == ENDPOINT_PLACEHOLDER:
+        return True
+    prefix, sep, port = (value or "").partition(":")
+    return prefix == ENDPOINT_PLACEHOLDER and bool(sep) and port.isdigit()
+
+
 def needs_tunnel(argv: list[str]) -> bool:
-    return argv_option(argv, "--public-endpoint") == ENDPOINT_PLACEHOLDER
+    return _is_placeholder(argv_option(argv, "--public-endpoint"))
+
+
+def tunnel_port(argv: list[str]) -> int:
+    """Container port of the tunnel a placeholder names: ``modal:<port>``, or the
+    process's --port for ``modal``."""
+    value = argv_option(argv, "--public-endpoint") or ""
+    _, _, port = value.partition(":")
+    return int(port or argv_option(argv, "--port") or 0)
 
 
 def container_argv(argv: list[str], endpoint: str) -> list[str]:
     """argv with the --public-endpoint placeholder replaced by the tunnel address."""
     out = list(argv)
     for i, token in enumerate(out):
-        if token == "--public-endpoint" and i + 1 < len(out) and out[i + 1] == ENDPOINT_PLACEHOLDER:
+        if token == "--public-endpoint" and i + 1 < len(out) and _is_placeholder(out[i + 1]):
             out[i + 1] = endpoint
-        elif token == f"--public-endpoint={ENDPOINT_PLACEHOLDER}":
+        elif token.startswith("--public-endpoint=") and _is_placeholder(token.split("=", 1)[1]):
             out[i] = f"--public-endpoint={endpoint}"
     return out
 
@@ -155,8 +170,8 @@ def supervise(
 ) -> dict[str, int]:
     """Runs the processes until one exits, then stops the rest.
 
-    A process whose --public-endpoint is the placeholder gets a Modal TLS tunnel to its
-    --port. The rendezvous entries the processes write to ``rendezvous_dir`` are copied to
+    A process whose --public-endpoint is the placeholder ``modal`` gets a Modal TLS tunnel
+    to its --port; ``modal:<port>`` gives it the tunnel to <port>, one per port. The rendezvous entries the processes write to ``rendezvous_dir`` are copied to
     the Modal Dict under their key; ``call_key`` lists them and turns ready once every
     tunnelled process has registered. Returns each process's exit code.
     """
@@ -166,16 +181,19 @@ def supervise(
     started: list[tuple[str, subprocess.Popen]] = []
     published: dict[str, str] = {}
     expected = sum(needs_tunnel(spec["argv"]) for spec in processes)
+    tunnels: dict[int, tuple[str, int]] = {}
     status: dict[str, Any] = {}
     with contextlib.ExitStack() as stack:
         try:
             for spec in processes:
                 argv = list(spec["argv"])
                 if needs_tunnel(argv):
-                    port = int(argv_option(argv, "--port") or 0)
+                    port = tunnel_port(argv)
                     if not port:
                         raise ValueError(f"{spec['name']}: --public-endpoint modal needs --port")
-                    host, public_port = stack.enter_context(forward(port))
+                    if port not in tunnels:
+                        tunnels[port] = stack.enter_context(forward(port))
+                    host, public_port = tunnels[port]
                     argv = container_argv(argv, f"{host}:{public_port}")
                     print(f"[modal] {spec['name']}: {host}:{public_port} -> :{port}", flush=True)
                 log_path = Path(spec["log"])

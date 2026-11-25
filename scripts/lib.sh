@@ -6,11 +6,15 @@
 #   GPU               GPU index for the learner and policy server (unset: visible GPU)
 #   RLT_AUTH_SECRET   Armnet secret with RLT_LEARNER_AUTH_TOKEN (default armnet-rlt-auth-$USER)
 #   RLT_HF_SECRET     Armnet secret with HF_TOKEN (default huggingface-token-$USER)
-#   BACKEND           local (default: this machine's GPU, ngrok or PUBLIC_HOST) or modal
-#                     (learner and policy server on Modal, src/armnet_rlt/modal_app.py)
-#   PUBLIC_HOST       your own TLS ingress instead of ngrok; then also TLS_CERT, TLS_KEY,
-#                     PUBLIC_LEARNER_PORT (443) and PUBLIC_POLICY_PORT (8443)
-#   LEARNER_PORT, POLICY_PORT   local ports (50051, 50052)
+#   BACKEND           local (default: this machine's GPU) or modal (learner and policy
+#                     server on Modal, src/armnet_rlt/modal_app.py)
+#   TUNNEL            local: ngrok (default, one HTTPS endpoint) or tailscale (Funnel,
+#                     raw TCP on PUBLIC_PORT; TAILSCALE is the CLI, default tailscale)
+#   PUBLIC_HOST       your own TLS ingress instead of a tunnel; then also TLS_CERT, TLS_KEY
+#   PUBLIC_PORT       public port with PUBLIC_HOST or tailscale (443); PUBLIC_POLICY_PORT
+#                     gives the policy server its own port (two addresses)
+#   FRONT_PORT        local port of the run's one endpoint (50050); it passes the calls on
+#                     to LEARNER_PORT and POLICY_PORT on 127.0.0.1 (50051, 50052)
 #   WANDB_PROJECT     log learners to this Weights & Biases project
 #   RECORD_REPO       <hf user or org>/<prefix> (setup.sh: <your user>/armnet): the cell
 #                     records training and evaluation episodes, all three cameras and a
@@ -80,22 +84,92 @@ if [ "$BACKEND" = modal ]; then
   GPU_ARG=""
 fi
 
-# Tunnel flags for the learner (cell -> learner) and the policy server (cell -> policy).
+# The cell reaches the learner and the policy server at one address: the front
+# (rlt-local front) on FRONT_PORT. LEARNER_TUNNEL and POLICY_TUNNEL register that address;
+# with ngrok and tailscale front_start sets them.
+FRONT_PORT=${FRONT_PORT:-50050}
+PUBLIC_PORT=${PUBLIC_PORT:-443}
+TUNNEL=${TUNNEL:-ngrok}
+TAILSCALE=(${TAILSCALE:-tailscale})
+FRONT=($LEARNER_BIN/rlt-local front --port $FRONT_PORT --learner-port $LEARNER_PORT --policy-port $POLICY_PORT)
+FRONT_PID="" FUNNEL_ON=0
+STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT"
+front_tunnels() {  # <public endpoint>
+  LEARNER_TUNNEL="--tunnel none --public-endpoint $1 --public-endpoint-tls --port $LEARNER_PORT"
+  POLICY_TUNNEL="--tunnel none --public-endpoint $1 --public-endpoint-tls --port $POLICY_PORT"
+}
 if [ "$BACKEND" = modal ]; then
-  # The container replaces "modal" with its Modal TLS tunnel to the port.
-  LEARNER_TUNNEL="--tunnel none --public-endpoint modal --port $LEARNER_PORT --public-endpoint-tls --bind-host 0.0.0.0"
-  POLICY_TUNNEL="--tunnel none --public-endpoint modal --port $POLICY_PORT --public-endpoint-tls --bind-host 0.0.0.0"
-  STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT"
+  # modal_start adds the front to each container; "modal:<port>" is its Modal TLS tunnel.
+  FRONT+=(--tunnel none --public-endpoint-tls --bind-host 0.0.0.0)
+  front_tunnels "modal:$FRONT_PORT"
 elif [ -n "${PUBLIC_HOST:-}" ]; then
   : "${TLS_CERT:?PUBLIC_HOST needs TLS_CERT}" "${TLS_KEY:?PUBLIC_HOST needs TLS_KEY}"
-  LEARNER_TUNNEL="--tunnel none --public-endpoint $PUBLIC_HOST:${PUBLIC_LEARNER_PORT:-443} --port $LEARNER_PORT --tls-cert $TLS_CERT --tls-key $TLS_KEY"
-  POLICY_TUNNEL="--tunnel none --public-endpoint $PUBLIC_HOST:${PUBLIC_POLICY_PORT:-8443} --port $POLICY_PORT --tls-cert $TLS_CERT --tls-key $TLS_KEY"
-  STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT --steering-learner-tls-name $PUBLIC_HOST"
+  if [ -n "${PUBLIC_POLICY_PORT:-}" ]; then
+    FRONT=()
+    LEARNER_TUNNEL="--tunnel none --public-endpoint $PUBLIC_HOST:$PUBLIC_PORT --port $LEARNER_PORT --tls-cert $TLS_CERT --tls-key $TLS_KEY"
+    POLICY_TUNNEL="--tunnel none --public-endpoint $PUBLIC_HOST:$PUBLIC_POLICY_PORT --port $POLICY_PORT --tls-cert $TLS_CERT --tls-key $TLS_KEY"
+    STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT --steering-learner-tls-name $PUBLIC_HOST"
+  else
+    FRONT+=(--tunnel none --public-endpoint "$PUBLIC_HOST:$PUBLIC_PORT" --tls-cert "$TLS_CERT" --tls-key "$TLS_KEY")
+    front_tunnels "$PUBLIC_HOST:$PUBLIC_PORT"
+  fi
 else
-  LEARNER_TUNNEL="--tunnel ngrok-tcp --port $LEARNER_PORT"
-  POLICY_TUNNEL="--tunnel ngrok --port $POLICY_PORT"
-  STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT"
+  case "$TUNNEL" in ngrok|tailscale) ;; *) die "TUNNEL must be ngrok or tailscale, not $TUNNEL" ;; esac
+  [ "$TUNNEL" = tailscale ] || FRONT+=(--tunnel ngrok)
+  LEARNER_TUNNEL="" POLICY_TUNNEL=""
 fi
+
+# Tailscale Funnel: PUBLIC_HOST is this machine's tailnet name, TLS_CERT and TLS_KEY its
+# certificate from tailscale cert, and PUBLIC_PORT a raw TCP funnel to FRONT_PORT.
+tailscale_denied() {  # <output>
+  log "tailscale: $1"
+  log "run these as a tailscale operator (or once: sudo tailscale set --operator=\$USER):"
+  log "  ${TAILSCALE[*]} cert --cert-file $TLS_CERT --key-file $TLS_KEY $PUBLIC_HOST"
+  log "  ${TAILSCALE[*]} funnel --bg --tcp $PUBLIC_PORT tcp://localhost:$FRONT_PORT"
+  die "tailscale needs operator rights for cert and funnel"
+}
+tailscale_up() {
+  local out forward
+  out=$("${TAILSCALE[@]}" status --json 2>&1) || die "tailscale status failed: $out"
+  PUBLIC_HOST=$(echo "$out" | python3 -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))') \
+    || die "tailscale status has no DNS name for this machine"
+  TLS_CERT=$DATA/tls/$PUBLIC_HOST.crt TLS_KEY=$DATA/tls/$PUBLIC_HOST.key
+  mkdir -p "$DATA/tls"
+  if ! openssl x509 -checkend 604800 -noout -in "$TLS_CERT" >/dev/null 2>&1 || [ ! -f "$TLS_KEY" ]; then
+    out=$("${TAILSCALE[@]}" cert --cert-file "$TLS_CERT" --key-file "$TLS_KEY" "$PUBLIC_HOST" 2>&1) || tailscale_denied "$out"
+    chmod 600 "$TLS_KEY"
+  fi
+  out=$("${TAILSCALE[@]}" funnel status --json 2>&1) || die "tailscale funnel status failed: $out"
+  forward=$(echo "$out" | python3 -c 'import json, sys; print(((json.load(sys.stdin).get("TCP") or {}).get(sys.argv[1]) or {}).get("TCPForward", ""))' "$PUBLIC_PORT")
+  case "$forward" in
+    "") out=$("${TAILSCALE[@]}" funnel --bg --tcp "$PUBLIC_PORT" "tcp://localhost:$FRONT_PORT" 2>&1) || tailscale_denied "$out"
+        FUNNEL_ON=1; log "funnel $PUBLIC_HOST:$PUBLIC_PORT -> localhost:$FRONT_PORT" ;;
+    localhost:$FRONT_PORT|127.0.0.1:$FRONT_PORT) ;;
+    *) die "funnel port $PUBLIC_PORT goes to $forward, not localhost:$FRONT_PORT; set PUBLIC_PORT or FRONT_PORT" ;;
+  esac
+  FRONT+=(--tunnel none --public-endpoint "$PUBLIC_HOST:$PUBLIC_PORT" --tls-cert "$TLS_CERT" --tls-key "$TLS_KEY")
+}
+
+# Starts the front on this machine and sets LEARNER_TUNNEL and POLICY_TUNNEL to its
+# public address; front_stop stops it (and a funnel front_start turned on).
+front_start() {  # <log>
+  [ "$BACKEND" != modal ] && [ ${#FRONT[@]} -gt 0 ] || return 0
+  [ -z "${PUBLIC_HOST:-}" ] && [ "$TUNNEL" = tailscale ] && tailscale_up
+  "${FRONT[@]}" > "$1" 2>&1 &
+  FRONT_PID=$!
+  wait_for $FRONT_PID "$1" "\[RLT\] front " front
+  front_tunnels "$(sed -nE 's/^\[RLT\] front ([^ ]+) .*/\1/p' "$1" | head -1)"
+  log "cell endpoint $(echo "$LEARNER_TUNNEL" | cut -d' ' -f4) (front on $FRONT_PORT)"
+}
+front_stop() {
+  [ -z "$FRONT_PID" ] || { kill "$FRONT_PID" 2>/dev/null || true; wait "$FRONT_PID" 2>/dev/null || true; }
+  FRONT_PID=""
+  if [ "$FUNNEL_ON" = 1 ]; then
+    "${TAILSCALE[@]}" funnel --tcp "$PUBLIC_PORT" "tcp://localhost:$FRONT_PORT" off >/dev/null 2>&1 \
+      || log "could not turn off the funnel; run: ${TAILSCALE[*]} funnel --tcp $PUBLIC_PORT tcp://localhost:$FRONT_PORT off"
+    FUNNEL_ON=0
+  fi
+}
 
 # Modal: python -m armnet_rlt.modal_backend (see there).
 modal_cli() { "${UVRUN[@]}" python -m armnet_rlt.modal_backend "$@"; }
@@ -110,8 +184,14 @@ modal_proc() {  # <spec file> <name> <log> <argv...>
 }
 # Spawns the processes of a spec file in one Modal GPU container and waits until their
 # endpoints are in the Modal Dict; the call id goes to <call file>.
+# The container's front goes first.
 modal_start() {  # <rl|lerobot> <spec file> <call file>
-  modal_cli start --image "$1" --specs "$2" --call-file "$3" || die "Modal call failed; logs: $(dirname "$2")"
+  local specs=$2.front bin=$LEARNER_BIN
+  [ "$1" = lerobot ] && bin=$LEROBOT_BIN
+  rm -f "$specs"
+  modal_proc "$specs" front "$(dirname "$2")/front.log" $bin/rlt-local "${FRONT[@]:1}"
+  cat "$2" >> "$specs"
+  modal_cli start --image "$1" --specs "$specs" --call-file "$3" || die "Modal call failed; logs: $(dirname "$2")"
 }
 modal_stop() { [ -f "$1" ] && modal_cli stop "$1" || true; }
 
