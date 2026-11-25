@@ -13,7 +13,7 @@ def episodes(success_id=5, success_ood=1, seeds=(1042, 2042, 3042)):
     rows = []
     for seed in seeds:
         for i in range(10):
-            rows.append({"success": i < success_id, "cell_id": "cell-01", "variation": {"condition": "id", "seed": seed, "values": {"rail": 0.7}, "brightness": 30}})
+            rows.append({"success": i < success_id, "cell_id": "cell-01", "variation": {"condition": "id", "seed": seed, "values": {"rail": 0.6}, "brightness": 30}})
         for i in range(10):
             rows.append({"success": i < success_ood, "cell_id": "cell-01", "variation": {"condition": "ood-easy" if i < 5 else "ood-hard", "seed": seed, "values": {"rail": 0.62}, "brightness": 15}})
     return rows
