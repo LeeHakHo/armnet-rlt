@@ -218,11 +218,9 @@ class RLTConfig:
 
     use_quantile_norm: bool = True
     policy_uses_delta_actions: bool = False
-    # A registered algorithm (armnet_rlt.algorithm.load_algorithm). "rlt": the
-    # actor refines the base policy's chunk; "dsrl": the actor picks the base
-    # flow policy's initial noise.
+    # "rlt", "dsrl" or a plugin name (armnet_rlt.algorithm.load_algorithm).
     algorithm: str = "rlt"
-    # Options of a plugin algorithm, as given with --algorithm-option.
+    # --algorithm-option values for a plugin.
     algorithm_options: dict[str, Any] = field(default_factory=dict)
     # DSRL noise lives in [-dsrl_noise_bound, dsrl_noise_bound]; the actor
     # outputs dsrl_noise_steps rows of it, repeated over the chunk.

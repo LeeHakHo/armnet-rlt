@@ -160,13 +160,11 @@ else
     ALGO=(--algorithm dsrl --dsrl-noise-bound 1.5 --dsrl-noise-steps 5 --pretrain-steps 0)
     ACTOR_ALGO=(--algorithm dsrl --dsrl-noise-bound 1.5 --dsrl-noise-steps 5)
   else
-    # A plugin without demonstrations gets --pretrain-steps 0 from its class.
     ALGO=(--algorithm "$ALGORITHM")
     data_exists "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" || ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0)
     ACTOR_ALGO=(--algorithm "$ALGORITHM")
   fi
   log "$METHOD run $RUN ($ALGORITHM) on base $BASE"
-  # The policy server runs the algorithm's actor and takes its weights from the learner.
   SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$BASE"
     --prompt "$PROMPT" --algorithm "$ALGORITHM" $STEERING $POLICY_TUNNEL)
   EVERY=$([ "$EVAL_EVERY" -gt 0 ] && echo "$EVAL_EVERY" || echo "$EPISODES")
@@ -182,8 +180,7 @@ else
   OUT=$DATA/tasks/$CONFIG/rlt_checkpoints/$RUN
 fi
 if [ "$BACKEND" = modal ]; then
-  # Learner and training policy server in one container; the server stays up during the
-  # evaluations, which get their own container.
+  # Learner and training policy server in one container; evaluations get their own.
   rm -f "$LOGS/modal-train.jsonl"
   modal_proc "$LOGS/modal-train.jsonl" learner "$LOGS/learner.log" "${LEARNER_CMD[@]}"
   modal_proc "$LOGS/modal-train.jsonl" policy-server "$LOGS/policy-server.log" "${SERVER[@]}"
@@ -222,8 +219,8 @@ learner_alive() {
 # Prints the learner's checkpoint after <mark> training episodes, once it is saved.
 checkpoint_at() {  # <mark>
   if [ "$METHOD" = dit ]; then
-    # The round that ends at <mark> episodes; after its 300 steps the learner logs
-    # "0 steps queued ... saved <dir>". A round without successes trains nothing.
+    # The dir of the first "0 steps queued ... saved <dir>" line after round <mark>/ROUND;
+    # "newest" when that round had no successes.
     local dir
     until data_pull "$LOGS/learner.log"; dir=$(python3 - "$LOGS/learner.log" "$(($1 / ROUND))" <<'PY'
 import re, sys
@@ -285,13 +282,12 @@ for MARK in $MARKS; do
       --timeout-seconds 72000 $ID_ARGS $ACTOR_ARGS > "$ACTOR_LOG" 2>&1 || true
     stop_cell_job "$ACTOR_LOG"
     ELAPSED=$(( $(date +%s) - START ))
-    # The last episodes reach the learner a little after the job ends.
+    # Waits up to 2 minutes for the job's episodes to reach the learner.
     SENT=$(grep -c "rollout\] {" "$ACTOR_LOG" || true)
     for _ in $(seq 24); do [ "$(episodes_done)" -ge $((BEFORE + SENT)) ] && break; sleep 5; done
     if [ "$(episodes_done)" -ge "$MARK" ]; then
       QUICK=0 TRIPS=0
     elif grep -q "gate tripped" "$ACTOR_LOG"; then
-      # A safety trip ends the cell job; the episode reached the learner as a failure.
       if [ "$ELAPSED" -lt 300 ]; then TRIPS=$((TRIPS + 1)); else TRIPS=0; fi
       [ "$TRIPS" -lt 10 ] || die "10 safety trips in a row within 5 minutes; check the cell"
       pause 60

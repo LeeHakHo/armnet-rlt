@@ -252,7 +252,6 @@ def test_a_lost_learner_link_ends_the_job_instead_of_blind_rollouts(run) -> None
 
 
 def test_round_wait_is_satisfied_by_an_update_already_past_the_rounds_target() -> None:
-    import torch
 
     from armnet_rlt.so101_actor import _await_learner_round
 
@@ -275,7 +274,6 @@ def test_round_wait_is_satisfied_by_an_update_already_past_the_rounds_target() -
 
 def test_round_wait_stops_when_the_learner_connection_is_lost() -> None:
     import pytest
-    import torch
 
     from armnet_rlt.so101_actor import _await_learner_round
 

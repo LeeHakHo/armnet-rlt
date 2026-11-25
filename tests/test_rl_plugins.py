@@ -20,7 +20,6 @@ from armnet_rlt.algorithm import (
     actor_meta,
     actor_payload,
     load_algorithm,
-    norm_stats_lists,
 )
 from armnet_rlt.artifacts import NormStats
 from armnet_rlt.config import RLTConfig

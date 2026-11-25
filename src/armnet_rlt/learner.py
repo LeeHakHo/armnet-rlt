@@ -257,8 +257,7 @@ def _restore_checkpoint(
         raise ValueError(
             f"resume from {path} needs --algorithm {saved}, not {config.algorithm}"
         )
-    # Checkpoints from before the algorithm interface hold the rlt/dsrl state
-    # at the top level.
+    # Pre-plugin checkpoints hold the rlt/dsrl state at the top level.
     algorithm.load_state_dict(payload.get("algorithm_state", payload))
     return int(payload["step"])
 
@@ -372,8 +371,7 @@ def _active_parameter_stream(
     seconds_between_pushes: float,
     queue_get_timeout: float,
 ) -> Any:
-    """Yield queued parameters to one actor until its stream ends. A payload
-    taken while the stream is ending returns to the queue for the next actor."""
+    """Yield queued parameters to one actor until its stream ends; requeue on a closed stream."""
     from lerobot.transport import services_pb2
     from lerobot.transport.utils import send_bytes_in_chunks
 
@@ -406,8 +404,7 @@ def _push_weights(
     learner_step: int,
     partial: bool = False,
 ) -> None:
-    """Queue the actor weights of ``policy`` (an ``Algorithm``, or an object
-    with ``actor_state_bytes``) for the parameter stream; newest wins."""
+    """Queue the actor weights of an ``Algorithm`` or ``actor_state_bytes()`` holder; newest wins."""
     from lerobot.transport.utils import state_to_bytes
 
     state: dict[str, Any] = {"learner_step": torch.tensor(learner_step, dtype=torch.int64)}
@@ -415,7 +412,6 @@ def _push_weights(
         state["policy"] = {
             name: value.detach().cpu() for name, value in policy.actor_state().items()
         }
-        # What a policy server rebuilds the actor from.
         state["actor_meta"] = actor_meta(policy.config.algorithm, policy.spec, policy.config)
     else:
         state["policy"] = policy.actor_state_bytes()
@@ -430,7 +426,6 @@ def _push_weights(
     try:
         parameters_queue.put_nowait(payload)
     except Full:
-        # Another producer refilled the slot; the queue is newest-wins.
         try:
             parameters_queue.get_nowait()
         except Empty:
@@ -446,11 +441,7 @@ def _unbatch(value: Any) -> Tensor:
 
 
 def _transition_fields(transition: dict[str, Any]) -> dict[str, Any]:
-    """Convert one wire transition into the tensors the learner batches.
-
-    ``extra/<name>`` state entries become ``extras``; ``image/<view>`` and
-    ``next_image/<view>`` (JPEG bytes) stay encoded under ``_jpeg`` and
-    ``_next_jpeg`` until ``_decode_episode_images``."""
+    """One wire transition as learner tensors; ``extra/*`` to ``extras``, JPEG views kept encoded."""
     state = transition["state"]
     item: dict[str, Any] = {
         "rl_token": _unbatch(state["rl_token"]),
@@ -486,9 +477,7 @@ def _transition_fields(transition: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decode_episode_images(episode: list[dict[str, Any]]) -> None:
-    """Decode the JPEG views of one episode in place into ``images`` and
-    ``next_images`` (view to uint8 ``[H, W, 3]``). A transition's next images
-    are the next transition's images, shared, unless it carries its own."""
+    """Decode an episode's JPEG views in place into uint8 ``images`` and ``next_images``."""
     from armnet_rlt.remote_policy import decode_image
 
     def decode(encoded: dict[str, Any]) -> dict[str, Tensor]:
@@ -510,8 +499,7 @@ def _decode_episode_images(episode: list[dict[str, Any]]) -> None:
 
 
 def _drop_partial_chunks(episode: list[dict[str, Any]]) -> None:
-    """Drop the in-flight chunk of a safety-tripped episode, moving its
-    terminal reward and flags to the transition before it."""
+    """Drop a safety-tripped episode's in-flight chunk; its terminal fields move back one."""
     if not episode or not bool(float(episode[-1].get("partial", 0.0))):
         return
     last = episode.pop()
@@ -521,8 +509,7 @@ def _drop_partial_chunks(episode: list[dict[str, Any]]) -> None:
 
 
 def _replayed(payload: bytes, seen: set[bytes] | None) -> bool:
-    """Whether ``payload`` was already received this session, by its digest;
-    ``seen`` collects the digests and is extended here."""
+    """Whether ``payload``'s digest is already in ``seen``; adds it if not."""
     if seen is None:
         return False
     digest = hashlib.sha1(payload).digest()
@@ -544,11 +531,7 @@ def _drain_online_transitions(
     | None = None,
     keep_partial: bool = False,
 ) -> int:
-    """Append the queued transitions; each message holds one episode, which
-    ``relabel`` may rewrite before it is stored, and then ``reward_plugin``
-    with the episode's camera frames (None when the actor sent none).
-    Replayed messages (digest in ``seen``) are dropped, and so is the
-    in-flight chunk of a safety-tripped episode unless ``keep_partial``."""
+    """Append queued episodes after ``relabel`` and ``reward_plugin``; drops replays and partial chunks."""
     from lerobot.transport.utils import bytes_to_transitions
 
     count = 0
@@ -575,35 +558,6 @@ def _drain_online_transitions(
     return count
 
 
-def _drain_episode_segments(
-    queue: Queue,
-    pending: list[dict[str, Tensor]],
-    completed: deque[list[dict[str, Tensor]]],
-    shutdown_event: Event,
-    seen: set[bytes] | None = None,
-) -> int:
-    """Split the transition stream into finished episodes on ``done``.
-
-    Each list appended to ``completed`` holds one episode; a partial episode
-    stays in ``pending``. Replayed messages (digest in ``seen``) are dropped.
-    """
-    from lerobot.transport.utils import bytes_to_transitions
-
-    count = 0
-    while not queue.empty() and not shutdown_event.is_set():
-        payload = queue.get()
-        if _replayed(payload, seen):
-            continue
-        for transition in bytes_to_transitions(payload):
-            fields = _transition_fields(transition)
-            pending.append(fields)
-            if bool(fields["done"]):
-                completed.append(list(pending))
-                pending.clear()
-                count += 1
-    return count
-
-
 def _restore_rolling_metrics(
     path: Path, *, window: int
 ) -> tuple[RollingMetrics, int]:
@@ -615,8 +569,7 @@ def _restore_rolling_metrics(
 
 
 def _episode_key(record: EpisodeRecord) -> tuple[str, int] | None:
-    """The (actor session, rollout index) pair naming an episode; None for
-    records from actors that do not fill in a session id."""
+    """(actor session, rollout index) of an episode; None without a session id."""
     if not record.session_id:
         return None
     return record.session_id, int(record.session_rollout_index)
@@ -634,8 +587,7 @@ def _logged_episode_keys(path: Path) -> set[tuple[str, int]]:
 def _schedule_online_updates(
     pending_updates: int, new_transitions: int, *, steps_per_transition: int = 1
 ) -> int:
-    """Add ``steps_per_transition`` learner steps (the algorithm's
-    ``updates_per_transition``) per new transition."""
+    """Add ``steps_per_transition`` learner steps per new transition."""
     if pending_updates < 0 or new_transitions < 0 or steps_per_transition <= 0:
         raise ValueError("online update counts must be nonnegative")
     return pending_updates + new_transitions * steps_per_transition
@@ -652,11 +604,7 @@ def _drain_interactions(
     sink: list[EpisodeRecord] | None = None,
     seen: set[tuple[str, int]] | None = None,
 ) -> int:
-    """Log the episode records waiting in ``queue``; returns how many were new.
-
-    ``seen`` holds the keys of the episodes logged so far and is extended
-    here; a record whose key is already in it is dropped.
-    """
+    """Log the queued episode records, skipping keys in ``seen``; returns how many were new."""
     from lerobot.transport.utils import bytes_to_python_object
 
     count = 0
@@ -738,8 +686,7 @@ def _append_training_metrics(
 
 
 def _episode_mark(episode_count: int, every: int, max_episodes: int) -> int:
-    """The newest episode count due a checkpoint: a multiple of ``every`` or
-    ``max_episodes``, whichever ``episode_count`` reached last; 0 if none."""
+    """Newest multiple of ``every`` (or ``max_episodes``) reached by ``episode_count``; 0 if none."""
     marks = []
     if every > 0 and episode_count >= every:
         marks.append(episode_count // every * every)
@@ -763,15 +710,9 @@ def run_learner(
 ) -> dict[str, object]:
     """Pretrain on the demo cache, then learn from actor episodes.
 
-    ``config.algorithm`` names the algorithm (``algorithm.load_algorithm``);
-    it supplies the update, the actor weights and the checkpoint contents.
-    Training stops at ``config.online_steps`` or, when ``max_episodes`` is set,
-    once that many episodes have arrived and been trained on. With
-    ``checkpoint_every_episodes``, a checkpoint is saved each time the episode
-    count reaches a multiple of it and its updates are done; each one is listed
-    in ``episode_checkpoints.jsonl`` as ``{"episodes": E, "step": S}``.
-    ``reward_plugin`` rewrites each episode's rewards after the algorithm's own
-    relabelling, given the camera frames an ``--episode-frames`` actor sent.
+    Stops at ``config.online_steps`` or after ``max_episodes`` episodes. With
+    ``checkpoint_every_episodes``, each mark is saved and listed in
+    ``episode_checkpoints.jsonl``. ``reward_plugin`` rewrites episode rewards.
     """
     algorithm_class = load_algorithm(config.algorithm)
     pretrains = has_pretraining(algorithm_class) and config.max_demo_pretrain_steps > 0
@@ -782,7 +723,6 @@ def run_learner(
         pretrains or config.online_batch_fraction < 1.0
     )
     if uses_cache and not has_cache:
-        # Without demonstrations the actor learns from its rollouts alone.
         raise ValueError(
             f"no demo cache at {config.demo_cache_path!r}: run with "
             "--pretrain-steps 0 --online-batch-fraction 1.0, or build one "
@@ -851,7 +791,6 @@ def run_learner(
     )
     seen_episodes = _logged_episode_keys(rollout_log)
     seen_transitions: set[bytes] = set()
-    # Newest value of each metric the algorithm reported.
     latest: dict[str, float] = {"critic_loss": 0.0, "actor_loss": 0.0}
     wandb_run = None
     if wandb_project:
@@ -894,8 +833,7 @@ def run_learner(
             _save_replay_buffer(config, replay, step=completed_steps)
         return path
 
-    # Start the transport before demonstration pretraining so an actor can
-    # connect during it.
+    # Transport is up during pretraining.
     server = None
     transition_queue: Queue | None = None
     interaction_queue: Queue | None = None
@@ -961,8 +899,7 @@ def run_learner(
                 not shutdown_event.is_set()
                 and completed_steps < config.online_steps
             ):
-                # Episode checkpoints wait until the updates are done and nothing
-                # has arrived for 10 s, so the last episode's transitions are in.
+                # Episode checkpoint: updates done and 10 s without traffic.
                 if (
                     (checkpoint_every_episodes or max_episodes)
                     and pending_updates <= 0
@@ -996,7 +933,6 @@ def run_learner(
                     keep_partial=algorithm.keeps_partial_chunks,
                 )
                 if algorithm.initial_updates and added and was_empty and completed_steps == 0:
-                    # The first episode is followed by initial_updates steps.
                     pending_updates = algorithm.initial_updates
                 else:
                     pending_updates = _schedule_online_updates(

@@ -1,11 +1,9 @@
-"""Modal app for BACKEND=modal: the learner and the policy server of a run in one GPU
-container, the same commands scripts/run.sh and scripts/eval.sh run locally.
+"""Modal app for BACKEND=modal: a run's learner and policy server in one GPU container.
 
     uv run --extra modal modal deploy -m armnet_rlt.modal_app
 
-The image holds the envs/ environments built by scripts/setup_local.sh (venv-learner and
-venv-openpi; venv-lerobot in the lerobot image) and the plugins under plugins/; src/ is
-added when a container starts. The volume RLT_MODAL_VOLUME is RLT_DATA_ROOT (/data).
+Images: the envs/ environments from scripts/setup_local.sh and plugins/; src/ is added at
+container start. The volume RLT_MODAL_VOLUME is mounted as RLT_DATA_ROOT (/data).
 """
 
 from __future__ import annotations
@@ -74,7 +72,7 @@ options = dict(gpu=GPU, volumes={CONTAINER_DATA: volume}, secrets=secrets, timeo
 
 @contextlib.contextmanager
 def _forward(port: int):
-    # TLS with HTTP/2 at Modal's edge; the process serves plaintext gRPC on the port.
+    # TLS with HTTP/2 at Modal's edge; plaintext gRPC on the port.
     with modal.forward(port, h2_enabled=True) as tunnel:
         yield tunnel.tls_socket
 

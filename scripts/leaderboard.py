@@ -1,26 +1,18 @@
 """Leaderboard submissions and scoring.
 
   python scripts/leaderboard.py submit --name NAME --run RUN --cell CELL [--tag TAG] [--code URL] [--notes TEXT]
-      Opens a pull request on the leaderboard dataset with the run's evaluations: for every
-      checkpoint, the recorded public evaluation datasets. scripts/run.sh --leaderboard
-      calls it after the last evaluation.
+      Opens a pull request on the leaderboard dataset with the run's recorded evaluation
+      datasets per checkpoint. scripts/run.sh --leaderboard calls it after the last evaluation.
 
   python scripts/leaderboard.py score [--dry-run]
-      Maintainers: checks every open submission against the protocol from the episode
-      labels in its datasets (meta/armnet_rollouts.jsonl, written on the cell), merges the
-      valid ones, comments on the rest, and rebuilds data/leaderboard.json and
-      data/rollouts.json in the leaderboard dataset, which the project page reads.
+      Maintainers: checks open submissions against the protocol from their episode labels
+      (meta/armnet_rollouts.jsonl), merges the valid ones, comments on and closes the rest,
+      and rebuilds data/leaderboard.json and data/rollouts.json.
 
-An entry is a method name plus a tag (--tag; empty by default), so one method can have
-several entries, e.g. different versions or settings. A new submission with the same name,
-tag and cell replaces the earlier one. An entry is listed once it has every checkpoint on
-every leaderboard cell, with the date of its latest submission. ID and OOD each use the
-entry's best checkpoint, summed over the cells.
-
-A submission also reports the run's training rollouts: successes in each block of 100
-training episodes before a checkpoint, and the exploration noise scale they ran with (0 for
-a policy that trains without exploration noise). These come from the submitter's run
-(rollout_metrics.jsonl), not from recorded datasets.
+An entry is a method name plus a tag. A submission with the same name, tag and cell replaces
+the earlier one. An entry is listed once it has every checkpoint on both cells; ID and OOD
+each use its best checkpoint, summed over the cells. Training successes per block of 100
+episodes and the exploration scale come from the run's rollout_metrics.jsonl.
 """
 
 from __future__ import annotations
@@ -35,7 +27,6 @@ import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-
 
 
 def load_dotenv(path: Path) -> None:
@@ -79,8 +70,7 @@ def eval_datasets(run: str) -> dict[int, list[str]]:
         repos = []
         for log in sorted(out.glob("*/job*.log")):
             text = re.sub(r"\x1b\[[0-9;]*m", "", log.read_text(errors="replace"))
-            # The job args name the dataset; a job that stopped early (safety trip) still
-            # uploads the episodes it finished but prints no result line.
+            # Job args, or the result line of a job that finished.
             repos += re.findall(r"'record_dataset_repo_id': '([^']+)'", text)
             repos += re.findall(r'"eval_dataset_url": "https://huggingface.co/datasets/([^"]+)"', text)
         if repos:
@@ -238,12 +228,9 @@ CLIPS = os.environ.get("CLIPS_REPO", "AutoRLBench/armnet-benchmark-rollouts")
 
 
 def clips(repo: str, existing: set[str], episodes: set[int] | None = None) -> dict[int, str]:
-    """One video per episode of a recorded dataset: the episode only, top above front and
-    wrist (640x540), in real time. The recording has one frame per control tick at a
-    nominal fps; each frame is shown for its real duration from meta/armnet_frame_times.jsonl,
-    so the arm holds still while the loop waits for an action chunk (without that file the
-    clip is stretched evenly to the episode's duration). Uploads the missing ones to the
-    public CLIPS dataset and returns {episode index: URL}, for ``episodes`` only when given."""
+    """Real-time clips (top above front and wrist, 640x540) of a recorded dataset's episodes,
+    timed by meta/armnet_frame_times.jsonl when present, else stretched to duration_s.
+    Uploads missing ones to CLIPS; returns {episode index: URL}."""
     import subprocess
 
     from huggingface_hub import HfApi, snapshot_download
@@ -257,7 +244,6 @@ def clips(repo: str, existing: set[str], episodes: set[int] | None = None) -> di
     todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
     if not todo:
         return urls
-    # Only meta and the video files of these episodes.
     files = {f"videos/observation.images.{view}/chunk-{int(spans[i][f'videos/observation.images.{view}/chunk_index']):03d}/"
              f"file-{int(spans[i][f'videos/observation.images.{view}/file_index']):03d}.mp4"
              for i in todo for view in ("top", "front", "wrist")}

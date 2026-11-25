@@ -1,35 +1,22 @@
-"""The interface an RL algorithm implements to train on Armnet cells.
+"""The interface an RL algorithm implements.
 
-An algorithm has two parts:
+``Algorithm`` runs in the learner (``update``, ``actor_state``, ``state_dict``,
+``load_state_dict``); its ``Actor`` runs in the policy server once per chunk
+(``noise`` may set π0.5's initial flow noise, ``act`` returns the chunk).
+``uses_base = False`` skips π0.5; ``needs_images = True`` adds the cameras.
 
-- the actor (``Algorithm.make_actor``), an ``nn.Module`` that runs inside the
-  policy server once per chunk. ``noise`` may choose π0.5's initial flow noise
-  and ``act`` returns the chunk the cell executes;
-- the algorithm itself, which runs in the learner: ``update`` takes one step
-  on a batch of transitions, ``actor_state`` gives the weights sent to the
-  policy server, ``state_dict`` / ``load_state_dict`` save and resume a run.
+Algorithms are found by name: built-in ``rlt`` and ``dsrl``, an entry point in
+the ``armnet_rlt.algorithms`` group, or ``module:Class``.
 
-An algorithm with ``uses_base = False`` does not use π0.5 at all: the server
-skips it and ``act`` gets no base chunk and no RL token. One with
-``needs_images = True`` gets the camera images in ``ActorInput`` and in its
-batches.
+Batches for ``update`` and ``pretrain`` (leading dimension ``B``):
 
-Algorithms are found by name: ``rlt`` and ``dsrl`` are built in, an installed
-package registers more under the ``armnet_rlt.algorithms`` entry-point group,
-and ``module:Class`` names a class directly.
-
-Batches passed to ``update`` and ``pretrain`` are dictionaries of tensors with
-a leading batch dimension ``B``:
-
-- ``state`` and ``next_state``: ``rl_token`` ``[B, 2048]``, ``proprioception``
-  ``[B, 6]`` and ``reference_action`` ``[B, base_chunk_len * 6]`` (π0.5's
-  chunk, flattened). Without the base, ``rl_token`` and ``reference_action``
-  are ``[B, 0]``;
-- ``action`` ``[B, chunk_len * 6]``: the chunk as the robot executed it;
+- ``state``, ``next_state``: ``rl_token`` ``[B, 2048]``, ``proprioception``
+  ``[B, 6]``, ``reference_action`` ``[B, base_chunk_len * 6]`` (π0.5's chunk);
+  ``rl_token`` and ``reference_action`` are ``[B, 0]`` without the base;
+- ``action`` ``[B, chunk_len * 6]``: the chunk as executed;
 - ``reward``, ``done`` ``[B]``; ``curriculum_scale`` ``[B]`` when known;
-- ``extras``: name to ``[B, ...]``, the ``extras`` ``act`` returned;
-- ``images`` and ``next_images`` (``needs_images`` only): view name to uint8
-  ``[B, H, W, 3]``.
+- ``extras``: the ``extras`` ``act`` returned, ``[B, ...]``;
+- ``images``, ``next_images`` (``needs_images``): view to uint8 ``[B, H, W, 3]``.
 """
 
 from __future__ import annotations
@@ -48,7 +35,6 @@ BUILTIN_ALGORITHMS = {
     "rlt": "armnet_rlt.algorithms.rlt:RLTAlgorithm",
     "dsrl": "armnet_rlt.algorithms.dsrl:DSRLAlgorithm",
 }
-# Image size π0.5 takes; also the server's image size for algorithms on the base.
 BASE_IMAGE_SIZE = (224, 224)
 CAMERA_VIEWS = ("top", "front", "wrist")
 PAYLOAD_SCHEMA_VERSION = 4
@@ -58,21 +44,18 @@ PAYLOAD_SCHEMA_VERSION = 4
 class ActorInput:
     """What the actor sees once per chunk.
 
-    ``images`` (only for ``needs_images``) maps each view to a uint8
-    ``[H, W, 3]`` RGB tensor at the server's image size, as the policy server
-    received it: π0.5's 224x224 when the algorithm uses the base, else the
-    algorithm's ``image_size``. ``rl_token`` is None without the base.
+    ``images`` (``needs_images`` only): view to uint8 ``[H, W, 3]`` RGB at
+    224x224 with the base, else at the algorithm's ``image_size``.
+    ``rl_token`` is None without the base.
     """
 
     proprioception: Tensor
     rl_token: Tensor | None = None
     images: dict[str, Tensor] | None = None
-    # Exploration the cell asks for: the actor's own noise scale (the job's
-    # --exploration-scale) and the lag-one correlation of noise along the chunk.
+    # --exploration-scale, and the lag-one noise correlation along the chunk.
     exploration_scale: float = 0.0
     exploration_correlation: float = 0.85
-    # The episode runs the base policy (warmup or the base half of a paired
-    # evaluation); built-in actors then return π0.5's chunk.
+    # Base-policy episode (warmup or the base half of a paired evaluation).
     base: bool = False
     # Chunks already executed in this episode.
     chunk_index: int = 0
@@ -153,21 +136,18 @@ class Actor(nn.Module):
 
     def noise(self, obs: ActorInput, explore: bool) -> Tensor | None:
         """Initial noise ``[horizon, action_dim]`` for π0.5's flow sampler, or
-        None to let π0.5 draw its own. Called before π0.5; only actors that
-        override it get π0.5's prefix pass split from the denoising."""
+        None for π0.5's own. Called before π0.5."""
         return None
 
     def act(self, obs: ActorInput, base_chunk: Tensor | None, explore: bool) -> ActorOutput:
         """The chunk to execute. ``base_chunk`` ``[base_chunk_len, action_dim]``
-        is π0.5's chunk for the chosen noise (None without the base).
-        ``explore`` False is the deterministic evaluation mode."""
+        is π0.5's chunk (None without the base); ``explore`` False is evaluation."""
         raise NotImplementedError
 
 
 class Algorithm:
-    """Base class of an RL algorithm. ``spec`` is an ``AlgorithmSpec``;
-    ``config`` is the run's ``RLTConfig`` (learning rates, discount, batch
-    size, device, ...) with plugin options in ``config.algorithm_options``."""
+    """Base class of an RL algorithm. ``config`` is the run's ``RLTConfig``;
+    plugin options are in ``config.algorithm_options``."""
 
     name = ""
     needs_images = False
@@ -181,8 +161,7 @@ class Algorithm:
     initial_updates = 0
     # Online batches draw each curriculum level equally often.
     balance_curriculum = True
-    # Keep the in-flight chunk of an episode the safety gate stopped (its
-    # unexecuted rows hold the commanded targets).
+    # Keep the in-flight chunk of a safety-stopped episode.
     keeps_partial_chunks = False
 
     def __init__(self, spec: AlgorithmSpec, config: Any) -> None:
@@ -191,16 +170,14 @@ class Algorithm:
 
     @classmethod
     def build_actor(cls, spec: AlgorithmSpec, config: Any) -> Actor:
-        """A fresh actor for the policy server; its weights come from
-        ``actor_state``. Override to skip building the learner networks."""
+        """A fresh actor for the policy server; weights come from ``actor_state``."""
         return cls(spec, config).make_actor()
 
     def make_actor(self) -> Actor:
         raise NotImplementedError
 
     def update(self, batch: dict[str, Any]) -> dict[str, float]:
-        """One learner step; returns metrics to log (``critic_loss``,
-        ``actor_loss`` and any others)."""
+        """One learner step; returns metrics to log."""
         raise NotImplementedError
 
     def actor_state(self) -> dict[str, Tensor]:
@@ -218,9 +195,8 @@ class Algorithm:
         raise NotImplementedError
 
     def relabel(self, episode: list[dict[str, Tensor]]) -> None:
-        """Rewrite one episode's rewards in place before it is stored. By
-        default a safety-tripped episode ends ``config.safety_trip_penalty``
-        below a failure (success 1, failure 0)."""
+        """Rewrite one episode's rewards in place before it is stored; by default
+        a safety trip ends at ``-config.safety_trip_penalty``."""
         penalty = getattr(self.config, "safety_trip_penalty", None)
         if penalty is not None and episode and bool(float(episode[-1].get("safety_trip", 0.0))):
             episode[-1]["reward"] = torch.tensor(-float(penalty), dtype=torch.float32)
@@ -240,8 +216,7 @@ def steers_noise(actor: Actor) -> bool:
 
 
 def load_algorithm(name: str) -> type[Algorithm]:
-    """The algorithm class for ``name``: a built-in, an entry point in the
-    ``armnet_rlt.algorithms`` group, or ``module:Class``."""
+    """The algorithm class for a built-in, entry-point or ``module:Class`` name."""
     import importlib
 
     target = BUILTIN_ALGORITHMS.get(name)

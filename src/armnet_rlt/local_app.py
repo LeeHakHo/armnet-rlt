@@ -313,8 +313,7 @@ def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
 
 
 def _rl_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
-    """π0.5 (unless the algorithm does without it) and the algorithm's actor,
-    from --actor-checkpoint, the learner feed or the cell."""
+    """π0.5 (if the algorithm uses it) and the algorithm's actor."""
     import torch
 
     from armnet_rlt.algorithm import load_algorithm
@@ -442,7 +441,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
                     "config_name": args.config_name,
                     "checkpoint": str(args.checkpoint),
                     "policy_type": args.policy_type,
-                    "algorithm": str(getattr(args, "algorithm", "") or ""),
+                    "algorithm": args.algorithm,
                 },
                 indent=2,
             )
@@ -597,8 +596,7 @@ def cmd_online(args: argparse.Namespace) -> None:
 
 
 def _algorithm_options(values: list[str] | None) -> dict[str, Any]:
-    """``KEY=VALUE`` pairs; a value is read as JSON when it parses, else kept
-    as a string."""
+    """``KEY=VALUE`` pairs; values parsed as JSON where they parse."""
     options: dict[str, Any] = {}
     for item in values or ():
         key, sep, value = item.partition("=")

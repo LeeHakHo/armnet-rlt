@@ -1,15 +1,7 @@
 """Policy inference over gRPC: a policy server and cell-side clients.
 
-The server serves one ``PolicyBackend``: π0.5 with an RL algorithm's actor
-(``OpenPIBackend``), or a LeRobot policy. Messages are ``np.savez`` archives
-loaded with ``allow_pickle=False``.
-
-An RL ``Infer`` request carries ``act`` with ``explore``, ``exploration_scale``,
-``exploration_correlation`` and ``base``; the reply has ``action_chunk`` (the
-chunk to execute), ``base_chunk`` and ``rl_token`` (when the algorithm uses
-π0.5), ``extra/<name>`` arrays, ``actor_step`` and ``needs_images``. A request
-without ``act`` gets π0.5's own chunk and RL token, as before the algorithm
-interface.
+Messages are ``np.savez`` archives (``allow_pickle=False``). An ``Infer`` request
+with ``act`` runs the actor; without it, π0.5's own chunk and RL token.
 """
 
 from __future__ import annotations
@@ -50,8 +42,7 @@ def unpack(data: bytes) -> dict[str, np.ndarray]:
 
 
 def encode_image(image: np.ndarray, codec: str, jpeg_quality: int = 90) -> np.ndarray:
-    """Encode one HWC uint8 RGB image as a flat uint8 array (OpenCV, or
-    Pillow where OpenCV is not installed)."""
+    """One HWC uint8 RGB image as a flat uint8 array (OpenCV, else Pillow)."""
     if codec == "raw":
         return np.ascontiguousarray(image, dtype=np.uint8)
     if codec not in IMAGE_CODECS:
@@ -134,10 +125,7 @@ def unpack_norm_stats(arrays: dict[str, np.ndarray]) -> dict[str, RemoteNormStat
 
 
 class PolicyBackend:
-    """What a policy server serves. ``info`` returns the arrays of the Info
-    reply (``meta`` is a JSON string), ``infer`` answers one decoded request,
-    ``set_steering`` installs an actor (``algorithm.actor_payload``) and
-    ``reset`` ends an episode."""
+    """What a policy server serves: Info arrays, Infer, an actor install and episode reset."""
 
     def info(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -294,13 +282,9 @@ def serve(
     tls_key_path: str = "",
     steering_from_learner: bool = False,
 ) -> Iterator[Any]:
-    """Run a gRPC policy server on ``bind`` until the context exits.
+    """Serve ``policy`` (backend, ``AlgorithmPolicy`` or ``OpenPIRLTPolicy``) on ``bind``.
 
-    ``policy`` is a ``PolicyBackend``, an ``AlgorithmPolicy`` or an
-    ``OpenPIRLTPolicy`` (served at ``image_size``). With ``tls_cert_path`` and
-    ``tls_key_path`` the server terminates TLS. ``steering_from_learner`` tells
-    actors the server takes the actor from the learner. The yielded server has
-    ``apply_steering`` and ``run_locked`` for a learner feed."""
+    The yielded server has ``apply_steering`` and ``run_locked`` for a learner feed."""
     import grpc
 
     if bool(tls_cert_path) != bool(tls_key_path):
@@ -501,8 +485,7 @@ class RemoteOpenPIRLTPolicy:
         exploration_correlation: float = 0.85,
         base: bool = False,
     ) -> ChunkResult:
-        """The actor's chunk for one observation. For an algorithm that needs
-        images, ``frames`` holds the views as sent, JPEG-encoded."""
+        """The actor's chunk; ``frames`` holds JPEG views when the algorithm needs images."""
         if not isinstance(observation, PolicyObservation):
             raise TypeError("RemoteOpenPIRLTPolicy.act expects a PolicyObservation")
         images = self.encode_images(observation)
@@ -649,8 +632,7 @@ class RemoteLeRobotPolicy:
         exploration_scale: float = 0.0,
         exploration_correlation: float = 0.85,
     ) -> np.ndarray:
-        """Actions ``(n, action_dim)`` for one observation whose images are
-        already at the server's ``shapes``."""
+        """Actions ``(n, action_dim)`` for an observation with images at the server's ``shapes``."""
         started = time.perf_counter()
         arrays: dict[str, Any] = {
             "state": np.asarray(state, dtype=np.float32),

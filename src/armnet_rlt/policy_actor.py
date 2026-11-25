@@ -21,8 +21,7 @@ from armnet_rlt.openpi_rlt import PolicyObservation
 
 @dataclass
 class ChunkResult:
-    """One chunk for the cell. ``base_chunk`` (π0.5's chunk, the reference)
-    and ``rl_token`` are None when the algorithm does not use the base."""
+    """One chunk for the cell; ``base_chunk`` and ``rl_token`` are None without the base."""
 
     chunk: np.ndarray
     base_chunk: np.ndarray | None
@@ -35,13 +34,11 @@ class ChunkResult:
 
 
 class AlgorithmPolicy:
-    """Runs ``base`` (an ``OpenPIRLTPolicy``, or None for an algorithm that
-    does not use π0.5) and the installed actor.
+    """π0.5 (``base``, or None) and the installed actor.
 
-    ``install`` takes an ``algorithm.actor_payload``. A payload that arrives
-    during an episode waits until the episode ends (``reset``), so one actor
-    serves a whole episode. ``algorithm`` pins the algorithm the server
-    accepts; without the base it is required."""
+    ``install`` takes an ``algorithm.actor_payload``; one that arrives during an
+    episode is installed at ``reset``. ``algorithm`` pins the accepted
+    algorithm and is required without the base."""
 
     def __init__(
         self,
@@ -58,8 +55,7 @@ class AlgorithmPolicy:
         if base is None and self.algorithm_class.uses_base:
             raise ValueError(f"{algorithm} acts on π0.5's chunk; give the π0.5 checkpoint")
         self.device = torch.device(device)
-        # Where the actor comes from: "learner" (the parameter stream),
-        # "checkpoint" (a frozen file) or "client" (the cell sends it).
+        # "learner", "checkpoint" or "client".
         self.actor_source = actor_source
         self.actor: Any = None
         self.spec: Any = None

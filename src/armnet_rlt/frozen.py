@@ -16,8 +16,7 @@ from armnet_rlt.config import (
 )
 
 
-# 2: the algorithm name and actor_meta, what a policy server rebuilds the
-# actor from. 1: rlt and dsrl actors before the algorithm interface.
+# 1: rlt/dsrl actor only. 2: adds algorithm and actor_meta.
 FROZEN_SCHEMA_VERSION = 2
 _READABLE_SCHEMAS = {1, 2}
 
@@ -38,8 +37,7 @@ def freeze_learner_checkpoint(
     if isinstance(actor_state, Mapping):
         actor_state = {str(name): value.detach().cpu() for name, value in actor_state.items()}
     else:
-        # Checkpoints from before the algorithm interface: the actor's part of
-        # the rlt/dsrl policy.
+        # Pre-plugin checkpoint: actor.* keys of the rlt/dsrl policy.
         policy_state = checkpoint.get("policy_state_dict")
         if policy_state is None:
             policy_state = (checkpoint.get("algorithm_state") or {}).get("policy_state_dict")

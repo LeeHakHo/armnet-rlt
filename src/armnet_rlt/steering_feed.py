@@ -1,5 +1,4 @@
-"""Keep a policy server's actor at the learner's newest weights by
-subscribing to the learner's parameter stream directly."""
+"""Policy-server actor weights from the learner's parameter stream."""
 
 from __future__ import annotations
 
@@ -18,9 +17,8 @@ log = logging.getLogger(__name__)
 
 
 class LearnerSteeringFeed:
-    """Subscribe to ``StreamParameters`` on a thread and hand each actor state
-    to ``apply`` as an ``algorithm.actor_payload``, or to ``installer`` as is.
-    A partial update merges into the last full state."""
+    """Stream ``StreamParameters`` on a thread into ``apply`` (as an actor payload)
+    or ``installer`` (raw); partial updates merge into the last full state."""
 
     def __init__(
         self,
@@ -61,9 +59,7 @@ class LearnerSteeringFeed:
         self._shutdown.set()
 
     def apply_state(self, state: Mapping[str, Any]) -> int | None:
-        """Install one decoded parameter message: ``policy`` (the actor's
-        state dict), ``learner_step``, ``actor_meta`` (``algorithm.actor_meta``)
-        and an optional ``partial`` flag."""
+        """Install one message: ``policy``, ``learner_step``, ``actor_meta``, ``partial``."""
         weights = dict(state.get("policy", state))
         partial = bool(_scalar(state.get("partial", False)))
         raw_step = state.get("learner_step")

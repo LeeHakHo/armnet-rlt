@@ -96,8 +96,7 @@ def learner_config(
             "online_buffer_capacity": max(1, 2 * online_steps // utd_ratio),
         }
     elif algorithm != "rlt":
-        # A plugin: the chunk it executes is the predicted chunk; demonstrations
-        # only for one that uses them.
+        # Plugin: predicted chunk = executed chunk.
         from armnet_rlt.algorithm import has_pretraining, load_algorithm
 
         plugin = load_algorithm(algorithm)

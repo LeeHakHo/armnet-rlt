@@ -2,12 +2,10 @@
 
 The actor sees π0.5's RL token, the joint positions and π0.5's chunk, and adds
 a bounded residual to the first ``chunk_len`` rows of that chunk. Twin critics
-score the residual; the actor maximises the smaller one, with a small penalty
-on the residual so it stays near π0.5.
+score the residual; the actor loss penalises its size.
 
-Copy this package to start your own algorithm: rename it, change the entry
-point in pyproject.toml, and replace the networks and ``update``. The rest is
-the interface the learner and the policy server call.
+To start your own: copy this package, rename it, change the entry point in
+pyproject.toml, replace the networks and ``update``.
 """
 
 from __future__ import annotations
@@ -61,8 +59,7 @@ def _state_stats(spec: AlgorithmSpec) -> tuple[Tensor, Tensor]:
 
 
 class ResidualActor(Actor):
-    """Runs in the policy server. ``forward`` maps a batch of features to a
-    residual in [-1, 1]; ``act`` turns it into the chunk the cell executes."""
+    """Runs in the policy server; ``forward`` gives a residual in [-1, 1]."""
 
     def __init__(self, spec: AlgorithmSpec, options: Mapping[str, Any]) -> None:
         super().__init__()
@@ -72,7 +69,7 @@ class ResidualActor(Actor):
         self.net = _mlp(inputs, int(options["hidden"]), spec.chunk_len * spec.action_dim)
         self.explore_std = float(options["explore_std"])
         mean, std = _state_stats(spec)
-        # Buffers travel with the state dict, so the server gets the same scale.
+        # Buffers are part of the state dict sent to the policy server.
         self.register_buffer("state_mean", mean)
         self.register_buffer("state_std", std)
         self.register_buffer("residual_scale", std[: spec.action_dim] * float(options["residual_scale"]))
@@ -98,7 +95,7 @@ class ResidualActor(Actor):
             noise = torch.randn_like(residual) * self.explore_std * obs.exploration_scale
             residual = (residual + noise).clamp(-1.0, 1.0)
         chunk = self.to_targets(residual, base).reshape(self.chunk_len, self.action_dim)
-        # Extras come back in the learner's batches; this one is for logging.
+        # Extras come back in the learner's batches.
         return ActorOutput(chunk=chunk, extras={"residual": residual[0]})
 
 
@@ -137,7 +134,7 @@ class ResidualTD3(Algorithm):
 
     @classmethod
     def build_actor(cls, spec: AlgorithmSpec, config: Any) -> ResidualActor:
-        # The policy server only needs the actor; skip the critics.
+        # Actor only, for the policy server.
         options = {**DEFAULTS, **dict(getattr(config, "algorithm_options", {}) or {})}
         return ResidualActor(spec, options)
 
