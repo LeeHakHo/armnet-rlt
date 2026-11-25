@@ -114,4 +114,4 @@ else
   set_env IMAGE_REF "$REF"
   log "image $REF"
 fi
-log "done. Next: CELL=<cell-id> scripts/run.sh dsrl"
+log "done. Next: CELL=cell-03 scripts/run.sh dsrl"

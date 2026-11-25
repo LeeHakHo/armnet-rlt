@@ -1,7 +1,7 @@
 # Shared helpers for setup.sh, run.sh and eval.sh. Source it; do not run it.
 #
 # Settings (environment or .env):
-#   CELL              Armnet cell to run on (e.g. cell-01); empty lets the queue pick
+#   CELL              Armnet cell to run on: cell-01 or cell-03 (run.sh and eval.sh need it)
 #   IMAGE_REF         actor image (setup.sh writes it to .env)
 #   GPU               GPU index for the learner and policy server (unset: visible GPU)
 #   RLT_AUTH_SECRET   Armnet secret with RLT_LEARNER_AUTH_TOKEN (default armnet-rlt-auth)
@@ -112,6 +112,15 @@ if [ -n "$CELL_RAIL" ]; then
   RAIL_SHIFT=$(python3 -c "import sys; lo, hi = map(float, sys.argv[1].split(',')); print(round((lo + hi) / 2 - 0.7, 4))" "$CELL_RAIL")
 fi
 
+# Benchmark cells; the rail and camera-aim corrections are keyed by cell id.
+CELLS="cell-01 cell-03"
+require_cell() {
+  case " $CELLS " in
+    *" ${CELL:-none} "*) ;;
+    *) die "${CELL:+unknown cell $CELL; }set CELL to cell-01 or cell-03" ;;
+  esac
+}
+
 # Succeeds when CELL is available or unset.
 cell_free() {
   [ -n "$CELL" ] || return 0
@@ -183,6 +192,25 @@ EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
 EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-10}
 # EVAL_LIGHT=<percent> sets every level to that light; only rail and camera change.
 EVAL_LIGHT=${EVAL_LIGHT:-}
+
+# Dies unless the run follows the leaderboard protocol; lists each deviation.
+leaderboard_preflight() {  # <episodes> <eval every>
+  local bad=() b
+  [ "$1" = 400 ] || bad+=("--episodes $1: checkpoints must be at 100, 200, 300 and 400 episodes; use 400")
+  [ "$2" = 100 ] || bad+=("--eval-every $2: checkpoints must be at 100, 200, 300 and 400 episodes; use 100")
+  case " $CELLS " in *" ${CELL:-none} "*) ;; *) bad+=("CELL '${CELL:-}': leaderboard cells are cell-01 and cell-03") ;; esac
+  [ "$EVAL_SEEDS" = "1042 2042 3042" ] || bad+=("EVAL_SEEDS '$EVAL_SEEDS': the protocol seeds are 1042 2042 3042")
+  [ "$EVAL_ID_ROLLOUTS" = 10 ] || bad+=("EVAL_ID_ROLLOUTS $EVAL_ID_ROLLOUTS: the protocol runs 10 per seed")
+  [ "$EVAL_OOD_ROLLOUTS" = 10 ] || bad+=("EVAL_OOD_ROLLOUTS $EVAL_OOD_ROLLOUTS: the protocol runs 10 per seed")
+  [ -z "$EVAL_LIGHT" ] || bad+=("EVAL_LIGHT $EVAL_LIGHT: the protocol sets the light per condition; unset it")
+  [ -z "${EVAL_LEVELS:-}" ] || bad+=("EVAL_LEVELS '$EVAL_LEVELS': the protocol evaluates ID and OOD; unset it")
+  [ "${RECORD:-1}" = 1 ] || bad+=("RECORD ${RECORD}: the scorer recounts the recorded episodes; set RECORD=1")
+  [ -n "${RECORD_REPO:-}" ] || bad+=("RECORD_REPO unset: the scorer recounts the recorded episodes; scripts/setup.sh sets it")
+  [ "${RECORD_PUBLIC:-1}" != 0 ] || bad+=("RECORD_PUBLIC=0: the scorer reads public datasets")
+  [ ${#bad[@]} -eq 0 ] && return 0
+  for b in "${bad[@]}"; do log "--leaderboard: $b"; done
+  die "--leaderboard: the run does not follow the protocol (${#bad[@]} problems above)"
+}
 EVAL_PIDS=()
 EVAL_JOB_LOG=""
 

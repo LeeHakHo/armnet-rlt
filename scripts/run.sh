@@ -6,8 +6,8 @@
 # it; evaluation rollouts are not training episodes. Ctrl-C stops everything, the cell
 # job included.
 #
-#   CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit> [options]
-#   CELL=<cell-id> scripts/run.sh rl --algorithm <name> [options]
+#   CELL=<cell-01|cell-03> scripts/run.sh <rlt|dsrl|dit> [options]
+#   CELL=<cell-01|cell-03> scripts/run.sh rl --algorithm <name> [options]
 #   dit trains any LeRobot policy by iterative BC: multi-task DiT by default, or
 #   --policy-type, including your own plugin under plugins/ (see the README).
 #   rl trains any registered RL algorithm (rlt, dsrl, or an installed plugin such as
@@ -71,7 +71,6 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-actor_common
 [ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt, dsrl and rl runs"
 [ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt, dsrl and rl runs"
 if [ "$METHOD" = rl ]; then
@@ -79,10 +78,10 @@ if [ "$METHOD" = rl ]; then
 else
   [ -z "$ALGORITHM" ] || die "--algorithm is for rl runs"
 fi
-[ -z "$BOARD_NAME" ] || [ -n "$CELL" ] || die "--leaderboard needs CELL"
 [ -z "$BOARD_NAME" ] || [ "$SKIP_EVAL" = 0 ] || die "--leaderboard needs the evaluations; drop --skip-eval"
-[ -z "$BOARD_NAME" ] || { [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ]; } \
-  || die "--leaderboard needs recorded evaluations: set RECORD_REPO (scripts/setup.sh does)"
+[ -z "$BOARD_NAME" ] || leaderboard_preflight "$EPISODES" "$EVAL_EVERY"
+require_cell
+actor_common
 # rl runs are named after the algorithm (module:Class -> Class).
 NAME=$METHOD; [ "$METHOD" = rl ] && NAME=$(echo "${ALGORITHM##*:}" | tr -c 'A-Za-z0-9_\n-' '-')
 RUN=${RUN:-$NAME-$(date -u +%Y%m%d-%H%M%S)}

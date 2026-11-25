@@ -7,7 +7,7 @@
 # evaluation continues where it stopped. scripts/run.sh runs the same protocol during
 # training.
 #
-#   CELL=<cell-id> scripts/eval.sh <checkpoint> [options]
+#   CELL=<cell-01|cell-03> scripts/eval.sh <checkpoint> [options]
 #
 #   <checkpoint>           an rlt/dsrl/rl run id (newest step, or --step; rl covers plugin
 #                          algorithms), or a LeRobot pretrained_model directory (dit and
@@ -31,6 +31,7 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_cell
 actor_common
 case "$TARGET" in /*) ;; *) [ -e "$CALLER_PWD/$TARGET" ] && TARGET=$CALLER_PWD/$TARGET ;; esac
 
