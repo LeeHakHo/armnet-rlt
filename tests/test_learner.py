@@ -504,35 +504,6 @@ def _patch_transition_codec(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "lerobot.transport.utils", utils)
 
 
-def test_drain_episode_segments_ignores_a_replayed_episode(monkeypatch, capsys) -> None:
-    from threading import Event
-
-    from armnet_rlt.learner import _drain_episode_segments
-
-    _patch_transition_codec(monkeypatch)
-    queue = Queue()
-    first, second, third = (
-        _fake_episode_bytes(0, 3),
-        _fake_episode_bytes(10, 2),
-        _fake_episode_bytes(20, 4),
-    )
-    for payload in (first, second):
-        queue.put(payload)
-    pending: list = []
-    completed: deque = deque()
-    seen: set[bytes] = set()
-    assert _drain_episode_segments(queue, pending, completed, Event(), seen=seen) == 2
-    # The stream reconnects and replays both episodes before a new one.
-    for payload in (first, second, third):
-        queue.put(payload)
-    assert _drain_episode_segments(queue, pending, completed, Event(), seen=seen) == 1
-    assert [len(segment) for segment in completed] == [3, 2, 4]
-    assert capsys.readouterr().out.count("duplicate transitions ignored") == 2
-    # Without a digest set every message counts.
-    queue.put(first)
-    assert _drain_episode_segments(queue, pending, completed, Event()) == 1
-
-
 def test_drain_online_transitions_ignores_a_replayed_episode(monkeypatch) -> None:
     from threading import Event
 

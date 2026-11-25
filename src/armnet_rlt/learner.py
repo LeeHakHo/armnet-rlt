@@ -558,31 +558,6 @@ def _drain_online_transitions(
     return count
 
 
-def _drain_episode_segments(
-    queue: Queue,
-    pending: list[dict[str, Tensor]],
-    completed: deque[list[dict[str, Tensor]]],
-    shutdown_event: Event,
-    seen: set[bytes] | None = None,
-) -> int:
-    """Split the transition stream into episodes on ``done``; the unfinished one stays in ``pending``."""
-    from lerobot.transport.utils import bytes_to_transitions
-
-    count = 0
-    while not queue.empty() and not shutdown_event.is_set():
-        payload = queue.get()
-        if _replayed(payload, seen):
-            continue
-        for transition in bytes_to_transitions(payload):
-            fields = _transition_fields(transition)
-            pending.append(fields)
-            if bool(fields["done"]):
-                completed.append(list(pending))
-                pending.clear()
-                count += 1
-    return count
-
-
 def _restore_rolling_metrics(
     path: Path, *, window: int
 ) -> tuple[RollingMetrics, int]:
