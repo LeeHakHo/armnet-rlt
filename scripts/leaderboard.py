@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from collections import Counter
@@ -263,10 +264,12 @@ def clips(repo: str, existing: set[str]) -> dict[int, str]:
                                    + f"file '{images[-1]}'\n")
                 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                                 "-vf", "fps=20", *encode, str(out)], check=True)
+                shutil.rmtree(frames)
             else:
                 subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *parts, "-filter_complex",
                                 tile + f",setpts={stretch:.4f}*PTS,fps=20[v]", "-map", "[v]", *encode, str(out)], check=True)
-        HfApi().upload_folder(folder_path=tmp, repo_id=CLIPS, repo_type="dataset", commit_message=f"Episode videos of {repo}")
+        HfApi().upload_folder(folder_path=tmp, allow_patterns=[f"{prefix}*.mp4"], repo_id=CLIPS, repo_type="dataset",
+                              commit_message=f"Episode videos of {repo}")
     return urls
 
 
