@@ -84,13 +84,15 @@ server takes the DSRL actor from the learner's parameter stream.
 
 ### DSRL + Robometer reward
 
-Serve the Robometer busybox checkpoint on a GPU of this machine:
+The reward model is [Robometer-4B](https://huggingface.co/robometer/Robometer-4B) tuned with
+LoRA on the same 39 demonstrations
+([`AutoRLBench/robometer-4b-lora-busybox-demo39`](https://huggingface.co/AutoRLBench/robometer-4b-lora-busybox-demo39)).
+Serve it on a GPU of this machine:
 
 ```bash
 git clone -b armnet-tiled https://github.com/jesbu1/robometer && cd robometer && uv sync
-uv pip install --python .venv/bin/python transformers==5.3.0     # the version the checkpoint was saved with
-hf download jesbu1/robometer-4b-fft-busybox-tiled --local-dir ckpt
-sed -i 's/^  use_unsloth: true$/  use_unsloth: false/' ckpt/config.yaml   # Unsloth fails with a dtype error
+uv pip install --python .venv/bin/python transformers==5.3.0     # the version the model was saved with
+hf download AutoRLBench/robometer-4b-lora-busybox-demo39 --local-dir ckpt
 .venv/bin/python robometer/evals/eval_server.py model_path="'$PWD/ckpt'" \
   num_gpus=1 batch_size=4 server_url=127.0.0.1 server_port=8010
 ```

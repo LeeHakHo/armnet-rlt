@@ -12,7 +12,7 @@ Environment:
   ROBOMETER_WEIGHT  scale of the shaping term (1.0)
   ROBOMETER_TASK    language instruction sent to the server (push the green button)
   ROBOMETER_LOG     JSON lines file for one record per episode (unset: no log)
-  ROBOMETER_FRAMES  frames the server samples per episode (8, as the busybox checkpoint
+  ROBOMETER_FRAMES  frames the server samples per episode (8, as the reward model
                     was trained)
   ROBOMETER_WAIT_S  seconds to keep retrying while the server is unreachable (3600);
                     the learner blocks meanwhile
