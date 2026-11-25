@@ -5,6 +5,7 @@
 #   scripts/setup_local.sh lerobot   full LeRobot for its policies (lerobot-train, lerobot-streaming-bc,
 #                                     checkpoint-eval, policy-server --policy-type lerobot)
 # OPENPI_REPO and OPENPI_REVISION select the OpenPI fork with the pi0_rl model.
+# SKIP_CHECK=1 skips the import check at the end.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,7 +43,7 @@ setup_learner() {
     uv pip install --python "$venv" --upgrade --override "$overrides" \
         --extra-index-url "$TORCH_INDEX" \
         torch==2.8.0 torchvision==0.23.0
-    "$venv/bin/python" -c "import torch; from lerobot.rl.learner_service import LearnerService; from armnet_rlt.learner import run_learner; print('RLT learner env OK', torch.__version__, 'cuda', torch.cuda.is_available())"
+    [ -n "${SKIP_CHECK:-}" ] || "$venv/bin/python" -c "import torch; from lerobot.rl.learner_service import LearnerService; from armnet_rlt.learner import run_learner; print('RLT learner env OK', torch.__version__, 'cuda', torch.cuda.is_available())"
 }
 
 setup_openpi() {
@@ -87,7 +88,7 @@ setup_openpi() {
         --extra-index-url "$TORCH_INDEX" \
         --index-strategy unsafe-best-match \
         torch==2.8.0 torchvision==0.23.0
-    "$venv/bin/python" -c "from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); from openpi.training.config import get_config; get_config('${RLT_CONFIG:-pi05_rlt_busybox_multitask_singlearm_minmax}'); from lerobot.datasets.lerobot_dataset import LeRobotDataset; print('RLT cache env OK')"
+    [ -n "${SKIP_CHECK:-}" ] || "$venv/bin/python" -c "from armnet_rlt.openpi_rlt import _install_training_stubs; _install_training_stubs(); from openpi.training.config import get_config; get_config('${RLT_CONFIG:-pi05_rlt_busybox_multitask_singlearm_minmax}'); from lerobot.datasets.lerobot_dataset import LeRobotDataset; print('RLT cache env OK')"
 }
 
 setup_lerobot() {
@@ -106,7 +107,7 @@ setup_lerobot() {
         grpcio==1.73.1 'protobuf>=6.31.1,<6.32.0' 'wandb>=0.24,<0.25' python-dotenv \
         torch==2.8.0 torchvision==0.23.0
     uv pip install --python "$venv" --no-deps -e "$ROOT"
-    "$venv/bin/python" -c "import torch, torchcodec; from lerobot.policies.multi_task_dit.modeling_multi_task_dit import MultiTaskDiTPolicy; from armnet_rlt.lerobot_learner import run_lerobot_streaming_bc; print('LeRobot env OK', torch.__version__)"
+    [ -n "${SKIP_CHECK:-}" ] || "$venv/bin/python" -c "import torch, torchcodec; from lerobot.policies.multi_task_dit.modeling_multi_task_dit import MultiTaskDiTPolicy; from armnet_rlt.lerobot_learner import run_lerobot_streaming_bc; print('LeRobot env OK', torch.__version__)"
 }
 
 case "${1:-}" in
