@@ -4,8 +4,8 @@
 #   CELL              Armnet cell to run on: cell-01 or cell-03 (run.sh and eval.sh need it)
 #   IMAGE_REF         actor image (setup.sh writes it to .env)
 #   GPU               GPU index for the learner and policy server (unset: visible GPU)
-#   RLT_AUTH_SECRET   Armnet secret with RLT_LEARNER_AUTH_TOKEN (default armnet-rlt-auth)
-#   RLT_HF_SECRET     Armnet secret with HF_TOKEN (default huggingface-token)
+#   RLT_AUTH_SECRET   Armnet secret with RLT_LEARNER_AUTH_TOKEN (default armnet-rlt-auth-$USER)
+#   RLT_HF_SECRET     Armnet secret with HF_TOKEN (default huggingface-token-$USER)
 #   BACKEND           local (default: this machine's GPU, ngrok or PUBLIC_HOST) or modal
 #                     (learner and policy server on Modal, src/armnet_rlt/modal_app.py)
 #   PUBLIC_HOST       your own TLS ingress instead of ngrok; then also TLS_CERT, TLS_KEY,
@@ -52,8 +52,8 @@ export RLT_DATA_ROOT=$DATA
 CELL=${CELL:-}
 GPU=${GPU:-}
 GPU_ARG=${GPU:+--gpu $GPU}
-RLT_AUTH_SECRET=${RLT_AUTH_SECRET:-armnet-rlt-auth}
-RLT_HF_SECRET=${RLT_HF_SECRET:-huggingface-token}
+RLT_AUTH_SECRET=${RLT_AUTH_SECRET:-armnet-rlt-auth-$USER}
+RLT_HF_SECRET=${RLT_HF_SECRET:-huggingface-token-$USER}
 LEARNER_PORT=${LEARNER_PORT:-50051}
 POLICY_PORT=${POLICY_PORT:-50052}
 WANDB_ARG=${WANDB_PROJECT:+--wandb-project $WANDB_PROJECT}

@@ -50,9 +50,9 @@ BACKEND=modal scripts/setup.sh   # Modal
 2. runs `uv sync`, builds `envs/venv-learner`, `envs/venv-openpi` and `envs/venv-lerobot`
    (`scripts/setup_local.sh`) and installs the plugins under `plugins/` (LeRobot
    policies into the lerobot environment, RL algorithms into the learner and openpi ones);
-3. creates the learner auth token and the two Armnet secrets: `armnet-rlt-auth`
-   (`RLT_AUTH_SECRET`) and `huggingface-token` (`RLT_HF_SECRET`, your `HF_TOKEN`, which the
-   cell uses from there);
+3. creates the learner auth token and the two Armnet secrets `armnet-rlt-auth-$USER`
+   (`RLT_AUTH_SECRET`) and `huggingface-token-$USER` (`RLT_HF_SECRET`, your `HF_TOKEN`, which
+   the cell uses from there); existing secrets are never overwritten;
 4. downloads the base π0.5 checkpoint (`--model`, default
    `AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k`) and builds its normalization stats
    and the RLT demo cache (needs a GPU; `--skip-cache` skips it);
@@ -71,7 +71,7 @@ To rotate the Hugging Face token, replace the Armnet secret (and the Modal one) 
 `HF_TOKEN` in `.env`:
 
 ```bash
-uv run --env-file .env armnet secret create huggingface-token <token>
+uv run --env-file .env armnet secret create "$RLT_HF_SECRET" <token>
 uv run --extra modal modal secret create --force huggingface-secret HF_TOKEN=<token>
 ```
 
@@ -389,7 +389,7 @@ Set in the environment or in `.env`; the environment takes precedence.
 | Variable | Meaning |
 |---|---|
 | `ARMNET_API_KEY`, `HF_TOKEN` | Armnet API key; Hugging Face token (models, episode datasets, an Armnet secret) |
-| `RLT_HF_SECRET`, `RLT_AUTH_SECRET` | Armnet secrets holding `HF_TOKEN` and `RLT_LEARNER_AUTH_TOKEN` (`huggingface-token`, `armnet-rlt-auth`) |
+| `RLT_HF_SECRET`, `RLT_AUTH_SECRET` | Armnet secrets holding `HF_TOKEN` and `RLT_LEARNER_AUTH_TOKEN` (`huggingface-token-$USER`, `armnet-rlt-auth-$USER`) |
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token shared by the actor and the learner (written by `setup.sh`) |
 | `IMAGE_REF` | Actor image (written by `setup.sh`) |
 | `CELL`, `GPU` | Cell to run on (`cell-01` or `cell-03`; `run.sh` and `eval.sh` need it) and local GPU index |

@@ -44,6 +44,7 @@ UVRUN=(uv run --quiet --env-file .env)
 [ "$BACKEND" != modal ] || UVRUN+=(--extra modal)
 ask ARMNET_API_KEY "Armnet API key"
 ask HF_TOKEN "Hugging Face token (write access to your namespace, pull requests on AutoRLBench/armnet-leaderboard)"
+# Secret names are per user; Armnet secrets are shared within a team.
 grep -q "^RLT_HF_SECRET=" .env || set_env RLT_HF_SECRET "$RLT_HF_SECRET"
 grep -q "^RLT_AUTH_SECRET=" .env || set_env RLT_AUTH_SECRET "$RLT_AUTH_SECRET"
 [ "$BACKEND" != modal ] || set_env BACKEND modal
@@ -64,12 +65,19 @@ else
 fi
 
 log "3/5 secrets"
+# Existing secrets are never overwritten.
+SECRETS=$("${UVRUN[@]}" armnet secret list) || die "could not list Armnet secrets"
+has_secret() { grep -qx "$1" <<< "$SECRETS"; }
 if [ -z "${RLT_LEARNER_AUTH_TOKEN:-}" ]; then
+  has_secret "$RLT_AUTH_SECRET" && die "Armnet secret $RLT_AUTH_SECRET exists: put its token in .env as RLT_LEARNER_AUTH_TOKEN, or set RLT_AUTH_SECRET to a new name"
   TOKEN=$(openssl rand -hex 32)
   "${UVRUN[@]}" armnet secret create "$RLT_AUTH_SECRET" "$TOKEN"
   set_env RLT_LEARNER_AUTH_TOKEN "$TOKEN"
-  "${UVRUN[@]}" armnet secret create "$RLT_HF_SECRET" "$HF_TOKEN" \
-    || log "could not create $RLT_HF_SECRET; it may already exist"
+fi
+if has_secret "$RLT_HF_SECRET"; then
+  log "using the existing Armnet secret $RLT_HF_SECRET"
+else
+  "${UVRUN[@]}" armnet secret create "$RLT_HF_SECRET" "$HF_TOKEN"
 fi
 if [ "$BACKEND" = modal ]; then
   # RLT_LEARNER_AUTH_TOKEN (and WANDB_API_KEY) and HF_TOKEN for the Modal containers.
