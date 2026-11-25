@@ -172,7 +172,7 @@ def test_offline_smoke_trains_the_residual_structure(tmp_path) -> None:
     assert math.isfinite(summary["final_actor_loss"])
     assert math.isfinite(summary["final_critic_loss"])
     checkpoint = torch.load(summary["checkpoint_path"], weights_only=False)
-    assert bool(checkpoint["policy_state_dict"]["actor.residual_mode"])
+    assert bool(checkpoint["algorithm_state"]["policy_state_dict"]["actor.residual_mode"])
 
 
 def test_offline_smoke_finishes_without_lerobot(tmp_path) -> None:
@@ -246,7 +246,7 @@ def test_dsrl_learner_needs_no_demonstration_cache(tmp_path) -> None:
     assert summary["completed_steps"] == 0
     checkpoint = torch.load(summary["checkpoint_path"], weights_only=False)
     assert checkpoint["config"]["algorithm"] == "dsrl"
-    assert "actor.noise_bound" in checkpoint["policy_state_dict"]
+    assert "actor.noise_bound" in checkpoint["algorithm_state"]["policy_state_dict"]
 
 
 def test_interactions_are_persisted_with_learner_step(
@@ -614,8 +614,8 @@ def test_learner_accepts_actor_keepalive_pings_on_an_idle_stream() -> None:
     assert '"grpc.http2.max_ping_strikes", 0' in source
 
 
-def test_relabel_rlt_safety_trip_sets_the_terminal_reward_to_minus_the_penalty() -> None:
-    from armnet_rlt.learner import relabel_rlt_safety_trip
+def test_default_relabel_sets_a_tripped_terminal_reward_to_minus_the_penalty() -> None:
+    from armnet_rlt.algorithm import Algorithm, AlgorithmSpec
 
     def episode(trip: float) -> list[dict[str, torch.Tensor]]:
         return [
@@ -623,12 +623,16 @@ def test_relabel_rlt_safety_trip_sets_the_terminal_reward_to_minus_the_penalty()
             {"reward": torch.tensor(-1.0), "safety_trip": torch.tensor(trip)},
         ]
 
+    algorithm = Algorithm(AlgorithmSpec(), types.SimpleNamespace(safety_trip_penalty=2.0))
     tripped = episode(1.0)
-    relabel_rlt_safety_trip(tripped, 2.0)
+    algorithm.relabel(tripped)
     assert [float(t["reward"]) for t in tripped] == [0.0, -2.0]
     clean = episode(0.0)
-    relabel_rlt_safety_trip(clean, 2.0)
+    algorithm.relabel(clean)
     assert [float(t["reward"]) for t in clean] == [0.0, -1.0]
+    unset = episode(1.0)
+    Algorithm(AlgorithmSpec(), types.SimpleNamespace(safety_trip_penalty=None)).relabel(unset)
+    assert [float(t["reward"]) for t in unset] == [0.0, -1.0]
 
 
 def test_safety_trip_penalty_must_be_nonnegative() -> None:

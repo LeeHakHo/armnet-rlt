@@ -41,17 +41,26 @@ def unpack(data: bytes) -> dict[str, np.ndarray]:
 
 
 def encode_image(image: np.ndarray, codec: str, jpeg_quality: int = 90) -> np.ndarray:
-    """Encode one HWC uint8 RGB image as a flat uint8 array."""
+    """Encode one HWC uint8 RGB image as a flat uint8 array (OpenCV, or
+    Pillow where OpenCV is not installed)."""
     if codec == "raw":
         return np.ascontiguousarray(image, dtype=np.uint8)
     if codec not in IMAGE_CODECS:
         raise ValueError(f"image codec must be one of {IMAGE_CODECS}, got {codec!r}")
-    import cv2
+    image = np.asarray(image, dtype=np.uint8)
+    try:
+        import cv2
+    except ModuleNotFoundError:
+        from PIL import Image
 
+        buffer = io.BytesIO()
+        options = {"quality": int(jpeg_quality)} if codec == "jpeg" else {}
+        Image.fromarray(image).save(buffer, format="JPEG" if codec == "jpeg" else "PNG", **options)
+        return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
     params = [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)] if codec == "jpeg" else []
     ok, encoded = cv2.imencode(
         ".jpg" if codec == "jpeg" else ".png",
-        cv2.cvtColor(np.asarray(image, dtype=np.uint8), cv2.COLOR_RGB2BGR),
+        cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
         params,
     )
     if not ok:
@@ -64,8 +73,13 @@ def decode_image(data: np.ndarray, codec: str) -> np.ndarray:
         return np.asarray(data, dtype=np.uint8)
     if codec not in IMAGE_CODECS:
         raise ValueError(f"image codec must be one of {IMAGE_CODECS}, got {codec!r}")
-    import cv2
+    try:
+        import cv2
+    except ModuleNotFoundError:
+        from PIL import Image
 
+        with Image.open(io.BytesIO(np.asarray(data, dtype=np.uint8).tobytes())) as image:
+            return np.asarray(image.convert("RGB"))
     image = cv2.imdecode(np.asarray(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"{codec} decoding failed")

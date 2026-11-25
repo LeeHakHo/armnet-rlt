@@ -87,7 +87,7 @@ def test_dsrl_config_requires_full_chunk_noise_and_no_demos() -> None:
     with pytest.raises(ValueError, match="initial_steps"):
         _config(dsrl_initial_steps=-1)
     with pytest.raises(ValueError, match="algorithm"):
-        _config(algorithm="sac")
+        _config(algorithm="")
 
 
 def test_rlt_config_still_ties_execution_to_the_predicted_chunk() -> None:
@@ -457,18 +457,20 @@ def test_learner_config_applies_the_dsrl_settings(tmp_path) -> None:
 
 
 def test_dsrl_gradient_step_updates_every_module_and_schedules_utd_steps() -> None:
-    from armnet_rlt.learner import _schedule_online_updates, _train_step_dsrl
+    from armnet_rlt.algorithm import AlgorithmSpec, norm_stats_lists
+    from armnet_rlt.algorithms.dsrl import DSRLAlgorithm
+    from armnet_rlt.learner import _schedule_online_updates
 
     torch.manual_seed(0)
-    policy = DSRLPolicy(_config(dsrl_alpha_init=0.5))
-    policy.set_norm_stats(_norm_stats())
+    config = _config(dsrl_alpha_init=0.5, device="cpu", utd_ratio=30)
+    algorithm = DSRLAlgorithm(AlgorithmSpec(norm_stats=norm_stats_lists(_norm_stats())), config)
     batch = {
         "state": {
             "rl_token": torch.randn(4, 2048),
             "proprioception": torch.randn(4, 6),
             "reference_action": torch.randn(4, 18),
         },
-        "action": torch.rand(4, 18) * 4 - 2,
+        "action": torch.randn(4, 12),
         "reward": torch.tensor([-1.0, -1.0, 0.0, -1.0]),
         "next_state": {
             "rl_token": torch.randn(4, 2048),
@@ -476,25 +478,23 @@ def test_dsrl_gradient_step_updates_every_module_and_schedules_utd_steps() -> No
             "reference_action": torch.randn(4, 18),
         },
         "done": torch.tensor([0.0, 0.0, 1.0, 0.0]),
+        "extras": {"noise": torch.rand(4, 3, 6) * 4 - 2},
     }
+    policy = algorithm.policy
     before = {
         name: value.clone() for name, value in policy.state_dict().items()
         if value.dtype.is_floating_point
     }
-    critic_loss, actor_loss = _train_step_dsrl(
-        policy,
-        batch,
-        actor_optimizer=torch.optim.Adam(policy.actor.parameters(), lr=1e-3),
-        critic_optimizer=torch.optim.Adam(policy.critic_ensemble.parameters(), lr=1e-3),
-        temperature_optimizer=torch.optim.Adam(policy.temperature_parameters(), lr=1e-3),
-    )
-    assert math.isfinite(critic_loss) and math.isfinite(actor_loss)
+    metrics = algorithm.update(batch)
+    assert math.isfinite(metrics["critic_loss"]) and math.isfinite(metrics["actor_loss"])
+    assert {"alpha", "entropy", "actor_lr", "critic_lr"} <= set(metrics)
     after = policy.state_dict()
     changed = {name for name in before if not torch.equal(before[name], after[name])}
     assert any(name.startswith("actor.trunk") for name in changed)
     assert any(name.startswith("critic_ensemble") for name in changed)
     assert any(name.startswith("critic_target") for name in changed)
     assert "log_alpha" in changed
+    assert algorithm.updates_per_transition == 30
     assert _schedule_online_updates(0, 17, steps_per_transition=30) == 510
     assert _schedule_online_updates(5, 2) == 7
     with pytest.raises(ValueError):

@@ -69,6 +69,7 @@ def learner_config(
     critic_action_residual: bool = False,
     critic_action_gain: float = 10.0,
     safety_trip_penalty: float | None = None,
+    algorithm_options: dict[str, object] | None = None,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
@@ -94,6 +95,19 @@ def learner_config(
             "online_step_before_learning": 1,
             "online_buffer_capacity": max(1, 2 * online_steps // utd_ratio),
         }
+    elif algorithm != "rlt":
+        # A plugin: the chunk it executes is the predicted chunk; demonstrations
+        # only for one that uses them.
+        from armnet_rlt.algorithm import has_pretraining, load_algorithm
+
+        plugin = load_algorithm(algorithm)
+        network, jerk = network_for(
+            embodiment, reference_action_len=30, predicted_action_len=actions_to_execute
+        )
+        if not (plugin.uses_demos and has_pretraining(plugin)):
+            max_demo_pretrain_steps = 0
+        if not plugin.uses_demos:
+            online_batch_fraction = 1.0
     elif residual_actor or critic_action_residual:
         network = replace(
             network,
@@ -104,6 +118,7 @@ def learner_config(
         )
     kwargs = {
         "algorithm": algorithm,
+        "algorithm_options": dict(algorithm_options or {}),
         "dsrl_noise_bound": dsrl_noise_bound,
         "dsrl_noise_steps": dsrl_noise_steps,
         "dsrl_target_entropy": dsrl_target_entropy,

@@ -218,9 +218,12 @@ class RLTConfig:
 
     use_quantile_norm: bool = True
     policy_uses_delta_actions: bool = False
-    # "rlt": the actor outputs an action chunk refined from the base policy's.
-    # "dsrl": the actor outputs the base flow policy's initial noise.
+    # A registered algorithm (armnet_rlt.algorithm.load_algorithm). "rlt": the
+    # actor refines the base policy's chunk; "dsrl": the actor picks the base
+    # flow policy's initial noise.
     algorithm: str = "rlt"
+    # Options of a plugin algorithm, as given with --algorithm-option.
+    algorithm_options: dict[str, Any] = field(default_factory=dict)
     # DSRL noise lives in [-dsrl_noise_bound, dsrl_noise_bound]; the actor
     # outputs dsrl_noise_steps rows of it, repeated over the chunk.
     dsrl_noise_bound: float = 1.5
@@ -253,8 +256,8 @@ class RLTConfig:
                 f"{self.embodiment} requires action_dim={expected_dim}, "
                 f"got {self.network.action_dim}"
             )
-        if self.algorithm not in {"rlt", "dsrl"}:
-            raise ValueError("algorithm must be 'rlt' or 'dsrl'")
+        if not self.algorithm:
+            raise ValueError("algorithm must not be empty")
         if self.algorithm == "dsrl":
             if self.network.predicted_action_len != self.network.reference_action_len:
                 raise ValueError(
@@ -391,6 +394,27 @@ class RLTConfig:
     @property
     def checkpoint_dir(self) -> Path:
         return Path(self.output_dir) / self.run_id
+
+
+def config_from_dict(raw: Mapping[str, Any]) -> RLTConfig:
+    """RLTConfig from a saved config dict; unknown keys are dropped."""
+    values = {key: raw[key] for key in RLTConfig.__dataclass_fields__ if key in raw}
+    if isinstance(values.get("network"), Mapping):
+        values["network"] = network_config_from_dict(values["network"])
+    if isinstance(values.get("actor_learner"), Mapping):
+        transport = values["actor_learner"]
+        values["actor_learner"] = RLTActorLearnerConfig(
+            **{
+                key: transport[key]
+                for key in RLTActorLearnerConfig.__dataclass_fields__
+                if key in transport
+            }
+        )
+    if "jerk_joint_weights" in values:
+        values["jerk_joint_weights"] = tuple(values["jerk_joint_weights"])
+    if values.get("algorithm_options") is None:
+        values.pop("algorithm_options", None)
+    return RLTConfig(**values)
 
 
 def without_secrets(config: Mapping[str, Any]) -> dict[str, Any]:
