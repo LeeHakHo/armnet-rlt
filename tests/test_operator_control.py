@@ -143,7 +143,7 @@ def test_curriculum_scales_variation_around_calibrated_default(
         )
     )
     ctx = SimpleNamespace(
-        args={"variation": True},
+        args={"variation": True, "camera_aim": {"top": {"pan": 0.405, "tilt": 0.175}}},
         cell=cell,
         report_progress=lambda _message: None,
     )
@@ -159,6 +159,7 @@ def test_curriculum_scales_variation_around_calibrated_default(
 
     assert record is not None
     assert record["values"]["rail"] == pytest.approx(0.6)
+    assert (record["top_pan"], record["top_tilt"]) == (0.405, 0.175)
     assert record["curriculum"]["scale"] == pytest.approx(0.25)
     assert cell.applied.settings[0].value == pytest.approx(0.6)
 
