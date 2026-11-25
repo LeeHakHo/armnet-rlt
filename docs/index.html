@@ -255,7 +255,7 @@ table.rolls td.h { text-align: right }
 
   <div class="view" data-view="home">
   <ol class="flow" aria-label="How the benchmark works">
-    <li><b>1 · Pick a method</b><span>a baseline (DSRL, RLT, DiT) or your own policy</span></li>
+    <li><b>1 · Pick a method</b><span>a baseline (DSRL, DSRL + Robometer, RLT, DiT) or your own policy</span></li>
     <li><b>2 · Train on a real arm</b><span>your GPU learns; a robot cell runs 400 episodes of the task over the internet</span></li>
     <li><b>3 · Get scored</b><span>fixed test scenes, the same for everyone; results and videos go on the leaderboard</span></li>
   </ol>
@@ -323,8 +323,8 @@ table.rolls td.h { text-align: right }
   <details class="fold" id="howto"><summary><h2>How to use</h2><span class="muted small">set up once, then one command to train and one to evaluate</span></summary><div class="fold-body">
     <ol class="steps">
       <li><b>Set up once</b><pre>git clone https://github.com/LeeHakHo/armnet-rlt &amp;&amp; cd armnet-rlt
-scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging Face token, then installs the environments, creates the secrets, downloads the base model and builds the actor image.</p></li>
-      <li><b>Train on a cell</b><pre>CELL=&lt;cell-id&gt; scripts/run.sh &lt;method&gt;*</pre><p class="note">* Baselines: <code>rlt</code>, <code>dsrl</code>, <code>dit</code>. <code>--model &lt;checkpoint&gt;</code> starts from your own model.<br>Your own policy: copy <a href="https://github.com/LeeHakHo/armnet-rlt/tree/main/plugins/lerobot_policy_my_policy"><code>plugins/lerobot_policy_my_policy</code></a>, write the network in its <code>modeling_*.py</code>, then <code>scripts/run.sh dit --policy-type &lt;name&gt;</code>.</p></li>
+scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging Face token, then installs the environments, creates the secrets, downloads the base model and builds the actor image.<br>No GPU or public address: <code>BACKEND=modal scripts/setup.sh</code> runs the learner and policy server on <a href="https://modal.com">Modal</a>; the commands below stay the same.</p></li>
+      <li><b>Train on a cell</b><pre>CELL=&lt;cell-id&gt; scripts/run.sh &lt;method&gt;*</pre><p class="note">* Baselines: <code>rlt</code>, <code>dsrl</code>, <code>dit</code>. <code>--model &lt;checkpoint&gt;</code> starts from your own model.<br>Your own policy: copy <a href="https://github.com/LeeHakHo/armnet-rlt/tree/main/plugins/lerobot_policy_my_policy"><code>plugins/lerobot_policy_my_policy</code></a>, write the network in its <code>modeling_*.py</code>, then <code>scripts/run.sh dit --policy-type &lt;name&gt;</code>.<br>Your own RL algorithm: copy <a href="https://github.com/LeeHakHo/armnet-rlt/tree/main/plugins/rl_algorithm_example"><code>plugins/rl_algorithm_example</code></a> (on top of π0.5) or <a href="https://github.com/LeeHakHo/armnet-rlt/tree/main/plugins/rl_algorithm_from_scratch"><code>plugins/rl_algorithm_from_scratch</code></a> (from the cameras), write the actor and the update in its <code>algorithm.py</code>, run <code>scripts/setup.sh</code>, then <code>scripts/run.sh rl --algorithm &lt;name&gt;</code>.</p></li>
       <li><b>Evaluate on ID and OOD scenes</b><pre>CELL=&lt;cell-id&gt; scripts/eval.sh &lt;run-id&gt;</pre></li>
     </ol>
     <p class="cap">Needs a GPU, Docker for the actor image and an ngrok token (or your own TLS ingress). Options and the individual commands are in the <a href="https://github.com/LeeHakHo/armnet-rlt#readme">README</a>.</p>
@@ -433,7 +433,7 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
           <text x="520" y="414" text-anchor="middle" style="fill: var(--fg); font: 600 20px var(--display)">Yours!</text>
         </svg>
       </div>
-      <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen.<br>DiT starts from 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
+      <figcaption>Colored boxes are trained. RLT and DSRL start from the same π0.5 and leave it frozen; DSRL + Robometer adds a reward model tuned on the 39 demonstrations.<br>DiT starts from those 39 demonstrations. Yours runs on the same policy server and cell.</figcaption>
     </figure>
   </div></details>
 
@@ -476,13 +476,13 @@ scripts/setup.sh</pre><p class="note">Asks for an Armnet API key and a Hugging F
   <div class="view" data-view="leaderboard" hidden>
     <section>
       <h2>Leaderboard</h2>
-      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell from the same π0.5 base and is evaluated on the <a href="#/" data-goto="protocol">evaluation protocol</a> (30 ID + 30 OOD rollouts) after every 100 episodes. ID and OOD each use the method's best of the four checkpoints, summed over both cells (60 rollouts each); the small line under each number is that checkpoint. Ranked by ID + OOD.</p>
+      <p class="cap">push_green_button on two SO-101 cells (cell-01 and cell-03). Each method trains for 400 robot episodes per cell (the π0.5-based ones from the same base) and is evaluated on the <a href="#/" data-goto="protocol">evaluation protocol</a> (30 ID + 30 OOD rollouts) after every 100 episodes. ID and OOD each use the method's best of the four checkpoints, summed over both cells (60 rollouts each); the small line under each number is that checkpoint. Ranked by ID + OOD.</p>
       <label class="check"><input type="checkbox" id="lb-open"> Only methods with public code</label>
       <div class="tbl"><table class="lb" id="lb-full"></table></div>
       <p class="legend2"><b>ID</b> = test scenes like the ones the robot trained in. <b>OOD</b> = harder scenes: the busybox moved outside the training range, brighter or dimmer light and a tilted camera. Each number is how many of 60 test episodes pressed the button; higher is better.</p>
       <p class="cap">Tag tells entries of the same method apart (versions or settings); Date is the latest submission. Click a method for its per-cell curves and every evaluation.</p>
       <div id="lb-detail"></div>
-      <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. Iterative DiT and RLT are being re-run on this protocol; their earlier results are on the <a href="#/" data-goto="v1">overview</a>.</p>
+      <p class="cap">Data: <a href="data/leaderboard.json">leaderboard.json</a> · <a href="data/rollouts.json">rollouts.json</a>. The baselines ran once per method and cell; RLT's residual scale, exploration and trip penalty were tuned on earlier runs, the others use their defaults. Results from the first protocol are on the <a href="#/" data-goto="v1">overview</a>.</p>
     </section>
   </div>
 
