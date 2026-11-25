@@ -301,17 +301,11 @@ Environment or `.env`; the environment takes precedence.
 ## Troubleshooting
 
 - **Cell busy**: the script waits and logs every 10 minutes.
-- **A cell job fails**: `run.sh` resubmits it, 10 minutes after a job that ended within
-  5 minutes; it gives up after 20 such failures in a row (or 10 quick safety trips). Continue
-  with `scripts/run.sh <method> --resume <run-id>`.
-- **Connection drop** (tunnel, learner): the cell job stops and `run.sh` resubmits it;
-  episodes the learner already has are kept, duplicates are dropped.
-- **SSH drop**: run the scripts inside `tmux`. A cell job left by a killed script keeps the
-  cell; find it with `uv run --env-file .env armnet jobs list` and stop it with
+- **A run stops** (failed cell jobs, lost connection): continue it with
+  `scripts/run.sh <method> --resume <run-id>`.
+- **Script killed** (SSH drop; run inside `tmux`): its cell job keeps the cell. Find it with
+  `uv run --env-file .env armnet jobs list` and stop it with
   `uv run --env-file .env python -c "from armnet_client import OrchestratorClient; OrchestratorClient().stop_job('<job-id>')"`.
-- **Rotate the HF token**: `uv run --env-file .env armnet secret create "$RLT_HF_SECRET" <token>`
-  (Modal: `uv run --extra modal modal secret create --force huggingface-secret HF_TOKEN=<token>`)
-  and `HF_TOKEN` in `.env`.
 
 ## Time per run
 
