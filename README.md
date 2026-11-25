@@ -97,6 +97,8 @@ hf download AutoRLBench/robometer-4b-lora-busybox-demo39 --local-dir ckpt
   num_gpus=1 batch_size=4 server_url=127.0.0.1 server_port=8010
 ```
 
+`reward_models/robometer/` rebuilds this model from the demos.
+
 Then train with the reward plugin:
 
 ```bash

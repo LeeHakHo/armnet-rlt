@@ -1,0 +1,17 @@
+# The 39 teleoperated demos (AutoRLBench/busybox_push_green_button_426x240) as a tiled
+# Robometer dataset: top, front and wrist views in one 640x540 frame, 64 frames at 10 fps.
+dataset:
+  dataset_path: demo39-src
+  dataset_name: so101_busybox_demo39_lerobot_tiled
+output:
+  output_dir: demo39-tiled
+  max_trajectories: -1
+  max_frames: 64
+  use_video: true
+  fps: 10
+  target_width: 640
+  target_height: 540
+  num_workers: 8
+hub:
+  push_to_hub: true
+  hub_repo_id: so101_busybox_demo39_tiled
