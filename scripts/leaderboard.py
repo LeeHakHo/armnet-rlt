@@ -51,6 +51,30 @@ SEEDS = (1042, 2042, 3042)
 PER_SEED = {"id": 10, "ood": 10}
 # Conditions counted as OOD; ood-easy and ood-hard are the OOD levels of earlier submissions.
 OOD = ("ood", "ood-easy", "ood-hard")
+# Scene per cell: ID rail range (OOD: 0.05 below or above it), light, top-camera aim.
+ID_RAIL = {"cell-01": (0.55, 0.65), "cell-03": (0.65, 0.75)}
+LIGHT = {"id": (30,), "ood": (20, 40)}
+TOP_AIM = {"cell-01": {"top_pan": 0.405, "top_tilt": 0.175}, "cell-03": {"top_tilt": 0.1661}}
+OOD_TILT = 0.1358
+
+
+def scene_error(cell: str, cond: str, v: dict) -> str | None:
+    """Why an ID or OOD episode's scene is not the protocol's, or None."""
+    rail = (v.get("values") or {}).get("rail")
+    lo, hi = ID_RAIL[cell]
+    ranges = [(lo, hi)] if cond == "id" else [(lo - 0.05, lo), (hi, hi + 0.05)]
+    if rail is None or not any(a - 1e-3 <= float(rail) <= b + 1e-3 for a, b in ranges):
+        return f"rail {rail} outside {ranges}"
+    if v.get("brightness") is None or round(float(v["brightness"])) not in LIGHT[cond]:
+        return f"light {v.get('brightness')} not in {LIGHT[cond]}"
+    for key, want in TOP_AIM[cell].items():
+        if key == "top_tilt" and cond == "ood":
+            want += OOD_TILT
+        if v.get(key) is not None and abs(float(v[key]) - want) > 1e-3:
+            return f"{key} {v[key]} not {want:.4f}"
+    return None
+
+
 DATA = Path(os.environ.get("RLT_DATA_ROOT") or Path(__file__).resolve().parents[1] / "experiment-data")
 
 
@@ -165,6 +189,8 @@ def check(submission: dict) -> tuple[dict, list[dict]]:
                     raise ValueError(f"{repo} episode {i}: condition {cond!r}, seed {v.get('seed')!r}")
                 if r.get("cell_id") not in (None, "", submission["cell"]):
                     raise ValueError(f"{repo} episode {i} ran on {r.get('cell_id')}, not {submission['cell']}")
+                if cond in LIGHT and (err := scene_error(submission["cell"], cond, v)):
+                    raise ValueError(f"{repo} episode {i} ({cond}): {err}")
                 counts[cond][0] += bool(r.get("success"))
                 counts[cond][1] += 1
                 counts["trips"] += r.get("outcome") == "safety_trip"

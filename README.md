@@ -296,10 +296,7 @@ Environment or `.env`; the environment takes precedence.
 | `RECORD_REPO`, `RECORD`, `RECORD_PUBLIC` | `<HF user>/armnet`, `1`, `1` | Episode datasets `<RECORD_REPO>_<run-id>` (`eval.sh`: `_<label>`); `RECORD=0` off, `RECORD_PUBLIC=0` private |
 | `WANDB_PROJECT` | | Weights & Biases project for the learners |
 | `RLT_DATA_ROOT` | `./experiment-data` | Data root |
-| `RLT_CELL_CAMERA_AIM` | `cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175` | Top-camera aim per cell; empty keeps the cell's own |
-| `RLT_CELL_RAIL` | `cell-01=0.55,0.65` | ID rail range per cell (others 0.65-0.75); OOD ranges shift with it |
-| `EVAL_SEEDS`, `EVAL_ID_ROLLOUTS`, `EVAL_OOD_ROLLOUTS` | `1042 2042 3042`, `10`, `10` | Evaluation seeds and rollouts per seed |
-| `EVAL_LEVELS`, `EVAL_ONE_JOB`, `EVAL_LIGHT` | | `id` or `ood` only; `0` runs one job per condition; one light for every condition |
+| `EVAL_LEVELS`, `EVAL_ONE_JOB` | | `id` or `ood` only (not for the leaderboard); `0` runs one job per condition |
 | `CONFIG`, `TASK`, `PROMPT`, `DATASET` | `pi05_rlt_busybox_multitask_singlearm_minmax`, `push_green_button`, `push the green button`, `AutoRLBench/busybox_push_green_button_426x240` | OpenPI config, task, instruction, demo dataset |
 | `OPENPI_REPO`, `OPENPI_REVISION` | `https://github.com/pravsels/openpi` | OpenPI fork with the `pi0_rl` model |
 | `RLT_MODAL_GPU`, `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET`, `RLT_MODAL_HF_SECRET`, `RLT_MODAL_APP` | `L40S`, `armnet-rlt-data`, `armnet-rlt-rendezvous`, `armnet-rlt-auth`, `huggingface-secret`, `armnet-rlt` | Modal GPU type and resource names |

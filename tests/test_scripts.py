@@ -31,13 +31,18 @@ def test_leaderboard_preflight_accepts_the_protocol_run() -> None:
 def test_leaderboard_preflight_names_each_deviation() -> None:
     out = lib(
         "leaderboard_preflight 200 50",
-        **{**PROTOCOL, "CELL": "cell-02", "EVAL_SEEDS": "1042", "EVAL_LIGHT": "30", "RECORD_PUBLIC": "0"},
+        **{**PROTOCOL, "CELL": "cell-02", "EVAL_LEVELS": "id", "RECORD_PUBLIC": "0"},
     )
     assert out.returncode != 0
-    for text in ("--episodes 200", "--eval-every 50", "CELL 'cell-02'", "EVAL_SEEDS '1042'",
-                 "EVAL_LIGHT 30", "RECORD_PUBLIC=0"):
+    for text in ("--episodes 200", "--eval-every 50", "CELL 'cell-02'", "EVAL_LEVELS 'id'", "RECORD_PUBLIC=0"):
         assert text in out.stdout
-    assert "5 problems" not in out.stdout and "6 problems" in out.stdout
+    assert "5 problems" in out.stdout
+
+
+def test_protocol_ignores_the_environment() -> None:
+    out = lib('echo "$EVAL_SEEDS|$EVAL_ID_ROLLOUTS|$RLT_CELL_RAIL"', EVAL_SEEDS="1042", EVAL_ID_ROLLOUTS="3",
+              RLT_CELL_RAIL="cell-01=0.3,0.9")
+    assert "1042 2042 3042|10|cell-01=0.55,0.65" in out.stdout
     assert "RECORD_REPO unset" in lib("leaderboard_preflight 400 100", CELL="cell-01").stdout
     assert "RECORD 0" in lib("leaderboard_preflight 400 100", **PROTOCOL, RECORD="0").stdout
 
