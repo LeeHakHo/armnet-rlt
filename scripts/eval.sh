@@ -36,24 +36,28 @@ actor_common
 case "$TARGET" in /*) ;; *) [ -e "$CALLER_PWD/$TARGET" ] && TARGET=$CALLER_PWD/$TARGET ;; esac
 
 cleanup() {
-  local status=$?
+  local status=$? c
   kill "${EVAL_PIDS[@]}" 2>/dev/null || true
   [ -z "$EVAL_JOB_LOG" ] || stop_cell_job "$EVAL_JOB_LOG"
+  for c in "${EVAL_CALLS[@]}"; do modal_stop "$c"; done
   exit $status
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+[ "$BACKEND" != modal ] || modal_deploy
 
-if [ -f "$TARGET/config.json" ]; then
-  CKPT=$(cd "$TARGET" && pwd)
+# With modal a LeRobot checkpoint is a local directory (uploaded) or a path on the volume.
+if [ -f "$TARGET/config.json" ] || { [ "$BACKEND" = modal ] && data_exists "$TARGET/config.json"; }; then
+  CKPT=$TARGET; [ -d "$TARGET" ] && CKPT=$(cd "$TARGET" && pwd)
   # <run>/checkpoints/<step>/pretrained_model -> <run>-<step>
   LABEL=${LABEL:-$(basename "$(dirname "$(dirname "$(dirname "$CKPT")")")")-$(basename "$(dirname "$CKPT")")}
+  [ ! -d "$CKPT" ] || CKPT=$(data_dir "$CKPT" "$ROOT/checkpoints/eval/$LABEL/pretrained_model")
   eval_checkpoint lerobot "$CKPT" "$LABEL"
 else
   RUN=$(basename "$TARGET")
   RUN_DIR=$DATA/tasks/$CONFIG/rlt_checkpoints/$RUN
-  [ -d "$RUN_DIR" ] || die "no LeRobot checkpoint or rlt/dsrl/rl run at $TARGET (looked in $RUN_DIR)"
-  STEP=${STEP:-$(ls "$RUN_DIR" | grep -oE '^step_[0-9]+$' | sort -V | tail -1 | sed 's/step_0*//' || true)}
+  data_exists "$RUN_DIR" || die "no LeRobot checkpoint or rlt/dsrl/rl run at $TARGET (looked in $RUN_DIR)"
+  STEP=${STEP:-$(data_ls "$RUN_DIR" | grep -oE '^step_[0-9]+$' | sort -V | tail -1 | sed 's/step_0*//' || true)}
   [ -n "$STEP" ] || die "$RUN has no saved step"
   CKPT=$(freeze_rlt "$RUN" "$STEP") || die "could not freeze $RUN step $STEP"
   eval_checkpoint rlt "$CKPT" "${LABEL:-$RUN-$(printf step_%06d "$STEP")}" "$(resolve_model "$MODEL")"

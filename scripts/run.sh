@@ -96,15 +96,22 @@ else
   MARKS=$EPISODES
 fi
 PIDS=() SERVER_PID="" ACTOR_LOG="" SEEN_SERVERS=0
+# Modal: the learner and the training policy server run in one call.
+TRAIN_CALL=$LOGS/train.call
 cleanup() {
-  local status=$?
+  local status=$? c
   kill "${PIDS[@]}" "${EVAL_PIDS[@]}" $SERVER_PID 2>/dev/null || true
   [ -z "$ACTOR_LOG" ] || stop_cell_job "$ACTOR_LOG"
   [ -z "$EVAL_JOB_LOG" ] || stop_cell_job "$EVAL_JOB_LOG"
+  if [ "$BACKEND" = modal ]; then
+    for c in "$TRAIN_CALL" "${EVAL_CALLS[@]}"; do modal_stop "$c"; done
+    data_pull "$LOGS/learner.log"; data_pull "$LOGS/policy-server.log"
+  fi
   exit $status
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+[ "$BACKEND" != modal ] || modal_deploy
 
 if [ "$METHOD" = dit ]; then
   BIN=$LEROBOT_BIN
@@ -114,25 +121,25 @@ if [ "$METHOD" = dit ]; then
   else
     PRE_DIR=$DATA/dit/demo-$POLICY_TYPE-s300
     POLICY=$PRE_DIR/checkpoints/000300/pretrained_model
-    if [ ! -f "$POLICY/config.json" ]; then
+    if ! data_exists "$POLICY/config.json"; then
       log "training a $POLICY_TYPE on $DATASET for 300 steps -> $PRE_DIR"
       EXTRA=(); [ "$POLICY_TYPE" = multi_task_dit ] && EXTRA=(--policy.image_resize_shape='[240, 240]')
-      env ${GPU:+CUDA_VISIBLE_DEVICES=$GPU} $BIN/lerobot-train --dataset.repo_id="$DATASET" \
+      run_cmd lerobot "$LOGS/pretrain.log" $BIN/lerobot-train --dataset.repo_id="$DATASET" \
         --policy.type="$POLICY_TYPE" --policy.device=cuda --policy.push_to_hub=false "${EXTRA[@]}" \
         --output_dir="$PRE_DIR" --job_name="demo-$POLICY_TYPE" --steps=300 --batch_size=32 \
-        --num_workers=8 --save_freq=300 --eval_freq=0 --wandb.enable=false > "$LOGS/pretrain.log" 2>&1
+        --num_workers=8 --save_freq=300 --eval_freq=0 --wandb.enable=false
     fi
   fi
   log "dit run $RUN from $POLICY"
   SERVER=($BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
     --checkpoint "$POLICY" $STEERING $POLICY_TUNNEL)
   # run.sh stops the learner after the last evaluation; the step cap is never reached.
-  $BIN/rlt-local lerobot-streaming-bc $GPU_ARG --run-id "$RUN" --policy-path "$POLICY" \
-    --base-dataset "$DATASET" --base-batch-fraction 0.5 --min-shaped-reward 1.0 \
-    --episodes-per-round $ROUND --steps-per-round 300 --online-steps 1000000000 \
-    --idle-timeout-s 86400 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS > "$LOGS/learner.log" 2>&1 &
-  LEARNER=$!; PIDS+=($LEARNER)
-  wait_for $LEARNER "$LOGS/learner.log" "\[lerobot sbc\] serving" learner
+  LEARNER_CMD=($BIN/rlt-local lerobot-streaming-bc $GPU_ARG --run-id "$RUN" --policy-path "$POLICY"
+    --base-dataset "$DATASET" --base-batch-fraction 0.5 --min-shaped-reward 1.0
+    --episodes-per-round $ROUND --steps-per-round 300 --online-steps 1000000000
+    --idle-timeout-s 86400 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS)
+  LEARNER_READY="\[lerobot sbc\] serving" IMAGE=lerobot
+  : > "$LOGS/learner.log"
   SUBMIT=(--policy-type lerobot --config-name eval --learner-key "eval:$RUN" --exploration-scale 0
     --episodes-per-round $ROUND --steps-per-round 300 --round-wait-timeout-s 2400)
   OUT=$DATA/lerobot-sbc/$RUN
@@ -143,7 +150,7 @@ else
   if [ "$METHOD" = rlt ]; then
     ALGORITHM=rlt
     ALGO=(--algorithm rlt --residual-actor --residual-scale 0.1 --critic-action-residual)
-    [ -f "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" ] \
+    data_exists "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" \
       || { log "no demo cache: RLT starts without demo pretraining"; ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0); }
     ACTOR_ALGO=(--algorithm rlt)
   elif [ "$METHOD" = dsrl ]; then
@@ -153,7 +160,7 @@ else
   else
     # A plugin without demonstrations gets --pretrain-steps 0 from its class.
     ALGO=(--algorithm "$ALGORITHM")
-    [ -f "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" ] || ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0)
+    data_exists "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" || ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0)
     ACTOR_ALGO=(--algorithm "$ALGORITHM")
   fi
   log "$METHOD run $RUN ($ALGORITHM) on base $BASE"
@@ -161,22 +168,35 @@ else
   SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$BASE"
     --prompt "$PROMPT" --algorithm "$ALGORITHM" $STEERING $POLICY_TUNNEL)
   EVERY=$([ "$EVAL_EVERY" -gt 0 ] && echo "$EVAL_EVERY" || echo "$EPISODES")
-  $LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" $RESUME \
-    "${ALGO[@]}" --safety-trip-penalty "$PENALTY" --online-steps "$STEPS" --save-freq 10000 \
-    --max-episodes "$EPISODES" --checkpoint-every-episodes "$EVERY" \
-    ${REWARD_PLUGIN:+--reward-plugin $REWARD_PLUGIN} \
-    --idle-timeout-s 0 --push-interval-s 5 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS \
-    >> "$LOGS/learner.log" 2>&1 &
-  LEARNER=$!; PIDS+=($LEARNER)
-  wait_for $LEARNER "$LOGS/learner.log" "rendezvous" learner
+  LEARNER_CMD=($LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" $RESUME
+    "${ALGO[@]}" --safety-trip-penalty "$PENALTY" --online-steps "$STEPS" --save-freq 10000
+    --max-episodes "$EPISODES" --checkpoint-every-episodes "$EVERY"
+    ${REWARD_PLUGIN:+--reward-plugin $REWARD_PLUGIN}
+    --idle-timeout-s 0 --push-interval-s 5 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS)
+  LEARNER_READY="rendezvous" IMAGE=rl
   SUBMIT=(--config-name "$CONFIG" --checkpoint-dir "$CELL_CHECKPOINT" --learner-key "$CONFIG:$RUN"
     --exploration-scale "$STD" --scene-retry-delay 3 --scene-retry-limit 1 "${ACTOR_ALGO[@]}")
   [ -z "$REWARD_PLUGIN" ] || SUBMIT+=(--episode-frames)
   OUT=$DATA/tasks/$CONFIG/rlt_checkpoints/$RUN
 fi
+if [ "$BACKEND" = modal ]; then
+  # Learner and training policy server in one container; the server stays up during the
+  # evaluations, which get their own container.
+  rm -f "$LOGS/modal-train.jsonl"
+  modal_proc "$LOGS/modal-train.jsonl" learner "$LOGS/learner.log" "${LEARNER_CMD[@]}"
+  modal_proc "$LOGS/modal-train.jsonl" policy-server "$LOGS/policy-server.log" "${SERVER[@]}"
+else
+  "${LEARNER_CMD[@]}" >> "$LOGS/learner.log" 2>&1 &
+  LEARNER=$!; PIDS+=($LEARNER)
+  wait_for $LEARNER "$LOGS/learner.log" "$LEARNER_READY" learner
+fi
 
 # The training policy server; it is stopped while an evaluation serves its checkpoint.
 start_server() {
+  if [ "$BACKEND" = modal ]; then
+    [ -f "$TRAIN_CALL" ] || modal_start "$IMAGE" "$LOGS/modal-train.jsonl" "$TRAIN_CALL"
+    return
+  fi
   "${SERVER[@]}" >> "$LOGS/policy-server.log" 2>&1 &
   SERVER_PID=$!
   until [ "$(grep -c "policy server" "$LOGS/policy-server.log" || true)" -gt "$SEEN_SERVERS" ]; do
@@ -185,9 +205,17 @@ start_server() {
   done
   SEEN_SERVERS=$(grep -c "policy server" "$LOGS/policy-server.log" || true)
 }
-stop_server() { kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; SERVER_PID=""; }
-episodes_done() { if [ -f "$OUT/rollout_metrics.jsonl" ]; then wc -l < "$OUT/rollout_metrics.jsonl"; else echo 0; fi; }
-learner_alive() { kill -0 "$LEARNER" 2>/dev/null; }
+stop_server() {
+  [ "$BACKEND" != modal ] || return 0
+  kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; SERVER_PID=""
+}
+episodes_done() {
+  data_pull "$OUT/rollout_metrics.jsonl"
+  if [ -f "$OUT/rollout_metrics.jsonl" ]; then wc -l < "$OUT/rollout_metrics.jsonl"; else echo 0; fi
+}
+learner_alive() {
+  if [ "$BACKEND" = modal ]; then modal_cli alive "$TRAIN_CALL" 2>/dev/null; else kill -0 "$LEARNER" 2>/dev/null; fi
+}
 
 # Prints the learner's checkpoint after <mark> training episodes, once it is saved.
 checkpoint_at() {  # <mark>
@@ -195,7 +223,7 @@ checkpoint_at() {  # <mark>
     # The round that ends at <mark> episodes; after its 300 steps the learner logs
     # "0 steps queued ... saved <dir>". A round without successes trains nothing.
     local dir
-    until dir=$(python3 - "$LOGS/learner.log" "$(($1 / ROUND))" <<'PY'
+    until data_pull "$LOGS/learner.log"; dir=$(python3 - "$LOGS/learner.log" "$(($1 / ROUND))" <<'PY'
 import re, sys
 lines = open(sys.argv[1]).read().splitlines()
 mark = next((i for i, l in enumerate(lines) if re.match(rf"\[lerobot sbc\] round {sys.argv[2]}:", l)), None)
@@ -213,12 +241,15 @@ PY
       sleep 10
     done
     # No successes yet: the newest checkpoint, or the starting policy.
-    [ "$dir" = newest ] && dir=$(ls -d "$OUT"/checkpoints/[0-9]* 2>/dev/null | sort -V | tail -1 || true)
+    if [ "$dir" = newest ]; then
+      dir=$(data_ls "$OUT/checkpoints" | grep -E '^[0-9]+$' | sort -V | tail -1 || true)
+      dir=${dir:+$OUT/checkpoints/$dir}
+    fi
     dir=${dir%/}; dir=${dir:-$POLICY}
     case "$dir" in */pretrained_model) echo "$dir" ;; *) echo "$dir/pretrained_model" ;; esac
   else
     local step
-    until step=$(python3 -c '
+    until data_pull "$OUT/episode_checkpoints.jsonl"; step=$(python3 -c '
 import json, sys
 for l in open(sys.argv[1]):
     r = json.loads(l)
@@ -290,7 +321,7 @@ for MARK in $MARKS; do
 done
 stop_server
 if [ "$METHOD" = dit ]; then
-  kill "$LEARNER" 2>/dev/null || true
+  if [ "$BACKEND" = modal ]; then modal_stop "$TRAIN_CALL"; else kill "$LEARNER" 2>/dev/null || true; fi
 else
   # The online learner stops by itself after its last episode checkpoint.
   for _ in $(seq 60); do learner_alive || break; sleep 10; done
@@ -303,6 +334,6 @@ for MARK in $MARKS; do
   fi
 done
 if [ -n "$BOARD_NAME" ]; then
-  $LEARNER_BIN/python scripts/leaderboard.py submit --name "$BOARD_NAME" --tag "$BOARD_TAG" --run "$RUN" --cell "$CELL" \
+  "${HOSTPY[@]}" scripts/leaderboard.py submit --name "$BOARD_NAME" --tag "$BOARD_TAG" --run "$RUN" --cell "$CELL" \
     --code "$BOARD_CODE" --notes "$BOARD_NOTES" || die "leaderboard submission failed"
 fi

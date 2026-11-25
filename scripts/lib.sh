@@ -6,6 +6,8 @@
 #   GPU               GPU index for the learner and policy server (unset: visible GPU)
 #   RLT_AUTH_SECRET   Armnet secret with RLT_LEARNER_AUTH_TOKEN (default armnet-rlt-auth)
 #   RLT_HF_SECRET     Armnet secret with HF_TOKEN (default huggingface-token)
+#   BACKEND           local (default: this machine's GPU, ngrok or PUBLIC_HOST) or modal
+#                     (learner and policy server on Modal, src/armnet_rlt/modal_app.py)
 #   PUBLIC_HOST       your own TLS ingress instead of ngrok; then also TLS_CERT, TLS_KEY,
 #                     PUBLIC_LEARNER_PORT (443) and PUBLIC_POLICY_PORT (8443)
 #   LEARNER_PORT, POLICY_PORT   local ports (50051, 50052)
@@ -67,8 +69,24 @@ log() { echo "[$(basename "$0" .sh) $(date -u +%H:%M:%S)] $*"; }
 die() { log "$*"; exit 1; }
 py() { "${UVRUN[@]}" python - "$@"; }
 
+BACKEND=${BACKEND:-local}
+case "$BACKEND" in local|modal) ;; *) die "BACKEND must be local or modal, not $BACKEND" ;; esac
+# Python and hf on this machine: envs/venv-learner, or the uv env with the modal extra.
+HOSTPY=($LEARNER_BIN/python) HF=($LEARNER_BIN/hf)
+if [ "$BACKEND" = modal ]; then
+  export RLT_BACKEND=modal
+  UVRUN+=(--extra modal)
+  HOSTPY=("${UVRUN[@]}" python) HF=("${UVRUN[@]}" hf)
+  GPU_ARG=""
+fi
+
 # Tunnel flags for the learner (cell -> learner) and the policy server (cell -> policy).
-if [ -n "${PUBLIC_HOST:-}" ]; then
+if [ "$BACKEND" = modal ]; then
+  # The container replaces "modal" with its Modal TLS tunnel to the port.
+  LEARNER_TUNNEL="--tunnel none --public-endpoint modal --port $LEARNER_PORT --public-endpoint-tls --bind-host 0.0.0.0"
+  POLICY_TUNNEL="--tunnel none --public-endpoint modal --port $POLICY_PORT --public-endpoint-tls --bind-host 0.0.0.0"
+  STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT"
+elif [ -n "${PUBLIC_HOST:-}" ]; then
   : "${TLS_CERT:?PUBLIC_HOST needs TLS_CERT}" "${TLS_KEY:?PUBLIC_HOST needs TLS_KEY}"
   LEARNER_TUNNEL="--tunnel none --public-endpoint $PUBLIC_HOST:${PUBLIC_LEARNER_PORT:-443} --port $LEARNER_PORT --tls-cert $TLS_CERT --tls-key $TLS_KEY"
   POLICY_TUNNEL="--tunnel none --public-endpoint $PUBLIC_HOST:${PUBLIC_POLICY_PORT:-8443} --port $POLICY_PORT --tls-cert $TLS_CERT --tls-key $TLS_KEY"
@@ -78,6 +96,52 @@ else
   POLICY_TUNNEL="--tunnel ngrok --port $POLICY_PORT"
   STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT"
 fi
+
+# Modal: python -m armnet_rlt.modal_backend (see there).
+modal_cli() { "${UVRUN[@]}" python -m armnet_rlt.modal_backend "$@"; }
+modal_deploy() {
+  log "deploying the Modal app (the first build takes a while)"
+  "${UVRUN[@]}" modal deploy -m armnet_rlt.modal_app >&2 || die "modal deploy failed"
+}
+# Appends a process to a spec file for modal_start.
+modal_proc() {  # <spec file> <name> <log> <argv...>
+  local f=$1; shift
+  python3 -c 'import json, sys; print(json.dumps({"name": sys.argv[1], "log": sys.argv[2], "argv": sys.argv[3:]}))' "$@" >> "$f"
+}
+# Spawns the processes of a spec file in one Modal GPU container and waits until their
+# endpoints are in the Modal Dict; the call id goes to <call file>.
+modal_start() {  # <rl|lerobot> <spec file> <call file>
+  modal_cli start --image "$1" --specs "$2" --call-file "$3" || die "Modal call failed; logs: $(dirname "$2")"
+}
+modal_stop() { [ -f "$1" ] && modal_cli stop "$1" || true; }
+
+# Data files. Local: plain file tests. Modal: the paths name their copy on the volume
+# (RLT_DATA_ROOT is its root, checkpoints/ its checkpoints/); data_pull copies a file
+# down to its local path, data_push up.
+data_exists() { if [ "$BACKEND" = modal ]; then modal_cli exists "$1"; else [ -e "$1" ]; fi; }
+data_ls() { if [ "$BACKEND" = modal ]; then modal_cli ls "$1"; else ls "$1" 2>/dev/null || true; fi; }
+data_pull() { [ "$BACKEND" != modal ] || modal_cli get "$1" 2>/dev/null || true; }
+data_push() { [ "$BACKEND" != modal ] || modal_cli put "$1"; }
+# Modal: a local directory as a volume path, uploaded to <target> unless the volume has it.
+data_dir() {  # <local dir> <target>
+  if [ "$BACKEND" != modal ]; then echo "$1"; return; fi
+  local dir=$1
+  case "$dir" in "$DATA"/*|"$ROOT"/checkpoints/*|/data/*) ;; *) dir=$2 ;; esac
+  if ! data_exists "$dir"; then
+    log "uploading $1 to the Modal volume" >&2
+    modal_cli put-dir "$1" "$dir" >&2 || die "could not upload $1"
+  fi
+  echo "$dir"
+}
+# Runs one command to completion: on this machine, or in a Modal container.
+run_cmd() {  # <rl|lerobot> <log> <argv...>
+  local image=$1 log=$2; shift 2
+  if [ "$BACKEND" = modal ]; then
+    modal_cli run --image "$image" --log "$log" -- "$@"
+  else
+    env ${GPU:+CUDA_VISIBLE_DEVICES=$GPU} "$@" > "$log" 2>&1
+  fi
+}
 
 # Common actor flags in ACTOR: rail 0.7, light 30, 30 s episodes, no recording, policy on
 # your GPU.
@@ -172,10 +236,14 @@ wait_for() {  # <pid> <log> <pattern> <name>
 resolve_model() {
   local m=${1:-$BASE_REPO}
   case "$m" in /*) ;; *) [ -d "$CALLER_PWD/$m" ] && m=$CALLER_PWD/$m ;; esac
-  if [ -d "$m" ]; then (cd "$m" && pwd); return; fi
+  if [ -d "$m" ]; then m=$(cd "$m" && pwd); data_dir "$m" "$ROOT/checkpoints/$(basename "$m")"; return; fi
   local dir=$ROOT/checkpoints/$(basename "$m")
   [ "$m" = "$BASE_REPO" ] && dir=$BASE_DIR
-  if [ ! -d "$dir" ]; then
+  if [ "$BACKEND" = modal ]; then
+    data_exists "$dir" || run_cmd rl "$DATA/logs/download-$(basename "$m").log" \
+      $LEARNER_BIN/hf download "$m" --local-dir "$dir" >&2 \
+      || die "could not download $m on Modal; remove a partial copy with: uv run --extra modal modal volume rm -r ${RLT_MODAL_VOLUME:-armnet-rlt-data} checkpoints/$(basename "$dir")"
+  elif [ ! -d "$dir" ]; then
     $LEARNER_BIN/hf download "$m" --local-dir "$dir" >&2 || { rm -rf "$dir"; die "could not download $m"; }
   fi
   echo "$dir"
@@ -211,16 +279,20 @@ leaderboard_preflight() {  # <episodes> <eval every>
   for b in "${bad[@]}"; do log "--leaderboard: $b"; done
   die "--leaderboard: the run does not follow the protocol (${#bad[@]} problems above)"
 }
-EVAL_PIDS=()
+EVAL_PIDS=() EVAL_CALLS=()
 EVAL_JOB_LOG=""
 
 # Freezes step STEP of an rlt/dsrl/rl run, uploads it, and prints its volume path; the
 # local copy is at experiment-data/tasks/<config>/frozen/<run>/step_<STEP>.pt.
+# With modal the learner checkpoint is copied down first and the frozen actor back up.
 freeze_rlt() {  # <run> <step>
   local dir; dir=$(printf step_%06d "$2")
+  local frozen=$DATA/tasks/$CONFIG/frozen/$1/$dir.pt
+  data_pull "$DATA/tasks/$CONFIG/rlt_checkpoints/$1/$dir/checkpoint.pt"
   "${UVRUN[@]}" rlt-freeze-checkpoint --config-name "$CONFIG" --run-id "$1" --step "$2" \
-    --output "$DATA/tasks/$CONFIG/frozen/$1/$dir.pt" \
+    --output "$frozen" \
     --armnet-volume-path "rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt" --overwrite >&2 \
+    && data_push "$frozen" >&2 \
     && echo "volume://rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt"
 }
 
@@ -267,12 +339,15 @@ ood_rails() {
 #     server loads its local copy (--actor-checkpoint) on the π0.5 <base>.
 # Results: experiment-data/eval/<label>/results.jsonl, one row per condition and seed; a group
 # whose conditions are all there is skipped. Uses POLICY_PORT and, without a learner key,
-# LEARNER_PORT.
+# LEARNER_PORT. With modal the server runs in its own container under the policy key
+# <RLT_POLICY_INSTANCE>-eval, next to a run's training server; a lerobot checkpoint without
+# a learner key gets a container per job, with its checkpoint-eval learner.
 eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
-  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server ps key ev group n conds
-  local id=$EVAL_ID_ROLLOUTS ood=$EVAL_OOD_ROLLOUTS
+  local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server ps="" key ev group n conds
+  local id=$EVAL_ID_ROLLOUTS ood=$EVAL_OOD_ROLLOUTS image=rl instance=$RLT_POLICY_INSTANCE
   mkdir -p "$out"
   if [ "$kind" = lerobot ]; then
+    image=lerobot
     server=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
       --checkpoint "$ckpt" $POLICY_TUNNEL)
     [ -z "$extra" ] && server+=($STEERING)
@@ -284,9 +359,19 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     server=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$extra"
       --prompt "$PROMPT" --actor-checkpoint "$frozen" $POLICY_TUNNEL)
   fi
-  "${server[@]}" > "$out/policy-server.log" 2>&1 &
-  ps=$!; EVAL_PIDS+=($ps)
-  wait_for $ps "$out/policy-server.log" "policy server" "eval policy server"
+  if [ "$BACKEND" = modal ]; then
+    instance=$RLT_POLICY_INSTANCE-eval
+    if [ "$kind" != lerobot ] || [ -n "$extra" ]; then
+      rm -f "$out/modal-server.jsonl"
+      modal_proc "$out/modal-server.jsonl" policy-server "$out/policy-server.log" "${server[@]}"
+      EVAL_CALLS+=("$out/policy-server.call")
+      RLT_POLICY_INSTANCE=$instance modal_start "$image" "$out/modal-server.jsonl" "$out/policy-server.call"
+    fi
+  else
+    "${server[@]}" > "$out/policy-server.log" 2>&1 &
+    ps=$!; EVAL_PIDS+=($ps)
+    wait_for $ps "$out/policy-server.log" "policy server" "eval policy server"
+  fi
   log "evaluating $ckpt on ${CELL:-any cell} -> $out"
   # ID top aim of the cell from RLT_CELL_CAMERA_AIM; OOD tilt is 0.1358 above it.
   local id_tilt
@@ -345,22 +430,30 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       record_args "${label}_${group}_${done}"
       seeded+=("${RECORD_ARGS[@]}")
       if [ "$kind" = lerobot ] && [ -n "$extra" ]; then
-        "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
+        RLT_POLICY_INSTANCE=$instance "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "$extra" --num-rollouts "$((n - done))" \
           --exploration-scale 0 --eval-only > "$EVAL_JOB_LOG" 2>&1 || true
       elif [ "$kind" = lerobot ]; then
         key=$label-$group-$(date +%s)
-        $LEROBOT_BIN/rlt-local checkpoint-eval $GPU_ARG --config-name eval --run-id "$key" \
-          --checkpoint "$ckpt" --rollouts-per-checkpoint "$((n - done))" $LEARNER_TUNNEL \
-          > "$out/$group/learner.log" 2>&1 &
-        ev=$!; EVAL_PIDS+=($ev)
-        wait_for $ev "$out/$group/learner.log" "\[ckpt eval\] serving" checkpoint-eval
-        "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
+        local learner=($LEROBOT_BIN/rlt-local checkpoint-eval $GPU_ARG --config-name eval --run-id "$key"
+          --checkpoint "$ckpt" --rollouts-per-checkpoint "$((n - done))" $LEARNER_TUNNEL)
+        if [ "$BACKEND" = modal ]; then
+          rm -f "$out/$group/modal.jsonl"
+          modal_proc "$out/$group/modal.jsonl" checkpoint-eval "$out/$group/learner.log" "${learner[@]}"
+          modal_proc "$out/$group/modal.jsonl" policy-server "$out/policy-server.log" "${server[@]}"
+          EVAL_CALLS+=("$out/$group/eval.call")
+          RLT_POLICY_INSTANCE=$instance modal_start lerobot "$out/$group/modal.jsonl" "$out/$group/eval.call"
+        else
+          "${learner[@]}" > "$out/$group/learner.log" 2>&1 &
+          ev=$!; EVAL_PIDS+=($ev)
+          wait_for $ev "$out/$group/learner.log" "\[ckpt eval\] serving" checkpoint-eval
+        fi
+        RLT_POLICY_INSTANCE=$instance "${UVRUN[@]}" rlt-submit-actor "${ACTOR[@]}" "${seeded[@]}" --policy-type lerobot \
           --config-name eval --learner-key "eval:$key" --num-rollouts "$((n - done + 2))" \
           --exploration-scale 0 > "$EVAL_JOB_LOG" 2>&1 || true
-        kill $ev 2>/dev/null || true
+        if [ "$BACKEND" = modal ]; then modal_stop "$out/$group/eval.call"; else kill $ev 2>/dev/null || true; fi
       else
-        "${UVRUN[@]}" rlt-submit-eval "${ACTOR[@]}" "${seeded[@]}" --config-name "$CONFIG" \
+        RLT_POLICY_INSTANCE=$instance "${UVRUN[@]}" rlt-submit-eval "${ACTOR[@]}" "${seeded[@]}" --config-name "$CONFIG" \
           --checkpoint-dir "$CELL_CHECKPOINT" --frozen-rlt-checkpoint "$ckpt" \
           --num-rollouts "$((n - done))" --no-include-base > "$EVAL_JOB_LOG" 2>&1 || true
       fi
@@ -375,8 +468,13 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       log "$c seed $seed: $succ/$rollouts ($trips trips)"
     done
   done
-  kill $ps 2>/dev/null || true
-  wait $ps 2>/dev/null || true
+  if [ "$BACKEND" = modal ]; then
+    modal_stop "$out/policy-server.call"
+    data_pull "$out/policy-server.log"
+  else
+    kill $ps 2>/dev/null || true
+    wait $ps 2>/dev/null || true
+  fi
   eval_summary "$out"
 }
 
