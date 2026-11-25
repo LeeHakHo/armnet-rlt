@@ -7,8 +7,8 @@
 # 4. the base π0.5 checkpoint (default AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k),
 #    its normalization stats and the RLT demo cache (needs a GPU; --skip-cache skips it)
 # 5. the actor image, written to .env as IMAGE_REF (needs Docker; --skip-image skips it)
-# BACKEND=modal: no envs/; checks `modal setup`, creates the two Modal secrets, deploys
-# src/armnet_rlt/modal_app.py and runs step 4 on Modal.
+# BACKEND=modal: writes it to .env, builds no envs/, checks `modal setup`, creates the two
+# Modal secrets, deploys src/armnet_rlt/modal_app.py and runs step 4 on Modal.
 set -euo pipefail
 MODEL="" SKIP_IMAGE="" SKIP_CACHE=""
 while [ $# -gt 0 ]; do
@@ -46,6 +46,7 @@ ask ARMNET_API_KEY "Armnet API key"
 ask HF_TOKEN "Hugging Face token (write access to your namespace, pull requests on AutoRLBench/armnet-leaderboard)"
 grep -q "^RLT_HF_SECRET=" .env || set_env RLT_HF_SECRET "$RLT_HF_SECRET"
 grep -q "^RLT_AUTH_SECRET=" .env || set_env RLT_AUTH_SECRET "$RLT_AUTH_SECRET"
+[ "$BACKEND" != modal ] || set_env BACKEND modal
 
 log "2/5 environments"
 if [ "$BACKEND" = modal ]; then
