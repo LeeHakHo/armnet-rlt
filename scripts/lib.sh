@@ -40,10 +40,8 @@ if [ -f .env ]; then
 fi
 # '' keeps each cell's own aim.
 export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175"}
-# At the same rail value cell-01's arm sits about 0.1 further along the busybox than cell-03's.
 export RLT_CELL_RAIL=${RLT_CELL_RAIL-"cell-01=0.55,0.65"}
-# Policy servers register under the config name plus this key, so runs on different ports
-# keep to their own server.
+# Policy server registration key, per port.
 export RLT_POLICY_INSTANCE=${RLT_POLICY_INSTANCE:-${POLICY_PORT:-50052}}
 UVRUN=(uv run --quiet)
 [ -f .env ] && UVRUN+=(--env-file .env)
@@ -63,7 +61,7 @@ POLICY_PORT=${POLICY_PORT:-50052}
 WANDB_ARG=${WANDB_PROJECT:+--wandb-project $WANDB_PROJECT}
 BASE_REPO=AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k
 BASE_DIR=$ROOT/checkpoints/pi05_rltoken5k
-# Checkpoint path passed to the cell; unused while the policy runs on your GPU.
+# Checkpoint path passed to the cell (unused with --remote-policy).
 CELL_CHECKPOINT=${CELL_CHECKPOINT:-volume://openpi/checkpoints/pi05_rltoken}
 LEARNER_BIN=envs/venv-learner/bin
 OPENPI_BIN=envs/venv-openpi/bin
@@ -84,9 +82,8 @@ if [ "$BACKEND" = modal ]; then
   GPU_ARG=""
 fi
 
-# The cell reaches the learner and the policy server at one address: the front
-# (rlt-local front) on FRONT_PORT. LEARNER_TUNNEL and POLICY_TUNNEL register that address;
-# with ngrok and tailscale front_start sets them.
+# One public address for the learner and the policy server: rlt-local front on FRONT_PORT.
+# LEARNER_TUNNEL and POLICY_TUNNEL register it; front_start sets them for ngrok and tailscale.
 FRONT_PORT=${FRONT_PORT:-50050}
 PUBLIC_PORT=${PUBLIC_PORT:-443}
 TUNNEL=${TUNNEL:-ngrok}
@@ -182,9 +179,8 @@ modal_proc() {  # <spec file> <name> <log> <argv...>
   local f=$1; shift
   python3 -c 'import json, sys; print(json.dumps({"name": sys.argv[1], "log": sys.argv[2], "argv": sys.argv[3:]}))' "$@" >> "$f"
 }
-# Spawns the processes of a spec file in one Modal GPU container and waits until their
-# endpoints are in the Modal Dict; the call id goes to <call file>.
-# The container's front goes first.
+# Spawns the front and the processes of a spec file in one Modal GPU container, waits for
+# their endpoints, and writes the call id to <call file>.
 modal_start() {  # <rl|lerobot> <spec file> <call file>
   local specs=$2.front bin=$LEARNER_BIN
   [ "$1" = lerobot ] && bin=$LEROBOT_BIN
@@ -289,9 +285,8 @@ wait_cell() {
   done
 }
 
-# Stops the cell job a submit log reports, if it is still queued or running, and waits up
-# to 15 minutes for it to end (it uploads its recording last; the next job of the run
-# appends to the same dataset).
+# Stops the cell job a submit log reports if it is still active; waits up to 15 minutes
+# for it to end.
 stop_cell_job() {
   local id
   id=$(grep -oE "job [0-9a-f-]{36} dispatched|job queued: [0-9a-f-]{36}" "$1" 2>/dev/null | tail -1 | grep -oE "[0-9a-f-]{36}" || true)
@@ -441,7 +436,7 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       --checkpoint "$ckpt" $POLICY_TUNNEL)
     [ -z "$extra" ] && server+=($STEERING)
   else
-    # volume://rlt/frozen/<config>/<run>/<step>/frozen_actor.pt -> the copy freeze_rlt kept.
+    # volume://rlt/frozen/<config>/<run>/<step>/frozen_actor.pt -> local copy from freeze_rlt.
     local frozen=${ckpt#volume://rlt/frozen/$CONFIG/}
     frozen=$DATA/tasks/$CONFIG/frozen/${frozen%/frozen_actor.pt}.pt
     [ -f "$frozen" ] || die "no local copy of $ckpt at $frozen"
@@ -512,7 +507,6 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       jobs=$((jobs + 1))
       EVAL_JOB_LOG=$out/$group/job$(date +%s).log
       wait_cell
-      # Schedule entries set their own scene seeds; this one is the job default.
       local first=${EVAL_SEEDS%% *}
       local seeded=(--armnet.variation-seed "$first" --armnet.variation-episode-offset "$done"
         --action-noise-seed "$first" --timeout-seconds 7200 "${group_args[@]}")

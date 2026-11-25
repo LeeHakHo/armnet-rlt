@@ -16,7 +16,7 @@ while [ $# -gt 0 ]; do
     --model) MODEL=$2; shift 2 ;;
     --skip-image) SKIP_IMAGE=1; shift ;;
     --skip-cache) SKIP_CACHE=1; shift ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
