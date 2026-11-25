@@ -21,10 +21,6 @@
 #                     label per episode (meta/armnet_rollouts.jsonl); a run's episodes are
 #                     recorded to one LeRobot dataset <prefix>_<run> (eval.sh: <prefix>_<label>),
 #                     public unless RECORD_PUBLIC=0; RECORD=0 turns recording off
-#   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661; cell-01 pan
-#                     0.405, tilt 0.175; both give the same top view of the busybox)
-#   RLT_CELL_RAIL     ID rail range per cell, <cell>=LOW,HIGH[;...] (default: cell-01
-#                     0.55,0.65; other cells 0.65-0.75); the OOD rail ranges shift with it
 
 CALLER_PWD=$PWD
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,8 +35,9 @@ if [ -f .env ]; then
   done < .env
 fi
 # '' keeps each cell's own aim.
-export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175"}
-export RLT_CELL_RAIL=${RLT_CELL_RAIL-"cell-01=0.55,0.65"}
+# Protocol per cell (fixed): top-camera aim, and the ID rail range where it is not 0.65-0.75.
+export RLT_CELL_CAMERA_AIM="cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175"
+export RLT_CELL_RAIL="cell-01=0.55,0.65"
 # Policy server registration key, per port.
 export RLT_POLICY_INSTANCE=${RLT_POLICY_INSTANCE:-${POLICY_PORT:-50052}}
 UVRUN=(uv run --quiet)
@@ -333,17 +330,14 @@ resolve_model() {
   echo "$dir"
 }
 
-# Evaluation protocol, per scene seed in EVAL_SEEDS (1042 2042 3042): EVAL_ID_ROLLOUTS (10)
-# ID and EVAL_OOD_ROLLOUTS (10) OOD rollouts, 30 + 30 in all. OOD: rail 0.60-0.65 or
+# Evaluation protocol (fixed), per seed 1042, 2042, 3042: 10 ID and 10 OOD rollouts. OOD: rail 0.60-0.65 or
 # 0.75-0.80, top camera tilted 0.1358 above the cell's ID tilt (0.3019 on cell-03), light
 # 40 % for the first half of each seed's episodes and 20 % for the rest (the lightbox
 # flickers below 15 % on cell-03 and 18 % on cell-01). Rollouts are deterministic; a safety
 # trip is a failure.
-EVAL_SEEDS=${EVAL_SEEDS:-1042 2042 3042}
-EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
-EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-10}
-# EVAL_LIGHT=<percent> sets every level to that light; only rail and camera change.
-EVAL_LIGHT=${EVAL_LIGHT:-}
+EVAL_SEEDS="1042 2042 3042"
+EVAL_ID_ROLLOUTS=10
+EVAL_OOD_ROLLOUTS=10
 
 # Dies unless the run follows the leaderboard protocol; lists each deviation.
 leaderboard_preflight() {  # <episodes> <eval every>
@@ -351,10 +345,6 @@ leaderboard_preflight() {  # <episodes> <eval every>
   [ "$1" = 400 ] || bad+=("--episodes $1: checkpoints must be at 100, 200, 300 and 400 episodes; use 400")
   [ "$2" = 100 ] || bad+=("--eval-every $2: checkpoints must be at 100, 200, 300 and 400 episodes; use 100")
   case " $CELLS " in *" ${CELL:-none} "*) ;; *) bad+=("CELL '${CELL:-}': leaderboard cells are cell-01 and cell-03") ;; esac
-  [ "$EVAL_SEEDS" = "1042 2042 3042" ] || bad+=("EVAL_SEEDS '$EVAL_SEEDS': the protocol seeds are 1042 2042 3042")
-  [ "$EVAL_ID_ROLLOUTS" = 10 ] || bad+=("EVAL_ID_ROLLOUTS $EVAL_ID_ROLLOUTS: the protocol runs 10 per seed")
-  [ "$EVAL_OOD_ROLLOUTS" = 10 ] || bad+=("EVAL_OOD_ROLLOUTS $EVAL_OOD_ROLLOUTS: the protocol runs 10 per seed")
-  [ -z "$EVAL_LIGHT" ] || bad+=("EVAL_LIGHT $EVAL_LIGHT: the protocol sets the light per condition; unset it")
   [ -z "${EVAL_LEVELS:-}" ] || bad+=("EVAL_LEVELS '$EVAL_LEVELS': the protocol evaluates ID and OOD; unset it")
   [ "${RECORD:-1}" = 1 ] || bad+=("RECORD ${RECORD}: the scorer recounts the recorded episodes; set RECORD=1")
   [ -n "${RECORD_REPO:-}" ] || bad+=("RECORD_REPO unset: the scorer recounts the recorded episodes; scripts/setup.sh sets it")
@@ -480,7 +470,7 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       esac
       for seed in $EVAL_SEEDS; do
         for part in $lights; do
-          brightness=${EVAL_LIGHT:-${part%%:*}}
+          brightness=${part%%:*}
           [ "${part##*:}" -gt 0 ] || continue
           entries="$entries${entries:+, }{\"condition\": \"$level\", \"seed\": $seed, \"count\": ${part##*:}, \"brightness\": $brightness, \"rail_ranges\": $ranges$([ "$group" = all ] && [ -n "$tilt" ] && echo ", \"top_tilt\": $tilt" || true)}"
         done

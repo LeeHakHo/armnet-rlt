@@ -15,8 +15,7 @@
 #   --step N               rlt/dsrl/rl step to evaluate (default: newest saved step)
 #   --model <dir|HF repo>  rlt/dsrl/rl: the π0.5 base the run trained on (default as run.sh)
 #   --label NAME           results go to experiment-data/eval/<NAME>/results.jsonl
-# Environment: EVAL_SEEDS ("1042 2042 3042"), EVAL_ID_ROLLOUTS (10 per seed),
-# EVAL_OOD_ROLLOUTS (10 per seed, half at 40 % and half at 20 %). Rollouts are recorded
+# Protocol: 10 ID and 10 OOD rollouts per seed 1042, 2042, 3042. Rollouts are recorded
 # publicly to RECORD_REPO (see scripts/lib.sh); RECORD=0 turns that off.
 set -euo pipefail
 TARGET=${1:-}
