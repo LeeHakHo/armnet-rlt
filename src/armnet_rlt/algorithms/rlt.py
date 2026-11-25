@@ -103,8 +103,7 @@ def _refine_chunk(
 
 @torch.no_grad()
 def q_stats(policy: Any, batch: dict[str, Any], action: Tensor | None = None) -> dict[str, float]:
-    """Mean and std of min-Q over the batch, plus per-reward means when both
-    rewarded and unrewarded transitions are present."""
+    """Mean and std of min-Q over the batch, and per-reward means when both occur."""
     state = batch["state"]
     action = batch["action"] if action is None else action
     if hasattr(policy, "min_q"):
@@ -137,8 +136,7 @@ def q_stats(policy: Any, batch: dict[str, Any], action: Tensor | None = None) ->
 
 
 class RLTChunkActor(RLTActor, Actor):
-    """``RLTActor`` in the policy server: the refined chunk, or π0.5's chunk
-    for a base episode, with correlated exploration noise."""
+    """The refined chunk, or π0.5's chunk in a base episode, plus correlated noise."""
 
     def act(self, obs: ActorInput, base_chunk: Tensor | None, explore: bool) -> ActorOutput:
         if base_chunk is None or obs.rl_token is None:
@@ -185,7 +183,6 @@ class RLTAlgorithm(Algorithm):
             T_max=max(1, config.max_demo_pretrain_steps),
             eta_min=config.critic_lr_min,
         )
-        # Learner steps taken; the actor updates every policy_update_freq of them.
         self.step = 0
 
     @classmethod
@@ -198,8 +195,7 @@ class RLTAlgorithm(Algorithm):
         return actor
 
     def _step(self, batch: dict[str, Any]) -> dict[str, float]:
-        """``utd_ratio`` critic updates, then an actor update every
-        ``policy_update_freq`` steps."""
+        """``utd_ratio`` critic updates, then an actor update every ``policy_update_freq`` steps."""
         config = self.config
         policy = self.policy
         state = batch["state"]

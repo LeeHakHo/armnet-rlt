@@ -1,17 +1,12 @@
-"""Diffusion steering via RL (DSRL) on top of the frozen base flow policy.
-
-The actor maps the RL token and proprioception to the initial noise of the
-base policy's flow; the base policy turns that noise into the executed chunk.
-Transitions carry the chunk noise as the ``noise`` extra and the resulting
-chunk as ``reference_action``. The learner is soft actor-critic
-(``armnet_rlt.algorithms.dsrl``).
-"""
+"""DSRL: an actor maps the RL token and proprioception to the base flow's
+initial noise; the base turns it into the executed chunk. Transitions carry
+the noise as the ``noise`` extra."""
 
 from __future__ import annotations
 
 import copy
 import math
-from typing import Any, Mapping
+from typing import Mapping
 
 import numpy as np
 import torch

@@ -368,8 +368,7 @@ class OpenPIRLTPolicy:
         return int(self._model.action_horizon), self.noise_action_dim
 
     def prefix(self, observation: PolicyObservation | dict[str, Any]) -> tuple[Any, np.ndarray]:
-        """The prefix pass of one observation: a handle for ``denoise`` and
-        the RL token."""
+        """A handle for ``denoise`` and the RL token of one observation."""
         from openpi.models import model as model_module
 
         prefix, _ = self._split_sampler()

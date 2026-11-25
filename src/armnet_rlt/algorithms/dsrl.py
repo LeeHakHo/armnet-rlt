@@ -15,9 +15,8 @@ from armnet_rlt.dsrl import DSRLActor, DSRLPolicy, choose_noise, random_noise, r
 
 
 class DSRLNoiseActor(DSRLActor, Actor):
-    """``DSRLActor`` in the policy server. ``noise`` is the actor's chunk
-    noise (unit Gaussian noise for a base episode); ``act`` returns the first
-    ``execute_len`` rows of π0.5's chunk and the noise as the ``noise`` extra."""
+    """``noise`` picks π0.5's chunk noise (unit Gaussian in a base episode);
+    ``act`` returns π0.5's first ``execute_len`` rows and the noise as an extra."""
 
     def __init__(self, *args: Any, execute_len: int, seed: int | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -77,7 +76,7 @@ class DSRLAlgorithm(Algorithm):
         self.temperature_optimizer = torch.optim.Adam(
             self.policy.temperature_parameters(), lr=config.dsrl_temperature_lr
         )
-        # Kept for the checkpoint layout; DSRL never steps them.
+        # Checkpoint layout only; never stepped.
         self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.actor_optimizer,
             T_max=max(1, config.max_demo_pretrain_steps),
@@ -88,8 +87,6 @@ class DSRLAlgorithm(Algorithm):
             T_max=max(1, config.max_demo_pretrain_steps),
             eta_min=config.critic_lr_min,
         )
-        # utd_ratio gradient steps per transition; dsrl_initial_steps after the
-        # first episode.
         self.updates_per_transition = int(config.utd_ratio)
         self.initial_updates = int(config.dsrl_initial_steps)
 
@@ -109,11 +106,10 @@ class DSRLAlgorithm(Algorithm):
 
     @staticmethod
     def _noise(batch: dict[str, Any]) -> Tensor:
-        """The chunk noise of each transition, ``[B, horizon * action_dim]``."""
+        """``[B, horizon * action_dim]``."""
         return batch["extras"]["noise"].flatten(1)
 
     def update(self, batch: dict[str, Any]) -> dict[str, float]:
-        """One SAC gradient step: critics, target critics, actor, temperature."""
         policy = self.policy
         state = batch["state"]
         next_state = batch["next_state"]
