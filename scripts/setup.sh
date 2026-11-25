@@ -88,7 +88,9 @@ if [ -f "$CACHE" ]; then
 elif [ -n "$SKIP_CACHE" ]; then
   log "skipping the demo cache; RLT then starts without demo pretraining"
 else
-  $OPENPI_BIN/rlt-local cache $GPU_ARG --preset multitask --checkpoint "$BASE"
+  # The 39 green-button demos (the same ones iterative DiT starts from) through the base.
+  $OPENPI_BIN/rlt-local cache $GPU_ARG --preset green-button --config-name "$CONFIG" \
+    --dataset AutoRLBench/busybox_push_green_button_426x240 --checkpoint "$BASE"
 fi
 
 log "5/5 actor image"

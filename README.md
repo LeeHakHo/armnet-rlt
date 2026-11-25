@@ -138,8 +138,9 @@ CELL=cell-03 scripts/run.sh rlt
 The base (the default for every method) is the step-5k π0.5 checkpoint with an RL-token
 encoder and decoder trained on that VLA; DSRL and iterative DiT do not use the RL token. The TD3
 head outputs `reference + 0.1 * tanh(head)`, so training starts at π0.5's chunk, and its
-critic sees the residual. RLT pretrains on the demo cache from `scripts/setup.sh`
-(`experiment-data/tasks/<config>/demo/rlt_demo_cache.pt`); without it, training starts
+critic sees the residual. RLT pretrains on the demo cache that `scripts/setup.sh` builds
+from the 39 green-button demos (`AutoRLBench/busybox_push_green_button_426x240`) through
+the base (`experiment-data/tasks/<config>/demo/rlt_demo_cache.pt`); without it, training starts
 online right away. Exploration std 0.5, trip penalty 5, 30000 learner steps.
 
 ### run.sh options
