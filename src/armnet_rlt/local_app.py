@@ -239,7 +239,9 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
     transport.learner_port = args.port
     transport.policy_parameters_push_frequency = args.push_interval_s
     transport.auth_token = token
+    key = rendezvous_key(args.config_name, args.run_id)
     entry: dict[str, Any] = {
+        "key": key,
         "use_tls": True,
         "config_name": args.config_name,
         "run_id": args.run_id,
@@ -251,24 +253,23 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
     if _edge_terminates_tls(args):
         if tls_cert:
             raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
-        transport.server_bind_host = "127.0.0.1"
+        transport.server_bind_host = args.bind_host or "127.0.0.1"
         tls_label = "TLS at the edge"
     elif tls_cert:
         # Serve TLS with a certificate the cell already trusts.
-        transport.server_bind_host = args.bind_host
+        transport.server_bind_host = args.bind_host or "0.0.0.0"
         transport.tls_server_cert_path = tls_cert
         transport.tls_server_key_path = tls_key
         tls_label = f"TLS, {tls_cert}"
     else:
         certificate, key_path = ensure_tls_certificate(local_data_root() / "tls")
-        transport.server_bind_host = args.bind_host
+        transport.server_bind_host = args.bind_host or "0.0.0.0"
         transport.tls_server_cert_path = str(certificate)
         transport.tls_server_key_path = str(key_path)
         entry["tls_server_name"] = TLS_SERVER_NAME
         entry["tls_root_cert_pem"] = certificate.read_text()
         tls_label = "TLS, self-signed"
 
-    key = rendezvous_key(args.config_name, args.run_id)
     entry_path = local_rendezvous_path(key)
     with _public_endpoint(args) as (host, port):
         entry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,7 +393,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     own_tls = bool(args.tls_cert or args.tls_key)
     if own_tls and edge_tls:
         raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
-    bind_host = "127.0.0.1" if edge_tls else args.bind_host
+    bind_host = args.bind_host or ("127.0.0.1" if edge_tls else "0.0.0.0")
     key = policy_rendezvous_key(args.config_name)
     entry_path = local_rendezvous_path(key)
     with serve(
@@ -434,6 +435,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
         entry_path.write_text(
             json.dumps(
                 {
+                    "key": key,
                     "host": host,
                     "port": port,
                     "use_tls": edge_tls or own_tls,
@@ -609,7 +611,11 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument(
             "--push-interval-s", type=float, default=5.0, help=push_help
         )
-        command.add_argument("--bind-host", default="0.0.0.0")
+        command.add_argument(
+            "--bind-host",
+            default="",
+            help="Listen address (default 0.0.0.0, or 127.0.0.1 with --public-endpoint-tls)",
+        )
         command.add_argument("--port", type=int, default=LEARNER_PORT)
         command.add_argument(
             "--tunnel",
@@ -887,7 +893,12 @@ def _parser() -> argparse.ArgumentParser:
         help="<height>x<width> the server resizes camera images to for a "
         "LeRobot policy; empty uses the policy config",
     )
-    policy_server.add_argument("--bind-host", default="0.0.0.0")
+    policy_server.add_argument(
+        "--bind-host",
+        default="",
+        help="Listen address (default 0.0.0.0, or 127.0.0.1 with --public-endpoint-tls "
+        "or an ngrok tunnel)",
+    )
     policy_server.add_argument("--port", type=int, default=LEARNER_PORT + 1)
     policy_server.add_argument(
         "--tunnel",

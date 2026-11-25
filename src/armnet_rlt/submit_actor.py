@@ -22,10 +22,10 @@ from armnet_rlt.resources import (
     add_variation_curriculum_arguments,
     camera_aim_args,
     device_override_args,
-    local_rendezvous_path,
     preflight_device_overrides,
-    read_local_rendezvous,
+    read_rendezvous,
     remote_policy_job_args,
+    rendezvous_location,
     variation_curriculum_job_args,
     report_job_outcome,
     scheduled_cell,
@@ -328,12 +328,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def resolve_rendezvous(key: str) -> dict[str, Any]:
-    """Read one namespaced learner endpoint registered by a local learner."""
-    entry = read_local_rendezvous(key)
+    """Read one namespaced learner endpoint (local file, or the Modal Dict)."""
+    entry = read_rendezvous(key)
     if not entry:
         raise RuntimeError(
-            f"No learner registered at {local_rendezvous_path(key)} for "
-            f"{key!r}. Start the learner and use the key it prints."
+            f"No learner registered at {key!r} in {rendezvous_location(key)}. "
+            "Start the learner and use the key it prints."
         )
     required = {"host", "port", "use_tls", "config_name", "run_id"}
     missing = required.difference(entry)
