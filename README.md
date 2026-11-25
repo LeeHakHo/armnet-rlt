@@ -18,19 +18,30 @@ Baselines:
 - **RLT**: a TD3 head reads π0.5's RL token and joint state and outputs a residual on
   π0.5's action chunk.
 
-The learner and the policy server run on your GPU (`rlt-local`); the policy server runs
-π0.5 and the RL algorithm's actor. The actor job runs on the cell, executes the chunks
+The learner and the policy server run on your GPU (`rlt-local`) or on Modal; the policy
+server runs π0.5 and the RL algorithm's actor. The actor job runs on the cell, executes the chunks
 the policy server returns and sends the episodes to the learner, all over gRPC. Your own
 RL algorithm plugs in without changing this code (see [Your own RL algorithm](#your-own-rl-algorithm)).
 
 ## Install
 
-Requirements: Linux with an NVIDIA GPU, Python 3.12, [`uv`](https://docs.astral.sh/uv/),
-Docker (actor image), an Armnet API key and a Hugging Face token with read access to
-the AutoRLBench models.
+Requirements:
+
+- Linux, Python 3.12, [`uv`](https://docs.astral.sh/uv/), Docker (actor image);
+- a GPU for the learner and the policy server, one of
+  - your own NVIDIA GPU and a public TLS address the cell can reach: ngrok, or your own
+    ingress (`PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY`);
+  - a [Modal](https://modal.com) account (see [Running on Modal](#running-on-modal));
+- an [Armnet](https://armnet.dev) account and API key, in `.env` as `ARMNET_API_KEY`
+  ([client docs](https://docs.armnet.dev/packages/client/));
+- a Hugging Face token (`HF_TOKEN`) with read access to the AutoRLBench models and
+  datasets (public), write access to your namespace (the cell uploads the episode
+  recordings to `RECORD_REPO`), and the right to open pull requests on the dataset
+  `AutoRLBench/armnet-leaderboard` (submissions).
 
 ```bash
-scripts/setup.sh
+scripts/setup.sh                 # own GPU
+BACKEND=modal scripts/setup.sh   # Modal
 ```
 
 `setup.sh` is safe to rerun; finished steps are skipped. It
@@ -39,7 +50,9 @@ scripts/setup.sh
 2. runs `uv sync`, builds `envs/venv-learner`, `envs/venv-openpi` and `envs/venv-lerobot`
    (`scripts/setup_local.sh`) and installs the plugins under `plugins/` (LeRobot
    policies into the lerobot environment, RL algorithms into the learner and openpi ones);
-3. creates the learner auth token and the two Armnet secrets;
+3. creates the learner auth token and the two Armnet secrets: `armnet-rlt-auth`
+   (`RLT_AUTH_SECRET`) and `huggingface-token` (`RLT_HF_SECRET`, your `HF_TOKEN`, which the
+   cell uses from there);
 4. downloads the base π0.5 checkpoint (`--model`, default
    `AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k`) and builds its normalization stats
    and the RLT demo cache (needs a GPU; `--skip-cache` skips it);
@@ -54,6 +67,30 @@ the cell records every training and evaluation episode.
 The actor image contains `src/armnet_rlt`; rerun `scripts/setup.sh` after changing it
 (it rebuilds the image only when the code changed).
 
+To rotate the Hugging Face token, replace the Armnet secret (and the Modal one) and
+`HF_TOKEN` in `.env`:
+
+```bash
+uv run --env-file .env armnet secret create huggingface-token <token>
+uv run --extra modal modal secret create --force huggingface-secret HF_TOKEN=<token>
+```
+
+## Robot interface
+
+Fixed by the cell; every policy and algorithm sees the same.
+
+| | |
+|---|---|
+| Robot | SO-101, single arm |
+| Cameras | `top`, `front`, `wrist`; recorded at 426x240 RGB |
+| Control | 20 Hz |
+| State, action | 6 absolute joint targets: `shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll` in degrees, `gripper` 0-100 |
+| π0.5 path | the policy server feeds 224x224 images; π0.5 predicts a 30-step chunk relative to the current joints; the cell executes the first 10 steps of each chunk |
+| LeRobot policies | `observation.state` and `observation.images.{top,front,wrist}`, resized to the policy's configured shapes; return absolute joint targets |
+| Episode end | success, 30 s timeout or a safety trip |
+
+The exact fields an RL algorithm gets are in `AlgorithmSpec`, `src/armnet_rlt/algorithm.py`.
+
 ## Quickstart
 
 ```bash
@@ -62,7 +99,7 @@ CELL=cell-03 scripts/eval.sh <checkpoint>       # evaluate one checkpoint: 30 ID
 ```
 
 `run.sh` starts the policy server and the learner on this machine (`GPU=<index>` picks
-the GPU) and submits the actor to `CELL` in segments of `--eval-every` episodes,
+the GPU; on Modal with `BACKEND=modal`) and submits the actor to `CELL` in segments of `--eval-every` episodes,
 resubmitting after a cell or safety stop. After each segment the learner saves a
 checkpoint and the evaluation protocol runs on it; evaluation rollouts are not training
 episodes. Ctrl-C stops everything, the cell job included.
@@ -255,6 +292,11 @@ The protocol runs as one cell job that sets rail, light and tilt per episode
 Conditions already in `results.jsonl` are skipped, so an interrupted evaluation continues
 where it stopped.
 
+`eval.sh` evaluates one checkpoint on these scenes on its own: the base model, a LeRobot
+`pretrained_model`, a checkpoint trained elsewhere, debugging. `run.sh` runs the same
+evaluation every 100 episodes. An `eval.sh` result alone cannot be submitted to the
+leaderboard.
+
 `eval.sh` takes an rlt/dsrl run id (newest step, or `--step N`; `--model` must be the
 base the run trained on) or a LeRobot `pretrained_model` directory, and prints successes
 per condition and seed. `--label NAME` writes to `experiment-data/eval/<NAME>/`.
@@ -273,15 +315,72 @@ envs/venv-learner/bin/python scripts/leaderboard.py submit --name "<method>" --r
 
 A submission needs
 
-- runs on both cell-01 and cell-03 with `--episodes 400 --eval-every 100` (checkpoints at
-  100, 200, 300 and 400 episodes), one submission per cell;
-- recorded evaluations (`RECORD_REPO` set, `RECORD` not 0).
+- full `run.sh` runs on both cell-01 and cell-03: 400 training episodes and the
+  evaluations at 100, 200, 300 and 400 (`--episodes 400 --eval-every 100`, the defaults),
+  one submission per cell; `eval.sh` results are not accepted;
+- the default `EVAL_*` settings;
+- public recorded evaluations (`RECORD_REPO` set, `RECORD` not 0, `RECORD_PUBLIC` not 0).
+
+`run.sh --leaderboard` checks these before it uses any cell time.
 
 The maintainers' scorer (`scripts/leaderboard.py score`) recounts every checkpoint from the
 episode labels in the recorded datasets and rejects submissions that do not follow the
 protocol. A method is listed once both cells are in; ID and OOD each take the best
 checkpoint, summed over the two cells. An entry is a name plus `--tag`; a new submission
 with the same name, tag and cell replaces the earlier one.
+
+## Running on Modal
+
+With `BACKEND=modal` the learner and the policy server run on [Modal](https://modal.com)
+instead of your GPU; the cell jobs are still submitted from your machine. Every command
+above works the same.
+
+Prerequisites: a Modal account (GPU time is billed; see Modal's pricing for the GPU
+type) and the other [Install](#install) requirements. `RLT_MODAL_GPU` sets the GPU type
+(default `L40S`; the learner and π0.5 share it).
+
+```bash
+BACKEND=modal scripts/setup.sh                    # once; writes BACKEND=modal to .env
+CELL=cell-03 scripts/run.sh dsrl                  # same options as on your GPU
+CELL=cell-03 scripts/run.sh rl --algorithm residual_td3 --leaderboard residual-td3
+CELL=cell-03 scripts/eval.sh <run-id>
+```
+
+`setup.sh` with `BACKEND=modal`
+
+1. installs the `modal` extra (`uv sync --extra modal`) and runs `modal setup` if Modal
+   is not logged in; it builds no `envs/`;
+2. creates the Modal secrets `armnet-rlt-auth` (`RLT_LEARNER_AUTH_TOKEN`, and
+   `WANDB_API_KEY` if set) and `huggingface-secret` (`HF_TOKEN`);
+3. deploys the app (`src/armnet_rlt/modal_app.py`; the first image build takes a while)
+   and downloads the base checkpoint, the normalization stats and the demo cache to the
+   Modal volume `armnet-rlt-data`;
+4. builds the actor image locally with Docker, as without Modal.
+
+Each `run.sh` or `eval.sh` redeploys the app with your current code and plugins
+(`plugins/` is installed into the images). One container runs the run's learner and
+policy server, the same `rlt-local` commands as on your GPU, with one Modal TLS endpoint
+each; the endpoints are in the Modal Dict `armnet-rlt-rendezvous`. Each evaluation gets a
+second container with a policy server. `run.sh dit` runs the same way in a LeRobot image.
+
+| What | Where |
+|---|---|
+| Checkpoints, replay buffer, learner and policy-server logs, demo cache, base checkpoint | the volume, laid out as `experiment-data/` (`checkpoints/` for base checkpoints) |
+| Cell job logs, `results.jsonl`, `rollout_metrics.jsonl`, frozen actors | `experiment-data/` on your machine, as without Modal (the scripts copy what they read from the volume) |
+
+Ctrl-C stops the Modal containers with the cell job. A run whose script died without
+cleaning up keeps its container (up to Modal's 24 h limit); stop it, then continue the
+run:
+
+```bash
+uv run --extra modal python -m armnet_rlt.modal_backend stop experiment-data/logs/<run-id>/train.call
+CELL=cell-03 scripts/run.sh dsrl --resume <run-id>
+```
+
+A Modal call ends after 24 h; `--resume` continues the run from its newest checkpoint.
+`uv run --extra modal modal volume ls armnet-rlt-data tasks/` lists the volume. A
+`--reward-plugin` reward server must be reachable from Modal (`ROBOMETER_URL`;
+`ROBOMETER_*` variables are passed to the container).
 
 ## Configuration
 
@@ -293,7 +392,9 @@ Set in the environment or in `.env`; the environment takes precedence.
 | `RLT_HF_SECRET`, `RLT_AUTH_SECRET` | Armnet secrets holding `HF_TOKEN` and `RLT_LEARNER_AUTH_TOKEN` (`huggingface-token`, `armnet-rlt-auth`) |
 | `RLT_LEARNER_AUTH_TOKEN` | Bearer token shared by the actor and the learner (written by `setup.sh`) |
 | `IMAGE_REF` | Actor image (written by `setup.sh`) |
-| `CELL`, `GPU` | Cell to run on (empty: any free cell) and local GPU index |
+| `CELL`, `GPU` | Cell to run on (`cell-01` or `cell-03`; `run.sh` and `eval.sh` need it) and local GPU index |
+| `BACKEND` | `local` (default) or `modal` ([Running on Modal](#running-on-modal)) |
+| `RLT_MODAL_GPU`, `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET`, `RLT_MODAL_HF_SECRET`, `RLT_MODAL_APP` | Modal GPU type (`L40S`) and resource names (`armnet-rlt-data`, `armnet-rlt-rendezvous`, `armnet-rlt-auth`, `huggingface-secret`, `armnet-rlt`) |
 | `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of ngrok; ports `PUBLIC_LEARNER_PORT` (443), `PUBLIC_POLICY_PORT` (8443) |
 | `LEARNER_PORT`, `POLICY_PORT` | Local ports (50051, 50052) |
 | `RECORD_REPO`, `RECORD_PUBLIC`, `RECORD` | Episodes are recorded (three cameras, one label per episode in `meta/armnet_rollouts.jsonl`) as public datasets `<RECORD_REPO>_<name>`; `RECORD_PUBLIC=0` keeps them private, `RECORD=0` turns recording off |
@@ -335,6 +436,7 @@ depend on it.
 | Learner hyperparameters | RLT defaults in `RLTConfig`, `src/armnet_rlt/config.py`; DSRL overrides in `src/armnet_rlt/learner_config.py` |
 | LeRobot policies, RL algorithm plugins | `third_party/lerobot` (upstream 0.5.2), `plugins/` |
 | Scripts | `scripts/run.sh`, `scripts/eval.sh`; helpers and the evaluation protocol in `scripts/lib.sh` |
+| Modal backend | `src/armnet_rlt/modal_app.py` (images, functions), `src/armnet_rlt/modal_backend.py` (container supervisor, local commands) |
 
 The scripts call these commands, which also run on their own (`--help` on each):
 
