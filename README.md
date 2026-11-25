@@ -1,9 +1,12 @@
 # armnet-rlt
 
+## Website: **[leehakho.github.io/armnet-rlt](https://leehakho.github.io/armnet-rlt/)**
+
+Leaderboard, rules, how to submit and every evaluation episode on video.
+
 A real-robot reinforcement learning benchmark on [Armnet](https://armnet.dev) SO-101 cells.
 Every method trains online for 400 robot episodes on one busybox task (push the green
 button) and is evaluated on fixed in-distribution (ID) and out-of-distribution (OOD) scenes.
-Leaderboard, rules and rollout videos: [leehakho.github.io/armnet-rlt](https://leehakho.github.io/armnet-rlt/).
 
 ```bash
 git clone https://github.com/LeeHakHo/armnet-rlt && cd armnet-rlt
@@ -90,19 +93,15 @@ CELL=cell-03 scripts/run.sh dsrl --reward-plugin armnet_rlt.robometer_reward:sha
 Its settings (`ROBOMETER_URL`, `ROBOMETER_WEIGHT`, ...) are in
 `src/armnet_rlt/robometer_reward.py`; `reward_models/robometer/` rebuilds the model.
 
-`scripts/run.sh --help` lists the options:
+Options:
 
 | Option | Meaning |
 |---|---|
 | `--algorithm <name>` | rl: entry-point name or `module:Class` |
-| `--episodes N`, `--eval-every N` | Training episodes (400); evaluate every N (100), 0 disables |
-| `--skip-eval` | Save the checkpoints without evaluating; listed in `experiment-data/logs/<run-id>/checkpoints.txt` |
 | `--model <dir or HF repo>` | π0.5 base for rlt/dsrl/rl, or a LeRobot `pretrained_model` for dit |
 | `--policy-type <type>` | dit: LeRobot policy trained from the demos (`multi_task_dit`) |
-| `--steps N`, `--std X`, `--trip-penalty X` | rlt/dsrl/rl: learner step cap (also the LR schedule), exploration std (0.5), safety-trip penalty |
-| `--run-id ID`, `--resume ID` | Run name (`<method>-<UTC time>`); continue an rlt/dsrl/rl run from its newest checkpoint |
 | `--reward-plugin M:F` | rlt/dsrl/rl: rewrite each episode's rewards with function F of module M |
-| `--learner-args "..."`, `--actor-args "..."` | Extra flags for the learner and for `rlt-submit-actor` |
+| `--resume <run-id>` | Continue a run from its newest checkpoint |
 | `--leaderboard NAME`, `--leaderboard-tag TAG`, `--leaderboard-code URL`, `--leaderboard-notes TEXT` | Submit after the last evaluation ([Leaderboard](#leaderboard)) |
 
 | Output | Path |
@@ -223,8 +222,7 @@ batches; `uses_base = False` skips π0.5 (`rl_token` and `base_chunk` are then N
 `image_size` sets the image size). A batch has `state` / `next_state` (`rl_token` [B, 2048],
 `proprioception` [B, 6], `reference_action` [B, 180]), `action` [B, L * 6], `reward`,
 `done`, `extras`, and with `needs_images` `images` / `next_images`. `explore=False` is the
-evaluation mode. Options reach `config.algorithm_options` through
-`--learner-args "--algorithm-option KEY=VALUE"`. The episode loop, rewards, replay buffer,
+evaluation mode. Hyperparameters live in the plugin. The episode loop, rewards, replay buffer,
 checkpoints, transport and the cell's safety logic are shared.
 
 Offline check, no robot or GPU: trains both examples on synthetic transitions and serves
@@ -296,7 +294,6 @@ Environment or `.env`; the environment takes precedence.
 | `RECORD_REPO`, `RECORD`, `RECORD_PUBLIC` | `<HF user>/armnet`, `1`, `1` | Episode datasets `<RECORD_REPO>_<run-id>` (`eval.sh`: `_<label>`); `RECORD=0` off, `RECORD_PUBLIC=0` private |
 | `WANDB_PROJECT` | | Weights & Biases project for the learners |
 | `RLT_DATA_ROOT` | `./experiment-data` | Data root |
-| `EVAL_LEVELS`, `EVAL_ONE_JOB` | | `id` or `ood` only (not for the leaderboard); `0` runs one job per condition |
 | `CONFIG`, `TASK`, `PROMPT`, `DATASET` | `pi05_rlt_busybox_multitask_singlearm_minmax`, `push_green_button`, `push the green button`, `AutoRLBench/busybox_push_green_button_426x240` | OpenPI config, task, instruction, demo dataset |
 | `OPENPI_REPO`, `OPENPI_REVISION` | `https://github.com/pravsels/openpi` | OpenPI fork with the `pi0_rl` model |
 | `RLT_MODAL_GPU`, `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET`, `RLT_MODAL_HF_SECRET`, `RLT_MODAL_APP` | `L40S`, `armnet-rlt-data`, `armnet-rlt-rendezvous`, `armnet-rlt-auth`, `huggingface-secret`, `armnet-rlt` | Modal GPU type and resource names |
