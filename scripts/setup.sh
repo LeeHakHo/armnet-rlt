@@ -52,10 +52,17 @@ for env in learner openpi lerobot; do
   scripts/setup_local.sh "$env"
 done
 
-# LeRobot policy plugins under plugins/ go into the lerobot environment.
+# LeRobot policy plugins under plugins/ go into the lerobot environment; RL algorithm
+# plugins into the learner and the policy server (openpi) environments.
 for plugin in plugins/lerobot_policy_*/; do
   [ -f "$plugin/pyproject.toml" ] || continue
   uv pip install --quiet --python envs/venv-lerobot --no-deps -e "$plugin"
+done
+for plugin in plugins/rl_algorithm_*/; do
+  [ -f "$plugin/pyproject.toml" ] || continue
+  for env in learner openpi; do
+    uv pip install --quiet --python "envs/venv-$env" --no-deps -e "$plugin"
+  done
 done
 
 log "3/5 secrets"

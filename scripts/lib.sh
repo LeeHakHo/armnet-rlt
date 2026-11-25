@@ -186,7 +186,8 @@ EVAL_LIGHT=${EVAL_LIGHT:-}
 EVAL_PIDS=()
 EVAL_JOB_LOG=""
 
-# Freezes step STEP of an rlt/dsrl run, uploads it, and prints its volume path.
+# Freezes step STEP of an rlt/dsrl/rl run, uploads it, and prints its volume path; the
+# local copy is at experiment-data/tasks/<config>/frozen/<run>/step_<STEP>.pt.
 freeze_rlt() {  # <run> <step>
   local dir; dir=$(printf step_%06d "$2")
   "${UVRUN[@]}" rlt-freeze-checkpoint --config-name "$CONFIG" --run-id "$1" --step "$2" \
@@ -234,7 +235,8 @@ ood_rails() {
 #   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
 #     LeRobot learner) the actor sends it nothing (--eval-only); without one, a
 #     checkpoint-eval learner is started per job.
-#   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
+#   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl/rl run; the policy
+#     server loads its local copy (--actor-checkpoint) on the π0.5 <base>.
 # Results: experiment-data/eval/<label>/results.jsonl, one row per condition and seed; a group
 # whose conditions are all there is skipped. Uses POLICY_PORT and, without a learner key,
 # LEARNER_PORT.
@@ -247,8 +249,12 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       --checkpoint "$ckpt" $POLICY_TUNNEL)
     [ -z "$extra" ] && server+=($STEERING)
   else
+    # volume://rlt/frozen/<config>/<run>/<step>/frozen_actor.pt -> the copy freeze_rlt kept.
+    local frozen=${ckpt#volume://rlt/frozen/$CONFIG/}
+    frozen=$DATA/tasks/$CONFIG/frozen/${frozen%/frozen_actor.pt}.pt
+    [ -f "$frozen" ] || die "no local copy of $ckpt at $frozen"
     server=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$extra"
-      --prompt "$PROMPT" $POLICY_TUNNEL)
+      --prompt "$PROMPT" --actor-checkpoint "$frozen" $POLICY_TUNNEL)
   fi
   "${server[@]}" > "$out/policy-server.log" 2>&1 &
   ps=$!; EVAL_PIDS+=($ps)

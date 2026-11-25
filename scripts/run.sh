@@ -7,9 +7,13 @@
 # job included.
 #
 #   CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit> [options]
+#   CELL=<cell-id> scripts/run.sh rl --algorithm <name> [options]
 #   dit trains any LeRobot policy by iterative BC: multi-task DiT by default, or
 #   --policy-type, including your own plugin under plugins/ (see the README).
+#   rl trains any registered RL algorithm (rlt, dsrl, or an installed plugin such as
+#   plugins/rl_algorithm_example; see the README) with the rlt/dsrl flow below.
 #
+#   --algorithm <name>     rl only: entry-point name or module:Class of the algorithm
 #   --episodes N           training episodes (400)
 #   --eval-every N         evaluate after every N training episodes (100); 0 disables
 #   --skip-eval            save the checkpoint at each of those points but do not evaluate
@@ -21,17 +25,18 @@
 #                          demo dataset with --policy-type)
 #   --policy-type <type>   dit only: LeRobot policy to train from the demos
 #                          (multi_task_dit, diffusion, smolvla, ...; default multi_task_dit)
-#   --steps N              rlt/dsrl: learner step cap, which also sets the learning-rate
-#                          schedule (rlt 30000, dsrl 400000)
-#   --std X                exploration std, rlt/dsrl (0.5)
-#   --trip-penalty X       rlt/dsrl: a safety-tripped episode ends X success-failure reward
-#                          gaps below a failure (rlt 5, dsrl 2)
+#   --steps N              rlt/dsrl/rl: learner step cap, which also sets the learning-rate
+#                          schedule (rlt 30000, dsrl and rl 400000)
+#   --std X                exploration std, rlt/dsrl/rl (0.5); the actor's exploration_scale
+#   --trip-penalty X       rlt/dsrl/rl: a safety-tripped episode ends X success-failure reward
+#                          gaps below a failure (rlt 5, dsrl and rl 2)
 #   --run-id ID            run name (default <method>-<UTC time>)
-#   --resume ID            continue rlt/dsrl run ID from its newest checkpoint
-#   --reward-plugin M:F    rlt/dsrl: rewrite each episode's rewards with function F of
+#   --resume ID            continue an rlt/dsrl/rl run ID from its newest checkpoint
+#   --reward-plugin M:F    rlt/dsrl/rl: rewrite each episode's rewards with function F of
 #                          module M, given its camera frames (the actor sends them), e.g.
 #                          armnet_rlt.robometer_reward:shape (see that module)
-#   --learner-args "..."   extra learner flags (rlt-local online / lerobot-streaming-bc)
+#   --learner-args "..."   extra learner flags (rlt-local online / lerobot-streaming-bc), e.g.
+#                          "--algorithm-option hidden=256" for a plugin
 #   --actor-args "..."     extra rlt-submit-actor flags
 #   --leaderboard NAME     after the last evaluation, submit the run to the leaderboard as
 #                          method NAME (needs CELL and recorded evaluations; see
@@ -41,18 +46,19 @@
 #   --leaderboard-code URL, --leaderboard-notes TEXT   shown with the method
 #
 # Logs: experiment-data/logs/<run id>/. Checkpoints: experiment-data/tasks/<config>/
-# rlt_checkpoints/<run id> (rlt, dsrl) or experiment-data/lerobot-sbc/<run id> (dit).
+# rlt_checkpoints/<run id> (rlt, dsrl, rl) or experiment-data/lerobot-sbc/<run id> (dit).
 # Evaluations: experiment-data/eval/<run id>-ep<episodes>/results.jsonl.
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,45p' "$0"; exit 0 ;;
-  *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
+case "$METHOD" in rlt|dsrl|dit|rl) shift ;; -h|--help|"") sed -n '2,50p' "$0"; exit 0 ;;
+  *) echo "method must be rlt, dsrl, dit or rl" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
-SKIP_EVAL=0 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
+ALGORITHM="" SKIP_EVAL=0 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episodes) EPISODES=$2 ;; --eval-every) EVAL_EVERY=$2 ;;
     --model) MODEL=$2 ;; --policy-type) POLICY_TYPE=$2 ;; --steps) STEPS=$2 ;;
+    --algorithm) ALGORITHM=$2 ;;
     --std) STD=$2 ;; --trip-penalty) PENALTY=$2 ;; --run-id) RUN=$2 ;;
     --resume) RUN=$2; RESUME=--resume ;;
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
@@ -66,13 +72,20 @@ while [ $# -gt 0 ]; do
 done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 actor_common
-[ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt and dsrl runs"
-[ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt and dsrl runs"
+[ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt, dsrl and rl runs"
+[ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt, dsrl and rl runs"
+if [ "$METHOD" = rl ]; then
+  [ -n "$ALGORITHM" ] || die "rl needs --algorithm <name>"
+else
+  [ -z "$ALGORITHM" ] || die "--algorithm is for rl runs"
+fi
 [ -z "$BOARD_NAME" ] || [ -n "$CELL" ] || die "--leaderboard needs CELL"
 [ -z "$BOARD_NAME" ] || [ "$SKIP_EVAL" = 0 ] || die "--leaderboard needs the evaluations; drop --skip-eval"
 [ -z "$BOARD_NAME" ] || { [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ]; } \
   || die "--leaderboard needs recorded evaluations: set RECORD_REPO (scripts/setup.sh does)"
-RUN=${RUN:-$METHOD-$(date -u +%Y%m%d-%H%M%S)}
+# rl runs are named after the algorithm (module:Class -> Class).
+NAME=$METHOD; [ "$METHOD" = rl ] && NAME=$(echo "${ALGORITHM##*:}" | tr -c 'A-Za-z0-9_\n-' '-')
+RUN=${RUN:-$NAME-$(date -u +%Y%m%d-%H%M%S)}
 LOGS=$DATA/logs/$RUN
 mkdir -p "$LOGS"
 DATASET=${DATASET:-AutoRLBench/busybox_push_green_button_426x240}
@@ -129,19 +142,25 @@ else
   PENALTY=${PENALTY:-$([ "$METHOD" = rlt ] && echo 5 || echo 2)}
   BASE=$(resolve_model "$MODEL")
   if [ "$METHOD" = rlt ]; then
+    ALGORITHM=rlt
     ALGO=(--algorithm rlt --residual-actor --residual-scale 0.1 --critic-action-residual)
     [ -f "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" ] \
       || { log "no demo cache: RLT starts without demo pretraining"; ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0); }
-    SERVER_STEERING=""
     ACTOR_ALGO=(--algorithm rlt)
-  else
+  elif [ "$METHOD" = dsrl ]; then
+    ALGORITHM=dsrl
     ALGO=(--algorithm dsrl --dsrl-noise-bound 1.5 --dsrl-noise-steps 5 --pretrain-steps 0)
-    SERVER_STEERING=$STEERING
     ACTOR_ALGO=(--algorithm dsrl --dsrl-noise-bound 1.5 --dsrl-noise-steps 5)
+  else
+    # A plugin without demonstrations gets --pretrain-steps 0 from its class.
+    ALGO=(--algorithm "$ALGORITHM")
+    [ -f "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" ] || ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0)
+    ACTOR_ALGO=(--algorithm "$ALGORITHM")
   fi
-  log "$METHOD run $RUN on base $BASE"
+  log "$METHOD run $RUN ($ALGORITHM) on base $BASE"
+  # The policy server runs the algorithm's actor and takes its weights from the learner.
   SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$BASE"
-    --prompt "$PROMPT" $SERVER_STEERING $POLICY_TUNNEL)
+    --prompt "$PROMPT" --algorithm "$ALGORITHM" $STEERING $POLICY_TUNNEL)
   EVERY=$([ "$EVAL_EVERY" -gt 0 ] && echo "$EVAL_EVERY" || echo "$EPISODES")
   $LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" $RESUME \
     "${ALGO[@]}" --safety-trip-penalty "$PENALTY" --online-steps "$STEPS" --save-freq 10000 \
