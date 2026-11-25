@@ -111,12 +111,9 @@ def build_demo_cache(
     predicted_action_len: int = 10,
     reference_action_len: int = 30,
 ) -> dict[str, int | float]:
-    """Extract one transition per non-overlapping action chunk.
-
-    The source is an imitation-learning dataset, so every episode is a positive
-    demonstration. Exactly one transition per episode is terminal and receives
-    reward 1; earlier chunks receive reward 0.
-    """
+    """One transition per non-overlapping action chunk. Every episode counts
+    as a success: its last transition is terminal with reward 1, the rest
+    have reward 0. Returns the cache summary."""
     if inference_batch_size <= 0:
         raise ValueError("inference_batch_size must be positive")
     episodes = list(dataset.meta.episodes)
@@ -207,7 +204,7 @@ def build_demo_cache(
 
 
 def copy_norm_stats(checkpoint_dir: str | Path, target_assets: str | Path) -> None:
-    """Copy both learner normalization files beside the generated cache."""
+    """Copy the checkpoint's two normalization files into ``target_assets``."""
     source = Path(checkpoint_dir) / "assets"
     target = Path(target_assets)
     target.mkdir(parents=True, exist_ok=True)
@@ -245,7 +242,6 @@ def build_task_cache(
         config_name,
         default_prompt=prompt or "",
     )
-    # Load the dataset from the main revision.
     dataset = LeRobotDataset(
         dataset_repo, revision="main", video_backend="pyav"
     )

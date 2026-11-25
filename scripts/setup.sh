@@ -4,7 +4,7 @@
 # 1. .env from .env.example, asking for ARMNET_API_KEY and HF_TOKEN
 # 2. uv sync and the three envs/ environments (learner, openpi, lerobot)
 # 3. the learner auth token and the two Armnet secrets
-# 4. the base π0.5 checkpoint (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken),
+# 4. the base π0.5 checkpoint (default AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k),
 #    its normalization stats and the RLT demo cache (needs a GPU; --skip-cache skips it)
 # 5. the actor image, written to .env as IMAGE_REF (needs Docker; --skip-image skips it)
 set -euo pipefail
@@ -52,7 +52,7 @@ for env in learner openpi lerobot; do
   scripts/setup_local.sh "$env"
 done
 
-# Your LeRobot policies under plugins/ go into the lerobot environment.
+# LeRobot policy plugins under plugins/ go into the lerobot environment.
 for plugin in plugins/lerobot_policy_*/; do
   [ -f "$plugin/pyproject.toml" ] || continue
   uv pip install --quiet --python envs/venv-lerobot --no-deps -e "$plugin"
@@ -72,7 +72,7 @@ if [ -z "${PUBLIC_HOST:-}" ] && ! ngrok config check >/dev/null 2>&1; then
 fi
 
 if ! grep -q "^RECORD_REPO=" .env; then
-  # Training and evaluation episodes are recorded as private datasets under your account.
+  # Training and evaluation episodes are recorded as datasets under your account.
   HF_USER=$(HF_TOKEN=$HF_TOKEN "$LEARNER_BIN/hf" auth whoami 2>/dev/null | sed -nE 's/^user[=:] *([^ ]+).*/\1/p' | head -1 || true)
   [ -n "$HF_USER" ] && set_env RECORD_REPO "$HF_USER/armnet" \
     || log "could not read your Hugging Face user; set RECORD_REPO=<user>/armnet in .env to record episodes"

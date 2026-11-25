@@ -12,7 +12,6 @@ import torch
 from armnet_rlt.lerobot_actor import (
     ACT_CONFIG_NAME,
     _predict_chunk,
-    _select_action,
     policy_frame,
     resize_image,
 )
@@ -111,9 +110,8 @@ class LeRobotPolicyBackend(PolicyBackend):
         }
 
     def _select_actions(self, frame: dict[str, Any]) -> np.ndarray:
-        """``select_action`` plus whatever the policy queued for the following
-        steps, so one request covers a whole planning interval; the queue is
-        emptied so the next request plans afresh."""
+        """``select_action`` plus the actions the policy queued for the next
+        steps; the queue is emptied so the next request plans afresh."""
         with torch.inference_mode():
             first = self._policy.select_action(self._preprocessor(frame))
             queue = (getattr(self._policy, "_queues", None) or {}).get("action")

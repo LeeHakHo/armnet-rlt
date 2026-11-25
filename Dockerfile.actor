@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# System dependencies first. Ubuntu 24.04 provides Python 3.12.
+# System packages; Ubuntu 24.04 ships Python 3.12.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates ffmpeg git libgl1 libglib2.0-0 \
         python3.12 python3.12-dev python3.12-venv python3-pip \
@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel uv
 
-# Exclude LeRobot's optional input dependencies.
+# Version overrides; pynput and evdev (LeRobot input devices) are left out.
 RUN printf '%s\n' \
       'pynput>=0.0.0; sys_platform == "never"' \
       'evdev>=0.0.0; sys_platform == "never"' \
@@ -87,7 +87,7 @@ COPY pyproject.toml README.md /app/rlt/
 COPY src /app/rlt/src
 RUN python -m pip install --no-deps /app/rlt
 
-# Torch last, with the CUDA index.
+# CUDA torch wheels, last.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --upgrade \
         --override /tmp/overrides.txt \

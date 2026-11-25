@@ -97,9 +97,8 @@ def _merge_batches(first: Any, second: Any) -> Any:
 
 @torch.no_grad()
 def _q_stats(policy: RLTPolicy, batch: dict[str, Any]) -> dict[str, float]:
-    """Mean and spread of min-Q over the batch, split by reward when both
-    rewarded and unrewarded transitions are present.
-    """
+    """Mean and std of min-Q over the batch, plus per-reward means when both
+    rewarded and unrewarded transitions are present."""
     state = batch["state"]
     if hasattr(policy, "min_q"):
         q = policy.min_q(
@@ -690,7 +689,6 @@ def _episode_key(record: EpisodeRecord) -> tuple[str, int] | None:
 
 
 def _logged_episode_keys(path: Path) -> set[tuple[str, int]]:
-    """The episode keys already in the rollout log."""
     keys: set[tuple[str, int]] = set()
     for value in read_jsonl(path):
         key = _episode_key(EpisodeRecord.from_dict(value))
@@ -702,9 +700,9 @@ def _logged_episode_keys(path: Path) -> set[tuple[str, int]]:
 def _schedule_online_updates(
     pending_updates: int, new_transitions: int, *, steps_per_transition: int = 1
 ) -> int:
-    """Schedule learner steps per transition: one for RLT, whose step applies
-    UTD critic updates itself; ``utd_ratio`` for DSRL, whose step is one
-    gradient step."""
+    """Add ``steps_per_transition`` learner steps per new transition: 1 for RLT,
+    whose step runs ``utd_ratio`` critic updates; ``utd_ratio`` for DSRL, whose
+    step is one gradient step."""
     if pending_updates < 0 or new_transitions < 0 or steps_per_transition <= 0:
         raise ValueError("online update counts must be nonnegative")
     return pending_updates + new_transitions * steps_per_transition
@@ -888,7 +886,6 @@ def run_learner(
         network=config.network,
     )
     if dsrl:
-        # DSRL has no demonstration transitions.
         from armnet_rlt.dsrl import DSRLPolicy
 
         transitions = []
@@ -914,7 +911,6 @@ def run_learner(
     critic_optimizer = torch.optim.Adam(
         policy.critic_ensemble.parameters(), lr=config.critic_lr
     )
-    # The DSRL entropy temperature has its own optimizer.
     temperature_optimizer = (
         torch.optim.Adam(policy.temperature_parameters(), lr=config.dsrl_temperature_lr)
         if dsrl
@@ -964,7 +960,6 @@ def run_learner(
         try:
             import wandb
 
-            # Appends to the W&B run named by ``config.run_id``.
             wandb_run = wandb.init(
                 project=wandb_project,
                 id=config.run_id,
@@ -1158,8 +1153,6 @@ def run_learner(
                     # DSRL trains dsrl_initial_steps on the first episode.
                     pending_updates = config.dsrl_initial_steps
                 else:
-                    # One RLT learner step already applies utd_ratio critic
-                    # updates; a DSRL learner step is one gradient step.
                     pending_updates = _schedule_online_updates(
                         pending_updates,
                         added,

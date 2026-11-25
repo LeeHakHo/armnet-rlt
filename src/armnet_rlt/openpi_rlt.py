@@ -50,7 +50,7 @@ def _install_training_stubs() -> None:
     )
     stub("robocandywrapper.plugins.subtask", ("SubtaskPlugin",))
     stub("rewact_tools", ("PiStar0_6CumulativeRewardPlugin",))
-    # Avoid importing LeRobot's datasets stack through policy_config.
+    # Keeps policy_config from importing LeRobot's datasets stack.
     stub("openpi.training.data_loader", ())
 
 
@@ -83,8 +83,6 @@ class PolicyOutput:
     # in the base policy's normalized units, and the steering actor's learner step.
     noise: np.ndarray | None = None
     steering_step: int | None = None
-
-
 
 
 def build_policy_observation(
@@ -140,8 +138,8 @@ def find_assets_dir(checkpoint_dir: str | Path) -> Path:
 
 
 def load_norm_stats(checkpoint_dir: str | Path, data_config: Any = None) -> dict:
-    """Load OpenPI normalization statistics without importing OpenPI at module load."""
-
+    """OpenPI normalization stats from the checkpoint's assets, with per-timestep
+    action stats when the data config asks for them."""
     from openpi.shared import normalize
 
     assets = find_assets_dir(checkpoint_dir)
@@ -156,8 +154,7 @@ def load_norm_stats(checkpoint_dir: str | Path, data_config: Any = None) -> dict
 
 
 def uses_delta_actions(config: Any, data_config: Any) -> bool:
-    """Read delta semantics from the data-config factory that defines them."""
-
+    """Whether the config's data factory (or else the data config) uses delta actions."""
     factory = getattr(config, "data", None)
     if hasattr(factory, "use_delta_actions"):
         return bool(factory.use_delta_actions)
@@ -483,7 +480,3 @@ class OpenPIRLTPolicy:
         reset = getattr(self._policy, "reset", None)
         if callable(reset):
             reset()
-
-
-RLTokenExtractor = OpenPIRLTPolicy
-

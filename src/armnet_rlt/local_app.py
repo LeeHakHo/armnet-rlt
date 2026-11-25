@@ -50,7 +50,6 @@ def _load_env() -> None:
 
 
 def _select_gpu(gpu: str) -> None:
-    # Set the GPU and JAX memory environment variables.
     if gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -252,7 +251,6 @@ def _serve(args: argparse.Namespace, cfg: Any, token: str) -> Iterator[None]:
     if _edge_terminates_tls(args):
         if tls_cert:
             raise SystemExit("--tls-cert serves TLS itself; drop --public-endpoint-tls")
-        # Bind the cleartext port to localhost.
         transport.server_bind_host = "127.0.0.1"
         tls_label = "TLS at the edge"
     elif tls_cert:
@@ -358,7 +356,6 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     bind_host = "127.0.0.1" if edge_tls else args.bind_host
     key = policy_rendezvous_key(args.config_name)
     entry_path = local_rendezvous_path(key)
-    feed = None
     with serve(
         policy,
         bind=f"{bind_host}:{args.port}",

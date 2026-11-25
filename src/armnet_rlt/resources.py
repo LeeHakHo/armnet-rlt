@@ -40,7 +40,7 @@ def task_paths(
 
 
 def rendezvous_key(config_name: str, run_id: str) -> str:
-    """Namespace endpoints so two learners cannot overwrite each other."""
+    """``<config>:<run_id>``, the key a learner registers its endpoint under."""
     clean_config = config_name.strip().replace("/", "-")
     clean_run = run_id.strip().replace("/", "-")
     if not clean_config or not clean_run:

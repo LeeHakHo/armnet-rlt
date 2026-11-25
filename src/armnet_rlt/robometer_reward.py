@@ -13,12 +13,9 @@ Environment:
   ROBOMETER_TASK    language instruction sent to the server (push the green button)
   ROBOMETER_LOG     JSON lines file for one record per episode (unset: no log)
   ROBOMETER_FRAMES  frames the server samples per episode (8, as the busybox checkpoint
-                    was trained; on 60 labelled cell-03 episodes at the actor's ~2 fps it
-                    separates successes from failures with AUC 0.976)
-
-  ROBOMETER_WAIT_S  how long to keep retrying while the server is unreachable (3600);
-                    the learner waits meanwhile, so no episode trains unshaped just
-                    because the server restarts
+                    was trained)
+  ROBOMETER_WAIT_S  seconds to keep retrying while the server is unreachable (3600);
+                    the learner blocks meanwhile
 
 A request the server rejects, or a server still unreachable after ROBOMETER_WAIT_S,
 leaves the episode's rewards unchanged and is reported on stdout.
@@ -40,7 +37,7 @@ VIEWS = ("top", "front", "wrist")
 
 
 def _video(jpegs: list[bytes], path: Path) -> None:
-    """Writes JPEG frames to an H.264 file with ffmpeg."""
+    """Write JPEG frames to an H.264 file with ffmpeg."""
     subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-y", "-f", "image2pipe", "-c:v", "mjpeg", "-framerate", "5",
          "-i", "-", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(path)],
@@ -88,7 +85,7 @@ def boundary_progress(curve: list[float], transitions: int) -> np.ndarray:
 
 
 def shape(episode: list[dict[str, torch.Tensor]], frames: dict[str, list[bytes]] | None) -> None:
-    """Adds the Robometer progress gain of each transition to its reward."""
+    """Add the Robometer progress gain of each transition to its reward, in place."""
     if not episode or not frames or any(len(frames.get(view, [])) < 2 for view in VIEWS):
         return
     weight = float(os.environ.get("ROBOMETER_WEIGHT", "1.0"))
@@ -99,7 +96,7 @@ def shape(episode: list[dict[str, torch.Tensor]], frames: dict[str, list[bytes]]
             curve, result = progress_curve(frames)
             break
         except Exception as exc:
-            # requests' ConnectionError and Timeout: the server is down or restarting.
+            # requests' connection and timeout errors: the server is down or restarting.
             if type(exc).__name__ not in ("ConnectionError", "Timeout", "ConnectTimeout", "ReadTimeout"):
                 print(f"[robometer] reward request failed, episode unshaped: {exc}", flush=True)
                 return

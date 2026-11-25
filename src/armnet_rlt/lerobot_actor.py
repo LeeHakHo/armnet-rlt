@@ -265,11 +265,11 @@ def run_lerobot_actor(
 ) -> dict[str, Any]:
     """Roll out a LeRobot policy on one Armnet SO-101 cell and report to the learner.
 
-    With ``remote_policy_host`` the policy runs on a policy server and the
-    learner's checkpoint updates reach that server, not the cell. A chunking
-    policy executes ``n_action_steps`` per inference with optional exploration
-    noise; other policies use ``select_action``. Successful episodes are
-    streamed to the learner unless ``stream_episodes`` is false.
+    With ``remote_policy_host`` the policy runs on a policy server, which also
+    receives the learner's updates. A chunking policy executes ``n_action_steps``
+    per inference with optional exploration noise; other policies use
+    ``select_action``. Successful episodes are streamed to the learner unless
+    ``stream_episodes`` is false or ``eval_only`` is set.
     """
     device_name = str(_field(cfg, "device", "cuda"))
     device = (
@@ -350,7 +350,7 @@ def run_lerobot_actor(
         _close_robot_and_cell(robot, ctx.cell)
         raise
     stream_episodes = bool(_field(cfg, "stream_episodes", True))
-    # Evaluation during a run: the learner must not count these rollouts.
+    # Rollouts the learner must not count (evaluation during a run).
     eval_only = bool(_field(cfg, "eval_only", False))
     stream_episodes = stream_episodes and not eval_only
 
@@ -469,7 +469,7 @@ def run_lerobot_actor(
         )
         operator.start()
 
-        # Run one inference before the first rollout.
+        # Warm-up inference before the first rollout.
         warm_state, warm_images = policy_observation(robot.get_observation(), shapes)
         predict(warm_state, warm_images, 0.0)
         reset_policy()
@@ -572,7 +572,7 @@ def run_lerobot_actor(
                 )
                 outcome = state_machine.episode_ctx.outcome
                 success = outcome is EpisodeOutcome.SUCCESS
-                # Frames for successful rollouts only.
+                # Only successful rollouts are streamed.
                 payload = (
                     serialize_episode(states, actions, frames)
                     if stream_episodes and success and states
@@ -661,8 +661,8 @@ def run_lerobot_actor(
                 # A policy server answers with the policy's queued actions for
                 # the coming steps, so it is asked once per planning interval.
                 def record_wait() -> None:
-                    # A frame while the request is out: cameras and joints now, with
-                    # the last tick's action (no new command is sent meanwhile).
+                    # Frame during the request: current cameras and joints with the
+                    # last tick's action.
                     if frame_writer is None or recording["last_action"] is None:
                         return
                     try:
@@ -692,9 +692,8 @@ def run_lerobot_actor(
                 requested_action = add_action_noise(
                     requested_action, action_noise_std, action_noise_rng
                 )
-            # After frames were recorded during the policy request, the tick's own frame
-            # is read again before its command goes out: raw_obs predates those frames and
-            # would put an older image after newer ones.
+            # raw_obs predates the frames recorded during the policy request;
+            # re-read it so frames stay in time order.
             frame_obs = raw_obs
             if recording.pop("waited", False):
                 try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the `rlt-local` environments under envs/.
+# Builds the `rlt-local` environments under envs/.
 #   scripts/setup_local.sh learner   torch + LeRobot transport (online, checkpoint-eval)
 #   scripts/setup_local.sh openpi    OpenPI/JAX (cache, policy-server)
 #   scripts/setup_local.sh lerobot   full LeRobot for its policies (lerobot-train, lerobot-streaming-bc,
@@ -38,7 +38,7 @@ setup_learner() {
     uv pip install --python "$venv" --no-deps --override "$overrides" \
         -e "$LEROBOT"
     uv pip install --python "$venv" --no-deps -e "$ROOT"
-    # Install the CUDA torch wheels.
+    # CUDA torch wheels.
     uv pip install --python "$venv" --upgrade --override "$overrides" \
         --extra-index-url "$TORCH_INDEX" \
         torch==2.8.0 torchvision==0.23.0
@@ -82,7 +82,7 @@ setup_openpi() {
     uv pip install --python "$venv" --no-deps \
         "$openpi/packages/openpi-client" "$openpi"
     uv pip install --python "$venv" --no-deps -e "$ROOT"
-    # Install the CUDA torch wheels.
+    # CUDA torch wheels.
     uv pip install --python "$venv" --upgrade --override "$overrides" \
         --extra-index-url "$TORCH_INDEX" \
         --index-strategy unsafe-best-match \

@@ -32,8 +32,7 @@ class RLTPolicy(nn.Module):
         self.predicted_action_dim = config.network.predicted_action_dim
         self.reference_action_dim = config.network.reference_action_dim
         self.chunk_discount = config.discount**self.predicted_action_len
-        self._chunk_discount = self.chunk_discount
-        # The residual base is the reference itself, so it cannot be dropped.
+        # The residual actor's base is the reference, so it is never dropped.
         self.ref_dropout = (
             0.0
             if config.network.residual_actor
@@ -77,8 +76,8 @@ class RLTPolicy(nn.Module):
         *,
         deterministic: bool = False,
     ) -> Tensor:
-        """The deterministic chunk or, without ``deterministic``, that chunk
-        plus its exploration noise."""
+        """Unnormalized action chunk: the actor mean, plus exploration noise
+        unless ``deterministic``."""
         was_training = self.training
         self.eval()
         try:
@@ -95,7 +94,6 @@ class RLTPolicy(nn.Module):
             self.train(was_training)
 
     def load_policy_state(self, state_dict: dict[str, Tensor]) -> None:
-        """Load a learner ``policy_state_dict``."""
         self.load_state_dict(state_dict)
 
     def _apply_ref_dropout(self, reference_action: Tensor) -> Tensor:
@@ -217,13 +215,6 @@ class RLTPolicy(nn.Module):
         return (
             second_difference.square() * self._jerk_joint_weights
         ).sum(dim=(-2, -1))
-
-    def _jerk_penalty(
-        self,
-        action: Tensor,
-        proprioception: Tensor | None = None,
-    ) -> Tensor:
-        return self.jerk_penalty(action, proprioception)
 
     def compute_loss_actor(
         self,

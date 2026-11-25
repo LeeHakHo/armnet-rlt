@@ -13,11 +13,8 @@ BISO101_JERK_JOINT_WEIGHTS: tuple[float, ...] = (
 
 
 def parse_round_schedule(spec: str | int) -> tuple[int, ...]:
-    """Parse ``"30,30,10"`` into the episode count for each training round.
-
-    The last entry repeats for later rounds. An empty spec or ``0`` returns an
-    empty tuple.
-    """
+    """``"30,30,10"`` to the episode count of each training round; the last
+    entry repeats. An empty spec or ``0`` gives ``()``."""
     if isinstance(spec, int):
         values = [spec]
     else:
@@ -57,12 +54,10 @@ class RLTNetworkConfig:
     fixed_action_std: float = 0.05
     ref_action_dropout: float = 0.25
     delta_action_mask: tuple[bool, ...] = (True, True, True, True, True, False)
-    # Optional structural variants. Defaults keep the original behaviour.
-    #   residual_actor: the actor outputs ``reference + residual_scale * tanh(head)``
-    #     with the head initialised to zero, so it starts exactly at the VLA chunk.
-    #     Reference dropout is disabled in this mode (the base needs the reference).
-    #   critic_action_residual: the critic sees ``critic_action_gain * (action -
-    #     reference chunk)`` instead of the raw normalized action.
+    # residual_actor: the actor outputs reference + residual_scale * tanh(head),
+    #   head initialised to zero; no reference dropout.
+    # critic_action_residual: the critic sees
+    #   critic_action_gain * (action - reference chunk) instead of the action.
     residual_actor: bool = False
     residual_scale: float = 0.25
     critic_action_residual: bool = False

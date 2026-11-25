@@ -26,12 +26,6 @@ def _parser() -> argparse.ArgumentParser:
         help="Learner step number or 'latest'",
     )
     parser.add_argument(
-        "--local",
-        action="store_true",
-        help="No effect; the checkpoint is always read from RLT_DATA_ROOT "
-        "(an rlt-local run)",
-    )
-    parser.add_argument(
         "--output",
         type=Path,
         help="Local frozen_actor.pt destination",

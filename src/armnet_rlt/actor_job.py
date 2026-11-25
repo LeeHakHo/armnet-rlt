@@ -32,8 +32,8 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 
 
 def _checkpoint_root(path: str | Path) -> str:
-    """Resolve flat exports and repositories containing ``step_<N>`` exports."""
-
+    """The OpenPI checkpoint directory: ``path`` itself, its highest ``step_<N>``
+    subdirectory, or its only checkpoint subdirectory."""
     root = Path(path)
 
     def looks_like_checkpoint(candidate: Path) -> bool:
@@ -103,8 +103,8 @@ def _resolve_volume_file(ctx: Context, value: str, *, label: str) -> Path:
 
 
 def _calibration_lookup(ctx: Context) -> tuple[str, str]:
-    """Stage a cell calibration file in LeRobot's ``<id>.json`` layout."""
-
+    """Robot id and calibration directory; a cell calibration file is copied to a
+    temporary directory in LeRobot's ``<id>.json`` layout."""
     calibration_file = ctx.cell.calibration_file_path
     if calibration_file:
         source = Path(calibration_file)
@@ -119,8 +119,8 @@ def _calibration_lookup(ctx: Context) -> tuple[str, str]:
 
 
 def _tls_root_cert_file(args: dict[str, Any]) -> tuple[str, str | None]:
-    """Return a cert path and an optional temporary path to remove."""
-
+    """The root cert path from job args, and the temporary file to remove when
+    the arg held PEM text."""
     value = args.get("tls_root_cert_pem") or args.get("tls_root_cert") or ""
     value = str(value)
     if not value:
@@ -139,8 +139,7 @@ def _tls_root_cert_file(args: dict[str, Any]) -> tuple[str, str | None]:
 
 
 def _construct(cls: type, **values: Any) -> Any:
-    """Construct a dataclass from its supported fields."""
-
+    """``cls(**values)`` without the keys ``cls`` does not accept."""
     parameters = inspect.signature(cls).parameters
     if any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
@@ -151,7 +150,7 @@ def _construct(cls: type, **values: Any) -> Any:
 
 
 class _ActorConfigView:
-    """Add deployment-only fields without expanding the learner's RLTConfig."""
+    """An RLTConfig with deployment-only fields added on top."""
 
     def __init__(self, rlt_config: Any, **runtime_values: Any) -> None:
         self.rlt_config = rlt_config
@@ -355,8 +354,7 @@ def _run_lerobot(ctx: Context, cell_id: str) -> dict[str, Any]:
 
 
 def _log_camera_mounts(ctx: Any) -> None:
-    """Prints each pan/tilt mount's defaults and step ranges, which per-episode
-    aiming (``camera_mounts[...].set(pan, tilt)`` in encoder steps) needs."""
+    """Print each pan/tilt mount's defaults and ranges, in encoder steps."""
     try:
         mounts = getattr(ctx.cell, "camera_mounts", None) or {}
         axes = getattr(getattr(ctx.cell, "device_config", None), "camera_mounts", None) or {}
@@ -500,7 +498,6 @@ def run(ctx: Context) -> dict[str, Any]:
         or ctx.task
     )
     base_cfg.device = str(args.get("device", "cuda"))
-    # Robot connection values are deployment resources, not learner config.
     so101 = SimpleNamespace(
         robot_port=ctx.cell.robot_port,
         robot_id=robot_id,

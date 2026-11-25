@@ -73,7 +73,7 @@ def decode_image(data: np.ndarray, codec: str) -> np.ndarray:
 
 
 def resize_for_model(image: np.ndarray, height: int, width: int) -> np.ndarray:
-    """Resize one HWC uint8 image with OpenPI's ResizeImages function."""
+    """Resize one HWC uint8 image to ``height`` x ``width`` with padding, as OpenPI does."""
     image = np.asarray(image)
     if image.shape[:2] == (height, width) and image.dtype == np.uint8:
         return image
@@ -242,13 +242,13 @@ def serve(
     tls_key_path: str = "",
     steering_from_learner: bool = False,
 ) -> Iterator[Any]:
-    """Run a gRPC server on ``bind`` until the context exits.
+    """Run a gRPC policy server on ``bind`` until the context exits.
 
     ``policy`` is a ``PolicyBackend`` or an ``OpenPIRLTPolicy`` (served at
     ``image_size``). With ``tls_cert_path`` and ``tls_key_path`` the server
-    terminates TLS itself. ``steering_from_learner`` tells actors the server
-    installs the DSRL actor itself. The yielded server has ``apply_steering``
-    and ``run_locked`` for a learner feed."""
+    terminates TLS. ``steering_from_learner`` tells actors the server takes the
+    DSRL actor from the learner. The yielded server has ``apply_steering`` and
+    ``run_locked`` for a learner feed."""
     import grpc
 
     if bool(tls_cert_path) != bool(tls_key_path):

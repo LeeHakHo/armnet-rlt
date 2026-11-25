@@ -344,7 +344,7 @@ def resolve_rendezvous(key: str) -> dict[str, Any]:
 
 
 def build_job_args(args: argparse.Namespace, entry: dict[str, Any]) -> dict[str, Any]:
-    """Construct runtime args, rejecting accidental cross-task connections."""
+    """Actor job args; raises when the learner serves a different config."""
     if entry["config_name"] != args.config_name:
         raise ValueError(
             f"learner {args.learner_key!r} serves {entry['config_name']!r}, "

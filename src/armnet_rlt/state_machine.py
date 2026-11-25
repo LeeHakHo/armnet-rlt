@@ -1,4 +1,4 @@
-"""Small deterministic episode state machine for the production actor."""
+"""Episode state machine for the cell actors."""
 
 from __future__ import annotations
 

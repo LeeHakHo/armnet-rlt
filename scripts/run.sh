@@ -16,7 +16,7 @@
 #                          (they are listed in experiment-data/logs/<run id>/checkpoints.txt
 #                          for scripts/eval.sh later)
 #   --model <dir|HF repo>  starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl
-#                          (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken), a
+#                          (default AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k), a
 #                          LeRobot pretrained_model for dit (default: trained from the
 #                          demo dataset with --policy-type)
 #   --policy-type <type>   dit only: LeRobot policy to train from the demos
@@ -24,7 +24,8 @@
 #   --steps N              rlt/dsrl: learner step cap, which also sets the learning-rate
 #                          schedule (rlt 30000, dsrl 400000)
 #   --std X                exploration std, rlt/dsrl (0.5)
-#   --trip-penalty X       reward of a safety-tripped episode, rlt/dsrl (rlt 5, dsrl 2)
+#   --trip-penalty X       rlt/dsrl: a safety-tripped episode ends X success-failure reward
+#                          gaps below a failure (rlt 5, dsrl 2)
 #   --run-id ID            run name (default <method>-<UTC time>)
 #   --resume ID            continue rlt/dsrl run ID from its newest checkpoint
 #   --reward-plugin M:F    rlt/dsrl: rewrite each episode's rewards with function F of
@@ -44,7 +45,7 @@
 # Evaluations: experiment-data/eval/<run id>-ep<episodes>/results.jsonl.
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,44p' "$0"; exit 0 ;;
+case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,45p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
 SKIP_EVAL=0 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""

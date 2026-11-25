@@ -40,7 +40,7 @@ CELLS = ("cell-01", "cell-03")
 CHECKPOINTS = (100, 200, 300, 400)
 SEEDS = (1042, 2042, 3042)
 PER_SEED = {"id": 10, "ood": 10}
-# One OOD level since 11-24; ood-easy and ood-hard are the two levels results had before.
+# Conditions counted as OOD; ood-easy and ood-hard are the OOD levels of earlier submissions.
 OOD = ("ood", "ood-easy", "ood-hard")
 DATA = Path(os.environ.get("RLT_DATA_ROOT") or Path(__file__).resolve().parents[1] / "experiment-data")
 
@@ -52,8 +52,6 @@ def slug(name: str) -> str:
 def entry_key(name: str, tag: str | None) -> str:
     return slug(name) + (f"--{slug(tag)}" if tag else "")
 
-
-# ----------------------------------------------------------------------------- submit
 
 def eval_datasets(run: str) -> dict[int, list[str]]:
     """Recorded evaluation datasets of each checkpoint of RUN, from its cell job logs."""
@@ -89,9 +87,7 @@ def training_curve(run: str) -> tuple[dict[str, list[int]], float] | None:
 
 
 def submit(args: argparse.Namespace) -> None:
-    from huggingface_hub import HfApi
-
-    from huggingface_hub import repo_exists
+    from huggingface_hub import HfApi, repo_exists
 
     datasets = {ep: [r for r in repos if repo_exists(r, repo_type="dataset")]
                 for ep, repos in eval_datasets(args.run).items()}
@@ -117,8 +113,6 @@ def submit(args: argparse.Namespace) -> None:
     )
     print(f"submitted {args.name} on {args.cell}: {commit.pr_url}")
 
-
-# ----------------------------------------------------------------------------- score
 
 def labels(repo: str) -> tuple[list[dict], list[dict]]:
     """Episode labels and episode video spans (meta/episodes) of a recorded dataset."""
@@ -232,7 +226,7 @@ def clips(repo: str, existing: set[str]) -> dict[int, str]:
     todo = [i for i in urls if f"{prefix}{i:03d}.mp4" not in existing]
     if not todo:
         return urls
-    # Only meta and videos (the plugin files are a few per episode and not needed here).
+    # Only meta and videos; the plugin files are not needed.
     root = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=["meta/**", "videos/**"], max_workers=4))
     times_file = root / "meta/armnet_frame_times.jsonl"
     frame_times = {}
@@ -296,7 +290,7 @@ def score(args: argparse.Namespace) -> None:
         if not args.dry_run:
             api.merge_pull_request(LEADERBOARD, pr.num, repo_type="dataset")
     entries = []
-    # Submissions without a date (older submit scripts) take their file's commit date.
+    # A submission without a date takes its file's commit date.
     files = list_repo_files(LEADERBOARD, repo_type="dataset")
     dates = {}
     if any(f.startswith("submissions/") for f in files):
@@ -310,7 +304,7 @@ def score(args: argparse.Namespace) -> None:
             evals, rows = check(sub)
             entries.append({**sub, "evals": evals, "rows": rows})
         elif f.startswith("legacy/") and f.endswith(".json"):
-            # Results from before episode labels were recorded, added by the maintainers.
+            # Results without recorded episode labels, added by the maintainers.
             for e in json.loads(Path(hf_hub_download(LEADERBOARD, f, repo_type="dataset")).read_text()):
                 entries.append({**e, "evals": {int(k): v for k, v in e["evals"].items()}})
     board, rollouts = build(entries)

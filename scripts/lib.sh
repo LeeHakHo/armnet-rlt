@@ -16,9 +16,9 @@
 #                     datasets <prefix>_<run or label>_...; RECORD_PUBLIC=0 keeps them
 #                     private, RECORD=0 turns recording off
 #   RLT_CELL_CAMERA_AIM  top-camera aim per cell (default: cell-03 tilt 0.1661; cell-01 pan
-#                     0.405, tilt 0.175, which gives the same top view of the busybox)
+#                     0.405, tilt 0.175; both give the same top view of the busybox)
 #   RLT_CELL_RAIL     ID rail range per cell, <cell>=LOW,HIGH[;...] (default: cell-01
-#                     0.55,0.65; other cells 0.65-0.75); the OOD rail ranges move with it
+#                     0.55,0.65; other cells 0.65-0.75); the OOD rail ranges shift with it
 
 CALLER_PWD=$PWD
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,13 +32,12 @@ if [ -f .env ]; then
     eval "export $line"
   done < .env
 fi
-# Top-camera aim per cell that centres the busybox (set it to '' to keep each cell's own aim).
+# '' keeps each cell's own aim.
 export RLT_CELL_CAMERA_AIM=${RLT_CELL_CAMERA_AIM-"cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175"}
-# ID rail range per cell. At the same rail value cell-01's arm sits about 0.1 further along the
-# busybox than cell-03's, so its range is 0.1 lower.
+# At the same rail value cell-01's arm sits about 0.1 further along the busybox than cell-03's.
 export RLT_CELL_RAIL=${RLT_CELL_RAIL-"cell-01=0.55,0.65"}
-# Policy servers register under the config name plus this, so runs on other ports do not
-# pick up each other's server.
+# Policy servers register under the config name plus this key, so runs on different ports
+# keep to their own server.
 export RLT_POLICY_INSTANCE=${RLT_POLICY_INSTANCE:-${POLICY_PORT:-50052}}
 UVRUN=(uv run --quiet)
 [ -f .env ] && UVRUN+=(--env-file .env)
@@ -56,8 +55,8 @@ RLT_HF_SECRET=${RLT_HF_SECRET:-huggingface-token}
 LEARNER_PORT=${LEARNER_PORT:-50051}
 POLICY_PORT=${POLICY_PORT:-50052}
 WANDB_ARG=${WANDB_PROJECT:+--wandb-project $WANDB_PROJECT}
-BASE_REPO=AutoRLBench/pi05_busybox_minmax_step5k_rltoken
-BASE_DIR=$ROOT/checkpoints/pi05_rltoken
+BASE_REPO=AutoRLBench/pi05_rlt_busybox_multitask_singlearm_minmax_step5k
+BASE_DIR=$ROOT/checkpoints/pi05_rltoken5k
 # Checkpoint path passed to the cell; unused while the policy runs on your GPU.
 CELL_CHECKPOINT=${CELL_CHECKPOINT:-volume://openpi/checkpoints/pi05_rltoken}
 LEARNER_BIN=envs/venv-learner/bin
@@ -80,8 +79,8 @@ else
   STEERING="--steering-from-learner 127.0.0.1:$LEARNER_PORT"
 fi
 
-# Common actor flags in ACTOR: fixed scene (rail 0.7, light 30), 30 s episodes,
-# no recording, policy on your GPU.
+# Common actor flags in ACTOR: rail 0.7, light 30, 30 s episodes, no recording, policy on
+# your GPU.
 actor_common() {
   : "${IMAGE_REF:?IMAGE_REF is unset; run scripts/setup.sh}"
   ACTOR=(--task "$TASK" --language-instruction "$PROMPT"
@@ -102,10 +101,10 @@ record_args() {  # <name>
   [ "${RECORD_PUBLIC:-1}" = 0 ] || RECORD_ARGS+=(--record-public)
 }
 
-# Scene variation of the ID condition: the rail is drawn per episode around 0.7 (0.65-0.75).
+# ID scene variation: rail drawn per episode from 0.65-0.75.
 ID_ARGS="--armnet.variation-rail --no-armnet.variation-lighting --no-armnet.variation-cameras --variation-curriculum --variation-scale-start 0.2 --variation-scale-min 0.2 --variation-scale-max 0.2 --variation-frontier-fraction 0"
-# A cell in RLT_CELL_RAIL draws its rail uniformly from its own range instead (training and ID
-# evaluation); RAIL_SHIFT is that range's centre minus 0.7, applied to the OOD rail ranges.
+# A cell in RLT_CELL_RAIL draws from its own range (training and ID evaluation); RAIL_SHIFT,
+# that range's centre minus 0.7, shifts the OOD rail ranges.
 CELL_RAIL=$(echo "${RLT_CELL_RAIL:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | cut -d= -f2 || true)
 RAIL_SHIFT=0
 if [ -n "$CELL_RAIL" ]; then
@@ -113,7 +112,7 @@ if [ -n "$CELL_RAIL" ]; then
   RAIL_SHIFT=$(python3 -c "import sys; lo, hi = map(float, sys.argv[1].split(',')); print(round((lo + hi) / 2 - 0.7, 4))" "$CELL_RAIL")
 fi
 
-# 0 when CELL is available (or no CELL is set).
+# Succeeds when CELL is available or unset.
 cell_free() {
   [ -n "$CELL" ] || return 0
   CELL=$CELL py <<'PY'
@@ -159,8 +158,8 @@ wait_for() {  # <pid> <log> <pattern> <name>
   done
 }
 
-# A local OpenPI checkpoint dir for --model: a directory as is, otherwise a
-# Hugging Face repo downloaded under checkpoints/.
+# Local OpenPI checkpoint dir for --model: a directory as is, a Hugging Face repo
+# downloaded under checkpoints/.
 resolve_model() {
   local m=${1:-$BASE_REPO}
   case "$m" in /*) ;; *) [ -d "$CALLER_PWD/$m" ] && m=$CALLER_PWD/$m ;; esac
@@ -174,18 +173,15 @@ resolve_model() {
 }
 
 # Evaluation protocol, per scene seed in EVAL_SEEDS (1042 2042 3042): EVAL_ID_ROLLOUTS (10)
-# ID rollouts and EVAL_OOD_ROLLOUTS (10) OOD rollouts, so 30 ID and 30 OOD
-# in all. OOD stacks a rail outside the ID range (0.60-0.65 or 0.75-0.80), the top camera
-# tilted 0.1358 above the cell's ID tilt (0.3019 on cell-03) and the light at 40 % for half
-# of each seed's episodes and 20 % for the other half (the lightbox flickers below 15 % on
-# cell-03 and 18 % on cell-01, so 20-40 % around the ID 30 % is the range both cells hold
-# steady). Rollouts
-# are deterministic and a safety trip is a failure.
+# ID and EVAL_OOD_ROLLOUTS (10) OOD rollouts, 30 + 30 in all. OOD: rail 0.60-0.65 or
+# 0.75-0.80, top camera tilted 0.1358 above the cell's ID tilt (0.3019 on cell-03), light
+# 40 % for the first half of each seed's episodes and 20 % for the rest (the lightbox
+# flickers below 15 % on cell-03 and 18 % on cell-01). Rollouts are deterministic; a safety
+# trip is a failure.
 EVAL_SEEDS=${EVAL_SEEDS:-1042 2042 3042}
 EVAL_ID_ROLLOUTS=${EVAL_ID_ROLLOUTS:-10}
 EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-10}
-# EVAL_LIGHT=<percent> keeps every level at that light (only rail and camera change), e.g.
-# while the cameras' auto exposure makes dim scenes flicker.
+# EVAL_LIGHT=<percent> sets every level to that light; only rail and camera change.
 EVAL_LIGHT=${EVAL_LIGHT:-}
 EVAL_PIDS=()
 EVAL_JOB_LOG=""
@@ -193,7 +189,7 @@ EVAL_JOB_LOG=""
 # Freezes step STEP of an rlt/dsrl run, uploads it, and prints its volume path.
 freeze_rlt() {  # <run> <step>
   local dir; dir=$(printf step_%06d "$2")
-  "${UVRUN[@]}" rlt-freeze-checkpoint --local --config-name "$CONFIG" --run-id "$1" --step "$2" \
+  "${UVRUN[@]}" rlt-freeze-checkpoint --config-name "$CONFIG" --run-id "$1" --step "$2" \
     --output "$DATA/tasks/$CONFIG/frozen/$1/$dir.pt" \
     --armnet-volume-path "rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt" --overwrite >&2 \
     && echo "volume://rlt/frozen/$CONFIG/$1/$dir/frozen_actor.pt"
@@ -227,20 +223,21 @@ for c, (n, s, t) in counts.items():
     print(c, n, s, t)' "$2" "$3"
 }
 
-# Runs the evaluation protocol on one checkpoint and prints its summary, in one cell job
-# that walks through the levels and scene seeds with --eval-schedule, setting the rail, the
-# light and the top camera tilt per episode (EVAL_ONE_JOB=0: one job per level, tilted at
-# its start).
-#   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
-#     LeRobot learner), the actor sends it nothing (--eval-only); without, a
-#     checkpoint-eval learner is started for each job.
-#   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
-# Results: experiment-data/eval/<label>/results.jsonl, one row per condition; a group whose
-# conditions are all there is skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
-ood_rails() {  # OOD rail ranges (0.60-0.65 and 0.75-0.80) moved by RAIL_SHIFT
+# OOD rail ranges (0.60-0.65 and 0.75-0.80) shifted by RAIL_SHIFT.
+ood_rails() {
   python3 -c "import sys; s = float(sys.argv[1]); print([[round(a + s, 4), round(b + s, 4)] for a, b in ((0.60, 0.65), (0.75, 0.80))])" "$RAIL_SHIFT"
 }
 
+# Runs the evaluation protocol on one checkpoint and prints its summary. One cell job walks
+# through the levels and seeds with --eval-schedule, setting rail, light and top tilt per
+# episode; EVAL_ONE_JOB=0 runs one job per level, aimed at its start.
+#   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
+#     LeRobot learner) the actor sends it nothing (--eval-only); without one, a
+#     checkpoint-eval learner is started per job.
+#   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
+# Results: experiment-data/eval/<label>/results.jsonl, one row per condition and seed; a group
+# whose conditions are all there is skipped. Uses POLICY_PORT and, without a learner key,
+# LEARNER_PORT.
 eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   local kind=$1 ckpt=$2 label=$3 extra=${4:-} out=$DATA/eval/$3 server ps key ev group n conds
   local id=$EVAL_ID_ROLLOUTS ood=$EVAL_OOD_ROLLOUTS
@@ -257,12 +254,9 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   ps=$!; EVAL_PIDS+=($ps)
   wait_for $ps "$out/policy-server.log" "policy server" "eval policy server"
   log "evaluating $ckpt on ${CELL:-any cell} -> $out"
-  # The cell's own top tilt for ID scenes (RLT_CELL_CAMERA_AIM), when it sets one.
+  # ID top aim of the cell from RLT_CELL_CAMERA_AIM; OOD tilt is 0.1358 above it.
   local id_tilt
   id_tilt=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.tilt=[0-9.]+" | cut -d= -f2 || true)
-  # One job for all three levels, tilting the top camera per episode; EVAL_ONE_JOB=0 runs
-  # one job per level instead, each tilted once at its start.
-  # The OOD tilt sits 0.1358 above the cell's ID tilt (0.3019 on cell-03).
   local id_pan ood_tilt=0.3019
   id_pan=$(echo "${RLT_CELL_CAMERA_AIM:-}" | tr ';' '\n' | grep "^${CELL:-none}=" | grep -oE "top\.pan=[0-9.]+" | cut -d= -f2 || true)
   if [ -n "$id_tilt" ]; then
@@ -270,16 +264,13 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
   fi
   local groups=all
   [ "${EVAL_ONE_JOB:-1}" = 1 ] || groups="id ood"
-  # A per-episode tilt puts the pan back to its centre, so a cell aimed with a pan gets one
-  # job per level, each aimed (pan and tilt) at its start.
+  # A per-episode tilt recentres the pan, so a cell aimed with a pan gets one job per level.
   [ -z "$id_pan" ] || groups="id ood"
-  # EVAL_LEVELS="id" (or "ood") evaluates only that level, one cell job each;
-  # the rest can be added to the same results.jsonl later.
+  # EVAL_LEVELS="id" or "ood" evaluates only that level; the other can be added later.
   [ -z "${EVAL_LEVELS:-}" ] || groups=$EVAL_LEVELS
   for group in $groups; do
     local entries="" seed level brightness ranges count tilt
     for level in $([ "$group" = all ] && echo id ood || echo "$group"); do
-      # Each seed's OOD episodes: the first half at 40 %, the rest at 20 %.
       case "$level" in
         id) lights="30:$id" ranges=null count=$id tilt=$id_tilt ;;
         ood) lights="40:$(((ood + 1) / 2)) 20:$((ood / 2))" ranges=$(ood_rails) count=$ood tilt=$ood_tilt ;;
@@ -298,7 +289,7 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       local group_args=(--eval-schedule "[$entries]" $ID_ARGS)
     else
       n=$((count * seeds)); conds=$group
-      # Without per-episode tilt the job's own aim sets it.
+      # Without a per-episode tilt the job's camera aim sets it.
       local group_args=(--eval-schedule "[$entries]" $ID_ARGS ${tilt:+--armnet.camera-aim ${id_pan:+top.pan=$id_pan,}top.tilt=$tilt})
     fi
     local missing=""
@@ -313,7 +304,7 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
       jobs=$((jobs + 1))
       EVAL_JOB_LOG=$out/$group/job$(date +%s).log
       wait_cell
-      # Each schedule entry sets its own scene seed; the job-level one is only a default.
+      # Schedule entries set their own scene seeds; this one is the job default.
       local first=${EVAL_SEEDS%% *}
       local seeded=(--armnet.variation-seed "$first" --armnet.variation-episode-offset "$done"
         --action-noise-seed "$first" --timeout-seconds 7200 "${group_args[@]}")
