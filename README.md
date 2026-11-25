@@ -61,8 +61,8 @@ BACKEND=modal scripts/setup.sh   # Modal
 
 The cell reaches your machine through ngrok: install it and run
 `ngrok config add-authtoken <token>` once, or set `PUBLIC_HOST`, `TLS_CERT` and `TLS_KEY`
-for your own TLS ingress. `setup.sh` also sets `RECORD_REPO=<your HF user>/armnet`, where
-the cell records every training and evaluation episode.
+for your own TLS ingress. `setup.sh` also sets `RECORD_REPO=<your HF user>/armnet`; a run's episodes are
+recorded to one LeRobot dataset `<RECORD_REPO>_<run>`.
 
 The actor image contains `src/armnet_rlt`; rerun `scripts/setup.sh` after changing it
 (it rebuilds the image only when the code changed).
@@ -397,7 +397,7 @@ Set in the environment or in `.env`; the environment takes precedence.
 | `RLT_MODAL_GPU`, `RLT_MODAL_VOLUME`, `RLT_MODAL_RENDEZVOUS`, `RLT_MODAL_AUTH_SECRET`, `RLT_MODAL_HF_SECRET`, `RLT_MODAL_APP` | Modal GPU type (`L40S`) and resource names (`armnet-rlt-data`, `armnet-rlt-rendezvous`, `armnet-rlt-auth`, `huggingface-secret`, `armnet-rlt`) |
 | `PUBLIC_HOST`, `TLS_CERT`, `TLS_KEY` | Your own TLS ingress instead of ngrok; ports `PUBLIC_LEARNER_PORT` (443), `PUBLIC_POLICY_PORT` (8443) |
 | `LEARNER_PORT`, `POLICY_PORT` | Local ports (50051, 50052) |
-| `RECORD_REPO`, `RECORD_PUBLIC`, `RECORD` | Episodes are recorded (three cameras, one label per episode in `meta/armnet_rollouts.jsonl`) as public datasets `<RECORD_REPO>_<name>`; `RECORD_PUBLIC=0` keeps them private, `RECORD=0` turns recording off |
+| `RECORD_REPO`, `RECORD_PUBLIC`, `RECORD` | Episodes are recorded (three cameras, one label per episode in `meta/armnet_rollouts.jsonl`) in one public LeRobot dataset `<RECORD_REPO>_<run>` per run (`eval.sh`: `<RECORD_REPO>_<label>`); `RECORD_PUBLIC=0` keeps it private, `RECORD=0` turns recording off |
 | `WANDB_PROJECT` | Log learners to this Weights & Biases project |
 | `RLT_DATA_ROOT` | Data root (`./experiment-data`) |
 | `RLT_CELL_CAMERA_AIM` | Top-camera aim per cell (`cell-03=top.tilt=0.1661;cell-01=top.pan=0.405,top.tilt=0.175`); empty keeps each cell's own aim |
