@@ -672,13 +672,14 @@ function drawBoard() {
     .sort((a, b) => (b.best.id[0] + b.best.ood[0]) - (a.best.id[0] + a.best.ood[0]));
   const codeLink = e => e.code ? ` <a class="codelink" href="${e.code}" target="_blank" rel="noopener" title="Code: ${e.code}" onclick="event.stopPropagation()"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>code</a>` : "";
   const name = e => `<span class="dot" style="--c:${color(e.key)}"></span>${e.name}${codeLink(e)}<span class="cellsplit">${e.detail}</span>`;
-  const head = `<thead><tr><th>#</th><th>Method</th><th>Tag</th><th>Date</th><th>ID / 60</th><th>OOD / 60</th></tr></thead><tbody>`;
-  const meta = e => `<td><span class="tagchip">${e.tag || "–"}</span></td><td class="h">${e.date || "–"}</td>`;
-  const body = rows.map((e, i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${meta(e)}${cellTd(e.best.id)}${cellTd(e.best.ood)}</tr>`).join("");
+  const head = `<thead><tr><th>#</th><th>Method</th><th>Tag</th><th>ID / 60</th><th>OOD / 60</th><th>Date</th></tr></thead><tbody>`;
+  const meta = e => `<td><span class="tagchip">${e.tag || "–"}</span></td>`;
+  const date = e => `<td class="h">${e.date || "–"}</td>`;
+  const body = rows.map((e, i) => `<tr class="row" data-key="${e.key}"><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${meta(e)}${cellTd(e.best.id)}${cellTd(e.best.ood)}${date(e)}</tr>`).join("");
   document.getElementById("lb-full").innerHTML = head + body
     + `<tr class="you"><td class="rank">–</td><td>Your method</td><td colspan="4" style="text-align:left"><a href="#/submit">submit it</a></td></tr></tbody>`;
   document.getElementById("lb-mini").innerHTML = head + rows.slice(0, 5).map((e, i) =>
-    `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${meta(e)}${cellTd(e.best.id)}${cellTd(e.best.ood)}</tr>`).join("") + `</tbody>`;
+    `<tr><td class="rank">${i + 1}</td><td class="m">${name(e)}</td>${meta(e)}${cellTd(e.best.id)}${cellTd(e.best.ood)}${date(e)}</tr>`).join("") + `</tbody>`;
   for (const tr of document.querySelectorAll("#lb-full tr.row"))
     tr.addEventListener("click", () => detail(tr.dataset.key));
 }
