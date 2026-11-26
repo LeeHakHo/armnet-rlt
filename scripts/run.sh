@@ -32,6 +32,8 @@
 #   --reward-plugin M:F    rlt/dsrl: rewrite each episode's rewards with function F of
 #                          module M, given its camera frames (the actor sends them), e.g.
 #                          armnet_rlt.robometer_reward:shape (see that module)
+#   --dense-reward         rlt/dsrl: add the forward-kinematics distance to the button to
+#                          every transition (armnet_rlt.dense_reward; DENSE_ALPHA, default 0.2)
 #   --learner-args "..."   extra learner flags (rlt-local online / lerobot-streaming-bc)
 #   --actor-args "..."     extra rlt-submit-actor flags
 #   --leaderboard NAME     after the last evaluation, submit the run to the leaderboard as
@@ -59,6 +61,7 @@ while [ $# -gt 0 ]; do
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
     --reward-plugin) REWARD_PLUGIN=$2 ;;
     --skip-eval) SKIP_EVAL=1; shift; continue ;;
+    --dense-reward) REWARD_PLUGIN=armnet_rlt.dense_reward:shape; shift; continue ;;
     --leaderboard) BOARD_NAME=$2 ;; --leaderboard-tag) BOARD_TAG=$2 ;;
     --leaderboard-code) BOARD_CODE=$2 ;; --leaderboard-notes) BOARD_NOTES=$2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -154,7 +157,8 @@ else
   wait_for $LEARNER "$LOGS/learner.log" "rendezvous" learner
   SUBMIT=(--config-name "$CONFIG" --checkpoint-dir "$CELL_CHECKPOINT" --learner-key "$CONFIG:$RUN"
     --exploration-scale "$STD" --scene-retry-delay 3 --scene-retry-limit 1 "${ACTOR_ALGO[@]}")
-  [ -z "$REWARD_PLUGIN" ] || SUBMIT+=(--episode-frames)
+  # The dense reward needs only the scene, which every episode carries.
+  case "$REWARD_PLUGIN" in ""|armnet_rlt.dense_reward:*) ;; *) SUBMIT+=(--episode-frames) ;; esac
   OUT=$DATA/tasks/$CONFIG/rlt_checkpoints/$RUN
 fi
 SUBMIT+=(--seed "$SEED")

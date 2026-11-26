@@ -87,7 +87,9 @@ def boundary_progress(curve: list[float], transitions: int) -> np.ndarray:
     return np.interp(positions, np.arange(len(curve)), np.asarray(curve, dtype=np.float64))
 
 
-def shape(episode: list[dict[str, torch.Tensor]], frames: dict[str, list[bytes]] | None) -> None:
+def shape(
+    episode: list[dict[str, torch.Tensor]], frames: dict[str, list[bytes]] | None, scene: dict | None = None
+) -> None:
     """Adds the Robometer progress gain of each transition to its reward."""
     if not episode or not frames or any(len(frames.get(view, [])) < 2 for view in VIEWS):
         return

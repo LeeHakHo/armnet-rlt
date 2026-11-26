@@ -199,11 +199,13 @@ def _serialize_episode(
     reward: float,
     safety_trip: bool = False,
     frames: list[dict[str, np.ndarray]] | None = None,
+    scene: tuple[float, float] | None = None,
 ) -> bytes | None:
     """One message per episode; ``safety_trip`` marks an episode the cell's
     safety gate stopped, which the learner treats as a terminal failure.
     ``frames`` (JPEG-encoded views at each policy call) ride on the first
-    transition as ``episode_frames``."""
+    transition as ``episode_frames``, and ``scene`` (rail position, cell number)
+    as ``scene``."""
     if not transitions:
         return None
     from lerobot.transport.utils import transitions_to_bytes
@@ -238,7 +240,19 @@ def _serialize_episode(
         from armnet_rlt.episode_frames import pack_episode_frames, spread
 
         labelled[0]["state"]["episode_frames"] = torch.from_numpy(pack_episode_frames(spread(frames)))
+    if scene is not None:
+        labelled[0]["state"]["scene"] = torch.tensor([scene], dtype=torch.float32)
     return transitions_to_bytes(labelled)
+
+
+def _episode_scene(variation: Any, cell_id: str) -> tuple[float, float] | None:
+    """(rail position, cell number) of an episode, or None when either is unknown."""
+    values = variation.get("values", {}) if isinstance(variation, dict) else {}
+    rail = values.get("rail") if isinstance(values, dict) else None
+    digits = "".join(ch for ch in cell_id if ch.isdigit())
+    if rail is None or not digits:
+        return None
+    return float(rail), float(int(digits))
 
 
 def _encode_frame_views(raw_obs: dict[str, Any], width: int = 426, height: int = 240) -> dict[str, np.ndarray]:
@@ -1373,6 +1387,7 @@ def run_actor(
                     reward=reward,
                     safety_trip=safety_trip is not None,
                     frames=episode_frames if send_frames else None,
+                    scene=_episode_scene(variation, cell_id),
                 )
                 outcome = state_machine.episode_ctx.outcome
                 mean_by_joint = (

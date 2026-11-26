@@ -616,12 +616,12 @@ def _drain_online_transitions(
     shutdown_event: Event,
     relabel: Callable[[list[dict[str, Tensor]]], None] | None = None,
     seen: set[bytes] | None = None,
-    reward_plugin: Callable[[list[dict[str, Tensor]], dict[str, list[bytes]] | None], None]
-    | None = None,
+    reward_plugin: Callable[..., None] | None = None,
 ) -> int:
     """Append the queued transitions; each message holds one episode, which
     ``relabel`` may rewrite before it is stored, and then ``reward_plugin``
-    with the episode's camera frames (None when the actor sent none).
+    with the episode's camera frames (None when the actor sent none) and its
+    scene (``{"rail", "cell"}``, None when the actor sent none).
     Replayed messages (digest in ``seen``) are dropped."""
     from lerobot.transport.utils import bytes_to_transitions
 
@@ -638,7 +638,16 @@ def _drain_online_transitions(
         if reward_plugin is not None:
             from armnet_rlt.episode_frames import unpack_episode_frames
 
-            reward_plugin(episode, unpack_episode_frames(packed) if packed is not None else None)
+            raw_scene = wire[0]["state"].get("scene")
+            scene = None
+            if raw_scene is not None:
+                rail, cell = (float(v) for v in torch.as_tensor(raw_scene).reshape(-1)[:2])
+                scene = {"rail": rail, "cell": int(cell)}
+            reward_plugin(
+                episode,
+                unpack_episode_frames(packed) if packed is not None else None,
+                scene=scene,
+            )
         replay_buffer.extend(episode)
         count += len(episode)
     return count
