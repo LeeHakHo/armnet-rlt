@@ -301,10 +301,6 @@ def run_lerobot_streaming_bc(
     np.random.seed(seed)
     torch.manual_seed(seed)
     run_dir.mkdir(parents=True, exist_ok=True)
-    episode_dir = run_dir / "success_episodes"
-    episode_dir.mkdir(exist_ok=True)
-    rollout_log = run_dir / "rollout_metrics.jsonl"
-    training_log = run_dir / "training_metrics.jsonl"
     successes: list[dict[str, Any]] = []
     completed_steps = 0
     if resume:
@@ -323,7 +319,6 @@ def run_lerobot_streaming_bc(
     policy.train()
     observation_offsets, action_offsets = frame_layout(policy.config)
     image_keys = list(policy.config.image_features)
-    batch_keys = ["observation.state", *image_keys, "action", "action_is_pad"]
     learning_rate = lr or float(policy.config.optimizer_lr)
     param_groups = policy.get_optim_params()
     if lr:
@@ -347,6 +342,28 @@ def run_lerobot_streaming_bc(
         )
         if base_size
         else None
+    )
+
+    trainer = _TorchBCTrainer(
+        policy,
+        served,
+        preprocessor,
+        postprocessor,
+        optimizer,
+        batch_size=batch_size,
+        base_size=base_size,
+        base_iter=base_iter,
+        observation_offsets=observation_offsets,
+        action_offsets=action_offsets,
+        image_keys=image_keys,
+        task=task,
+        grad_clip_norm=grad_clip_norm,
+        ema_decay=ema_decay,
+        description=f"{policy.config.type} from {policy_path}",
+        settings=(
+            f"lr={learning_rate:g}, ema_decay={ema_decay:g}, actions "
+            f"{action_offsets[0]}..{action_offsets[-1]}, observations {observation_offsets}"
+        ),
     )
 
     wandb_run = None
@@ -377,12 +394,144 @@ def run_lerobot_streaming_bc(
         )
         print(f"[lerobot sbc] WandB run: {wandb_run.url}", flush=True)
 
+    return run_streaming_bc(
+        config,
+        trainer,
+        run_dir=run_dir,
+        round_schedule=round_schedule,
+        steps_per_round=steps_per_round,
+        save_freq=save_freq,
+        online_steps=online_steps,
+        batch_size=batch_size,
+        base_size=base_size,
+        min_shaped_reward=min_shaped_reward,
+        idle_timeout_s=idle_timeout_s,
+        idle_min_episodes=idle_min_episodes,
+        log_freq=log_freq,
+        completed_steps=completed_steps,
+        successes=successes,
+        wandb_run=wandb_run,
+    )
+
+
+class _TorchBCTrainer:
+    """BC steps, checkpoints and weight pushes for a LeRobot (torch) policy."""
+
+    def __init__(
+        self,
+        policy: Any,
+        served: Any,
+        preprocessor: Any,
+        postprocessor: Any,
+        optimizer: Any,
+        *,
+        batch_size: int,
+        base_size: int,
+        base_iter: Any,
+        observation_offsets: list[int] | None,
+        action_offsets: list[int],
+        image_keys: list[str],
+        task: str,
+        grad_clip_norm: float,
+        ema_decay: float,
+        description: str,
+        settings: str,
+    ) -> None:
+        self.policy = policy
+        self.served = served
+        self.preprocessor = preprocessor
+        self.postprocessor = postprocessor
+        self.optimizer = optimizer
+        self.batch_size = batch_size
+        self.base_size = base_size
+        self.base_iter = base_iter
+        self.observation_offsets = observation_offsets
+        self.action_offsets = action_offsets
+        self.image_keys = image_keys
+        self.batch_keys = ["observation.state", *image_keys, "action", "action_is_pad"]
+        self.task = task
+        self.grad_clip_norm = grad_clip_norm
+        self.ema_decay = ema_decay
+        self.kind = str(policy.config.type)
+        self.description = description
+        self.settings = settings
+        self.weights = _PolicyWeights(served)
+        self.pool = ThreadPoolExecutor(max_workers=8)
+
+    def train_step(self, successes: list[dict[str, Any]]) -> tuple[float, dict[str, float], float]:
+        batch = online_batch(
+            successes,
+            self.batch_size - self.base_size,
+            observation_offsets=self.observation_offsets,
+            action_offsets=self.action_offsets,
+            image_keys=self.image_keys,
+            pool=self.pool,
+            task=self.task,
+        )
+        if self.base_iter is not None:
+            batch = _merge(batch, next(self.base_iter), self.batch_keys)
+        loss, loss_dict = self.policy.forward(self.preprocessor(batch))
+        self.optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip_norm)
+        self.optimizer.step()
+        if self.ema_decay:
+            update_ema(self.served, self.policy, self.ema_decay)
+        loss_dict = {
+            key: float(value)
+            for key, value in (loss_dict or {}).items()
+            if isinstance(value, (int, float)) or hasattr(value, "item")
+        }
+        return float(loss.detach()), loss_dict, float(grad_norm)
+
+    def save(self, run_dir: Path, step: int) -> Path:
+        self.served.eval()
+        checkpoint = _save(self.served, self.preprocessor, self.postprocessor, run_dir, step)
+        self.policy.train()
+        return checkpoint
+
+    def close(self) -> None:
+        self.pool.shutdown(wait=False)
+
+
+def run_streaming_bc(
+    config: Any,
+    trainer: Any,
+    *,
+    run_dir: Path,
+    round_schedule: tuple[int, ...] | list[int],
+    steps_per_round: int,
+    save_freq: int,
+    online_steps: int,
+    batch_size: int,
+    base_size: int,
+    min_shaped_reward: float = 0.0,
+    idle_timeout_s: float = 600.0,
+    idle_min_episodes: int = 5,
+    log_freq: int = 50,
+    completed_steps: int = 0,
+    successes: list[dict[str, Any]] | None = None,
+    wandb_run: Any = None,
+) -> dict[str, object]:
+    """Serve actors, collect their successes and train ``trainer`` round by round.
+
+    ``trainer`` has ``weights`` (pushed to actors), ``train_step(successes)`` returning
+    (loss, loss dict, gradient norm), ``save(run_dir, step)`` returning the checkpoint,
+    ``close()``, ``kind``, ``description`` and ``settings``. Every ``save_freq`` steps
+    it is checkpointed and pushed.
+    """
+    successes = successes if successes is not None else []
+    run_dir.mkdir(parents=True, exist_ok=True)
+    episode_dir = run_dir / "success_episodes"
+    episode_dir.mkdir(exist_ok=True)
+    rollout_log = run_dir / "rollout_metrics.jsonl"
+    training_log = run_dir / "training_metrics.jsonl"
     rolling, episode_count = _restore_rolling_metrics(rollout_log, window=10)
     seen_episodes = _logged_episode_keys(rollout_log)
     seen_transitions: set[bytes] = set()
     shutdown_event = Event()
     actor_subscribed = Event()
-    weights = _PolicyWeights(served)
+    weights = trainer.weights
     server, transition_queue, interaction_queue, parameters_queue = (
         _start_online_transport(
             config,
@@ -393,7 +542,6 @@ def run_lerobot_streaming_bc(
             partial=True,
         )
     )
-    pool = ThreadPoolExecutor(max_workers=8)
     arrived_episodes: deque[dict[str, Any]] = deque()
     pending_labels: deque[EpisodeRecord] = deque()
     pending_since: float | None = None
@@ -407,11 +555,9 @@ def run_lerobot_streaming_bc(
     last_arrival = time.monotonic()
     stop_reason = "step_budget"
     print(
-        f"[lerobot sbc] serving {policy.config.type} from {policy_path}; "
+        f"[lerobot sbc] serving {trainer.description}; "
         f"{steps_per_round} step(s) per round on the episode schedule "
-        f"{list(round_schedule)}, batch={batch_size} (base {base_size}), "
-        f"lr={learning_rate:g}, ema_decay={ema_decay:g}, actions {action_offsets[0]}..{action_offsets[-1]}, "
-        f"observations {observation_offsets}",
+        f"{list(round_schedule)}, batch={batch_size} (base {base_size}), {trainer.settings}",
         flush=True,
     )
     try:
@@ -532,31 +678,9 @@ def run_lerobot_streaming_bc(
                 time.sleep(0.05)
                 continue
 
-            batch = online_batch(
-                successes,
-                batch_size - base_size,
-                observation_offsets=observation_offsets,
-                action_offsets=action_offsets,
-                image_keys=image_keys,
-                pool=pool,
-                task=task,
-            )
-            if base_iter is not None:
-                batch = _merge(batch, next(base_iter), batch_keys)
-            loss, loss_dict = policy.forward(preprocessor(batch))
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
-            optimizer.step()
-            if ema_decay:
-                update_ema(served, policy, ema_decay)
-            final_loss = float(loss.detach())
+            final_loss, loss_dict, grad_norm = trainer.train_step(successes)
             completed_steps += 1
             pending_updates -= 1
-            loss_dict = {
-                key: float(value) for key, value in (loss_dict or {}).items()
-                if isinstance(value, (int, float)) or hasattr(value, "item")
-            }
 
             if completed_steps % log_freq == 0:
                 print(
@@ -573,7 +697,7 @@ def run_lerobot_streaming_bc(
                         "learner_step": completed_steps,
                         "loss": final_loss,
                         **loss_dict,
-                        "grad_norm": float(grad_norm),
+                        "grad_norm": grad_norm,
                         "success_episodes": len(successes),
                         "episodes_total": episode_count,
                         "pending_updates": pending_updates,
@@ -583,7 +707,7 @@ def run_lerobot_streaming_bc(
                     wandb_run.log(
                         {
                             "bc/loss": final_loss,
-                            "bc/grad_norm": float(grad_norm),
+                            "bc/grad_norm": grad_norm,
                             "bc/step": completed_steps,
                             "bc/success_episodes": len(successes),
                             "bc/episodes": episode_count,
@@ -592,13 +716,11 @@ def run_lerobot_streaming_bc(
                         step=completed_steps,
                     )
             if completed_steps % save_freq == 0:
-                served.eval()
-                checkpoint = _save(served, preprocessor, postprocessor, run_dir, completed_steps)
+                checkpoint = trainer.save(run_dir, completed_steps)
                 weights.mark_checkpoint()
                 _push_weights(
                     parameters_queue, weights, learner_step=completed_steps, partial=True
                 )
-                policy.train()
                 print(
                     f"[lerobot sbc] step {completed_steps} ({completed_steps // steps_per_round} "
                     f"rounds trained, {pending_updates} steps queued); pushed "
@@ -608,13 +730,12 @@ def run_lerobot_streaming_bc(
     finally:
         shutdown_event.set()
         server.stop(grace=1.0)
-        pool.shutdown(wait=False)
+        trainer.close()
 
-    served.eval()
-    checkpoint = _save(served, preprocessor, postprocessor, run_dir, completed_steps)
+    checkpoint = trainer.save(run_dir, completed_steps)
     summary = {
         "phase": "lerobot_streaming_bc",
-        "policy_type": str(policy.config.type),
+        "policy_type": trainer.kind,
         "steps": completed_steps,
         "loss": final_loss,
         "checkpoint": str(checkpoint),
@@ -631,3 +752,89 @@ def run_lerobot_streaming_bc(
         wandb_run.finish()
     print(f"[lerobot sbc] complete: {summary}", flush=True)
     return summary
+
+
+def run_pi05_streaming_bc(
+    config: Any,
+    *,
+    checkpoint: str,
+    config_name: str,
+    run_dir: Path,
+    run_id: str,
+    task: str,
+    episodes_per_round: str | int,
+    steps_per_round: int,
+    save_freq: int = 300,
+    batch_size: int = 16,
+    online_steps: int = 1800,
+    lr: float = 1e-4,
+    base_dataset: str = "",
+    base_batch_fraction: float = 0.0,
+    min_shaped_reward: float = 0.0,
+    idle_timeout_s: float = 600.0,
+    idle_min_episodes: int = 5,
+    log_freq: int = 50,
+    seed: int = 42,
+    wandb_project: str | None = None,
+) -> dict[str, object]:
+    """``run_streaming_bc`` on the LoRA adapters of π0.5 (``pi05_lora``); ``checkpoint``
+    is the base Pi0RL checkpoint."""
+    from armnet_rlt.pi05_lora import Pi05LoRATrainer
+
+    round_schedule = parse_round_schedule(episodes_per_round)
+    if not round_schedule or steps_per_round <= 0:
+        raise ValueError("episodes_per_round and steps_per_round are required")
+    if not 0.0 <= base_batch_fraction < 1.0:
+        raise ValueError("base_batch_fraction must be in [0, 1)")
+    if base_batch_fraction > 0 and not base_dataset:
+        raise ValueError("base_batch_fraction needs base_dataset")
+    random.seed(seed)
+    np.random.seed(seed)
+    trainer = Pi05LoRATrainer(
+        checkpoint,
+        config_name,
+        task=task,
+        batch_size=batch_size,
+        base_dataset=base_dataset,
+        base_batch_fraction=base_batch_fraction,
+        lr=lr,
+        seed=seed,
+    )
+    wandb_run = None
+    if wandb_project:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=wandb_project,
+            id=run_id,
+            resume="allow",
+            config={
+                "checkpoint": checkpoint,
+                "policy_type": trainer.kind,
+                "task": task,
+                "episodes_per_round": str(episodes_per_round),
+                "steps_per_round": steps_per_round,
+                "batch_size": batch_size,
+                "lr": lr,
+                "base_dataset": base_dataset,
+                "base_batch_fraction": base_batch_fraction,
+                "min_shaped_reward": min_shaped_reward,
+            },
+            tags=["streaming-bc", trainer.kind],
+        )
+    return run_streaming_bc(
+        config,
+        trainer,
+        run_dir=run_dir,
+        round_schedule=round_schedule,
+        steps_per_round=steps_per_round,
+        save_freq=save_freq,
+        online_steps=online_steps,
+        batch_size=batch_size,
+        base_size=trainer.base_size,
+        min_shaped_reward=min_shaped_reward,
+        idle_timeout_s=idle_timeout_s,
+        idle_min_episodes=idle_min_episodes,
+        log_freq=log_freq,
+        wandb_run=wandb_run,
+    )

@@ -394,6 +394,9 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             args.checkpoint, args.rl_token, args.norm_stats, noise_seed=args.seed
         )
         image_size = LEROBOT_RL_IMAGE_SIZE
+    elif args.policy_type == "pi05-lora":
+        policy = _pi05_lora_backend(args)
+        image_size = None
     else:
         policy, image_size = _openpi_backend(args)
     edge_tls = _edge_terminates_tls(args)
@@ -418,7 +421,7 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             from armnet_rlt.steering_feed import LearnerSteeringFeed
 
             learner_host, _, learner_port = args.steering_from_learner.rpartition(":")
-            if args.policy_type == "lerobot":
+            if args.policy_type in ("lerobot", "pi05-lora"):
                 feed_options: dict[str, Any] = {
                     "installer": lambda weights, step, partial: server.run_locked(
                         policy.apply_weights, weights, step, partial
@@ -475,6 +478,61 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
             pass
         finally:
             entry_path.unlink(missing_ok=True)
+
+
+def _pi05_lora_backend(args: argparse.Namespace) -> Any:
+    """π0.5 with LoRA adapters (a base checkpoint or a LoRA checkpoint), warmed up."""
+    import numpy as np
+
+    from armnet_rlt.pi05_lora import CAMERAS, IMAGE_SHAPE, Pi05LoRABackend, Pi05LoRAPolicy
+    from armnet_rlt.openpi_rlt import PolicyObservation
+
+    policy = Pi05LoRAPolicy.load(
+        args.checkpoint, args.openpi_config, default_prompt=args.prompt, seed=args.seed
+    )
+    policy.infer(
+        PolicyObservation(
+            state=np.zeros(6, dtype=np.float32),
+            images={camera: np.zeros((*IMAGE_SHAPE, 3), dtype=np.uint8) for camera in CAMERAS},
+            prompt=args.prompt,
+        )
+    )
+    return Pi05LoRABackend(
+        policy, prompt=args.prompt, served_from_learner=bool(args.steering_from_learner)
+    )
+
+
+def cmd_pi05_streaming_bc(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    token = _learner_token()
+    from types import SimpleNamespace
+
+    from armnet_rlt.config import RLTActorLearnerConfig
+    from armnet_rlt.lerobot_learner import run_pi05_streaming_bc
+
+    cfg = SimpleNamespace(actor_learner=RLTActorLearnerConfig())
+    with _serve(args, cfg, token):
+        run_pi05_streaming_bc(
+            cfg,
+            checkpoint=args.checkpoint,
+            config_name=args.openpi_config,
+            run_dir=local_data_root() / "lerobot-sbc" / args.run_id,
+            run_id=args.run_id,
+            task=args.task,
+            episodes_per_round=args.episodes_per_round,
+            steps_per_round=args.steps_per_round,
+            save_freq=args.save_freq,
+            batch_size=args.batch_size,
+            online_steps=args.online_steps,
+            lr=args.lr,
+            base_dataset=args.base_dataset,
+            base_batch_fraction=args.base_batch_fraction,
+            min_shaped_reward=args.min_shaped_reward,
+            idle_timeout_s=args.idle_timeout_s,
+            idle_min_episodes=args.idle_min_episodes,
+            seed=args.seed,
+            wandb_project=args.wandb_project or None,
+        )
 
 
 def cmd_streaming_bc(args: argparse.Namespace) -> None:
@@ -828,6 +886,38 @@ def _parser() -> argparse.ArgumentParser:
         "Minimum seconds between weight pushes; weights are pushed when a round finishes",
     )
 
+    pi05_sbc = add(
+        "pi05-streaming-bc",
+        cmd_pi05_streaming_bc,
+        "serve a learner that trains π0.5's LoRA adapters on the successes a live actor sends",
+    )
+    pi05_sbc.add_argument("--config-name", default="eval")
+    pi05_sbc.add_argument("--run-id", default="")
+    pi05_sbc.add_argument("--seed", type=int, default=42, help="training seed")
+    pi05_sbc.add_argument("--wandb-project", default="")
+    pi05_sbc.add_argument("--checkpoint", required=True, help="base Pi0RL checkpoint directory")
+    pi05_sbc.add_argument("--openpi-config", default=MULTITASK_CONFIG)
+    pi05_sbc.add_argument("--task", default=GREEN_BUTTON_PROMPT)
+    pi05_sbc.add_argument("--episodes-per-round", default="20")
+    pi05_sbc.add_argument("--steps-per-round", type=int, default=300)
+    pi05_sbc.add_argument(
+        "--save-freq", type=int, default=300, help="Learner steps between checkpoints and weight pushes"
+    )
+    pi05_sbc.add_argument("--batch-size", type=int, default=16)
+    pi05_sbc.add_argument("--online-steps", type=int, default=1800)
+    pi05_sbc.add_argument("--lr", type=float, default=1e-4)
+    pi05_sbc.add_argument(
+        "--base-dataset", default="", help="Offline LeRobot dataset mixed into every batch"
+    )
+    pi05_sbc.add_argument("--base-batch-fraction", type=float, default=0.0)
+    pi05_sbc.add_argument("--min-shaped-reward", type=float, default=0.0)
+    pi05_sbc.add_argument("--idle-timeout-s", type=float, default=600.0)
+    pi05_sbc.add_argument("--idle-min-episodes", type=int, default=5)
+    add_transport(
+        pi05_sbc,
+        "Minimum seconds between weight pushes; weights are pushed when a round finishes",
+    )
+
     checkpoint_eval = add(
         "checkpoint-eval",
         cmd_checkpoint_eval,
@@ -975,11 +1065,12 @@ def _parser() -> argparse.ArgumentParser:
     policy_server.add_argument("--config-name", default=MULTITASK_CONFIG)
     policy_server.add_argument(
         "--policy-type",
-        choices=("openpi", "lerobot", "lerobot-rl"),
+        choices=("openpi", "lerobot", "lerobot-rl", "pi05-lora"),
         default="openpi",
         help="openpi: the RLT/DSRL base policy; lerobot: a LeRobot policy "
         "(Diffusion, SmolVLA, ...) for --policy-type lerobot actors; lerobot-rl: a "
-        "SmolVLA or DiT base policy with an RL token, for RLT/DSRL actors",
+        "SmolVLA or DiT base policy with an RL token, for RLT/DSRL actors; pi05-lora: "
+        "π0.5 with LoRA adapters for --policy-type lerobot actors",
     )
     policy_server.add_argument("--rl-token", default="", help="lerobot-rl: train-rl-token output")
     policy_server.add_argument(
@@ -989,7 +1080,12 @@ def _parser() -> argparse.ArgumentParser:
         "--checkpoint",
         required=True,
         help="Local OpenPI checkpoint directory, or a LeRobot pretrained_model "
-        "directory with --policy-type lerobot",
+        "directory with --policy-type lerobot, or a base or LoRA checkpoint with pi05-lora",
+    )
+    policy_server.add_argument(
+        "--openpi-config",
+        default=MULTITASK_CONFIG,
+        help="OpenPI config of a pi05-lora base checkpoint",
     )
     policy_server.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
     policy_server.add_argument(

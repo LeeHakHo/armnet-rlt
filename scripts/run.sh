@@ -6,16 +6,17 @@
 # it; evaluation rollouts are not training episodes. Ctrl-C stops everything, the cell
 # job included.
 #
-#   CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit> [options]
+#   CELL=<cell-id> scripts/run.sh <rlt|dsrl|dit|pi05bc> [options]
 #   dit trains any LeRobot policy by iterative BC: multi-task DiT by default, or
 #   --policy-type, including your own plugin under plugins/ (see the README).
+#   pi05bc trains LoRA adapters of the π0.5 base (--model) by the same iterative BC.
 #
 #   --episodes N           training episodes (400)
 #   --eval-every N         evaluate after every N training episodes (100); 0 disables
 #   --skip-eval            save the checkpoint at each of those points but do not evaluate
 #                          (they are listed in experiment-data/logs/<run id>/checkpoints.txt
 #                          for scripts/eval.sh later)
-#   --model <dir|HF repo>  starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl
+#   --model <dir|HF repo>  starting policy: an OpenPI π0.5 checkpoint for rlt/dsrl/pi05bc
 #                          (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken), a
 #                          LeRobot pretrained_model for dit (default: trained from the
 #                          demo dataset with --policy-type)
@@ -49,12 +50,14 @@
 #   --leaderboard-code URL, --leaderboard-notes TEXT   shown with the method
 #
 # Logs: experiment-data/logs/<run id>/. Checkpoints: experiment-data/tasks/<config>/
-# rlt_checkpoints/<run id> (rlt, dsrl) or experiment-data/lerobot-sbc/<run id> (dit).
+# rlt_checkpoints/<run id> (rlt, dsrl) or experiment-data/lerobot-sbc/<run id> (dit, pi05bc).
 # Evaluations: experiment-data/eval/<run id>-ep<episodes>/results.jsonl.
 set -euo pipefail
 METHOD=${1:-}
-case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,44p' "$0"; exit 0 ;;
-  *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
+case "$METHOD" in rlt|dsrl|dit|pi05bc) shift ;; -h|--help|"") sed -n '2,45p' "$0"; exit 0 ;;
+  *) echo "method must be rlt, dsrl, dit or pi05bc" >&2; exit 2 ;; esac
+# Iterative BC: the LeRobot actor streams its successes to a streaming-BC learner.
+BC=0; case "$METHOD" in dit|pi05bc) BC=1 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
 SKIP_EVAL=0 SEED=42 BASE_KIND=pi05 RL_TOKEN="" RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
 while [ $# -gt 0 ]; do
@@ -76,10 +79,10 @@ while [ $# -gt 0 ]; do
 done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 actor_common
-[ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt and dsrl runs"
+[ -z "$RESUME" ] || [ "$BC" = 0 ] || die "--resume is for rlt and dsrl runs"
 case "$BASE_KIND" in pi05|smolvla|dit) ;; *) die "--base must be pi05, smolvla or dit" ;; esac
-[ "$BASE_KIND" = pi05 ] || [ "$METHOD" != dit ] || die "--base is for rlt and dsrl runs"
-[ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt and dsrl runs"
+[ "$BASE_KIND" = pi05 ] || [ "$BC" = 0 ] || die "--base is for rlt and dsrl runs"
+[ -z "$REWARD_PLUGIN" ] || [ "$BC" = 0 ] || die "--reward-plugin is for rlt and dsrl runs"
 [ -z "$BOARD_NAME" ] || [ -n "$CELL" ] || die "--leaderboard needs CELL"
 [ -z "$BOARD_NAME" ] || [ "$SKIP_EVAL" = 0 ] || die "--leaderboard needs the evaluations; drop --skip-eval"
 [ -z "$BOARD_NAME" ] || { [ "${RECORD:-1}" = 1 ] && [ -n "${RECORD_REPO:-}" ]; } \
@@ -128,6 +131,24 @@ if [ "$METHOD" = dit ]; then
     --checkpoint "$POLICY" --seed "$SEED" $STEERING $POLICY_TUNNEL)
   # run.sh stops the learner after the last evaluation; the step cap is never reached.
   $BIN/rlt-local lerobot-streaming-bc $GPU_ARG --run-id "$RUN" --seed "$SEED" --policy-path "$POLICY" \
+    --base-dataset "$DATASET" --base-batch-fraction 0.5 --min-shaped-reward 1.0 \
+    --episodes-per-round $ROUND --steps-per-round 300 --online-steps 1000000000 \
+    --idle-timeout-s 86400 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS > "$LOGS/learner.log" 2>&1 &
+  LEARNER=$!; PIDS+=($LEARNER)
+  wait_for $LEARNER "$LOGS/learner.log" "\[lerobot sbc\] serving" learner
+  SUBMIT=(--policy-type lerobot --config-name eval --learner-key "eval:$RUN" --exploration-scale 0
+    --episodes-per-round $ROUND --steps-per-round 300 --round-wait-timeout-s 2400)
+  OUT=$DATA/lerobot-sbc/$RUN
+elif [ "$METHOD" = pi05bc ]; then
+  ROUND=20  # episodes per learner round; one round = 300 learner steps
+  POLICY=$(resolve_model "$MODEL")
+  log "pi05bc run $RUN from $POLICY"
+  # The policy server registers under "eval", where --policy-type lerobot actors look.
+  SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type pi05-lora
+    --openpi-config "$CONFIG" --checkpoint "$POLICY" --prompt "$PROMPT" --seed "$SEED"
+    $STEERING $POLICY_TUNNEL)
+  $OPENPI_BIN/rlt-local pi05-streaming-bc $GPU_ARG --run-id "$RUN" --seed "$SEED" \
+    --checkpoint "$POLICY" --openpi-config "$CONFIG" --task "$PROMPT" \
     --base-dataset "$DATASET" --base-batch-fraction 0.5 --min-shaped-reward 1.0 \
     --episodes-per-round $ROUND --steps-per-round 300 --online-steps 1000000000 \
     --idle-timeout-s 86400 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS > "$LOGS/learner.log" 2>&1 &
@@ -215,7 +236,7 @@ learner_alive() { kill -0 "$LEARNER" 2>/dev/null; }
 
 # Prints the learner's checkpoint after <mark> training episodes, once it is saved.
 checkpoint_at() {  # <mark>
-  if [ "$METHOD" = dit ]; then
+  if [ "$BC" = 1 ]; then
     # The round that ends at <mark> episodes; after its 300 steps the learner logs
     # "0 steps queued ... saved <dir>". A round without successes trains nothing.
     local dir
@@ -239,7 +260,7 @@ PY
     # No successes yet: the newest checkpoint, or the starting policy.
     [ "$dir" = newest ] && dir=$(ls -d "$OUT"/checkpoints/[0-9]* 2>/dev/null | sort -V | tail -1 || true)
     dir=${dir%/}; dir=${dir:-$POLICY}
-    case "$dir" in */pretrained_model) echo "$dir" ;; *) echo "$dir/pretrained_model" ;; esac
+    case "$dir" in */pretrained_model|"$POLICY") echo "$dir" ;; *) echo "$dir/pretrained_model" ;; esac
   else
     local step
     until step=$(python3 -c '
@@ -307,13 +328,15 @@ for MARK in $MARKS; do
   stop_server
   if [ "$METHOD" = dit ]; then
     eval_checkpoint lerobot "$CKPT" "$RUN-ep$MARK" "eval:$RUN"
+  elif [ "$METHOD" = pi05bc ]; then
+    eval_checkpoint pi05bc "$CKPT" "$RUN-ep$MARK" "eval:$RUN"
   else
     eval_checkpoint rlt "$CKPT" "$RUN-ep$MARK" "$BASE"
   fi
   [ "$MARK" = "$EPISODES" ] || start_server
 done
 stop_server
-if [ "$METHOD" = dit ]; then
+if [ "$BC" = 1 ]; then
   kill "$LEARNER" 2>/dev/null || true
 else
   # The online learner stops by itself after its last episode checkpoint.
