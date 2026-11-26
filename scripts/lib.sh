@@ -236,6 +236,8 @@ for c, (n, s, t) in counts.items():
 #   kind lerobot: <checkpoint> is a pretrained_model dir. With <learner key> (a running
 #     LeRobot learner), the actor sends it nothing (--eval-only); without, a
 #     checkpoint-eval learner is started for each job.
+#   kind pi05bc: <checkpoint> is a π0.5 base or LoRA checkpoint (run.sh pi05bc), served
+#     with --policy-type pi05-lora; needs <learner key>.
 #   kind rlt: <checkpoint> is a volume:// frozen actor of an rlt/dsrl run, served on <base>.
 # Results: experiment-data/eval/<label>/results.jsonl, one row per condition; a group whose
 # conditions are all there is skipped. Uses POLICY_PORT and, without a learner key, LEARNER_PORT.
@@ -251,6 +253,12 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     server=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
       --checkpoint "$ckpt" $POLICY_TUNNEL)
     [ -z "$extra" ] && server+=($STEERING)
+  elif [ "$kind" = pi05bc ]; then
+    # π0.5 with LoRA adapters, served to a LeRobot actor; evaluated like kind lerobot.
+    [ -n "$extra" ] || die "eval_checkpoint pi05bc needs a learner key"
+    server=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type pi05-lora
+      --openpi-config "$CONFIG" --checkpoint "$ckpt" --prompt "$PROMPT" $POLICY_TUNNEL)
+    kind=lerobot
   else
     server=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$extra"
       --prompt "$PROMPT" $POLICY_TUNNEL)
