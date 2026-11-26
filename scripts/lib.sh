@@ -191,6 +191,7 @@ EVAL_OOD_ROLLOUTS=${EVAL_OOD_ROLLOUTS:-10}
 EVAL_LIGHT=${EVAL_LIGHT:-}
 EVAL_PIDS=()
 EVAL_JOB_LOG=""
+RL_SERVER=()
 
 # Freezes step STEP of an rlt/dsrl run, uploads it, and prints its volume path.
 freeze_rlt() {  # <run> <step>
@@ -251,6 +252,9 @@ eval_checkpoint() {  # <kind> <checkpoint> <label> <base or learner key>
     server=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
       --checkpoint "$ckpt" $POLICY_TUNNEL)
     [ -z "$extra" ] && server+=($STEERING)
+  elif [ "${#RL_SERVER[@]}" -gt 0 ]; then
+    # An rlt/dsrl run on a LeRobot base (run.sh --base).
+    server=("${RL_SERVER[@]}" $POLICY_TUNNEL)
   else
     server=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$extra"
       --prompt "$PROMPT" $POLICY_TUNNEL)

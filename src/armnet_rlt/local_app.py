@@ -385,6 +385,15 @@ def cmd_policy_server(args: argparse.Namespace) -> None:
     if args.policy_type == "lerobot":
         policy = _lerobot_backend(args)
         image_size = None
+    elif args.policy_type == "lerobot-rl":
+        from armnet_rlt.lerobot_rl import LeRobotRLPolicy
+
+        if not (args.rl_token and args.norm_stats):
+            raise SystemExit("--policy-type lerobot-rl needs --rl-token and --norm-stats")
+        policy = LeRobotRLPolicy.from_checkpoint(
+            args.checkpoint, args.rl_token, args.norm_stats, noise_seed=args.seed
+        )
+        image_size = LEROBOT_RL_IMAGE_SIZE
     else:
         policy, image_size = _openpi_backend(args)
     edge_tls = _edge_terminates_tls(args)
@@ -503,6 +512,27 @@ def cmd_streaming_bc(args: argparse.Namespace) -> None:
             idle_min_episodes=args.idle_min_episodes,
             push_unchanged_weights=False,
         )
+
+
+# Camera frames sent to a lerobot-rl server, (height, width): the demo dataset's size.
+LEROBOT_RL_IMAGE_SIZE = (240, 426)
+
+
+def cmd_train_rl_token(args: argparse.Namespace) -> None:
+    _select_gpu(args.gpu)
+    from armnet_rlt.lerobot_rl import train_rl_token
+
+    train_rl_token(
+        args.policy_path, args.dataset, args.out, steps=args.steps, batch_size=args.batch_size,
+        lr=args.lr, seed=args.seed,
+    )
+
+
+def cmd_export_norm_stats(args: argparse.Namespace) -> None:
+    from armnet_rlt.openpi_rlt import export_norm_stats
+
+    export_norm_stats(args.checkpoint, args.config_name, args.out)
+    print(f"wrote {args.out}")
 
 
 def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
@@ -917,6 +947,26 @@ def _parser() -> argparse.ArgumentParser:
     online.add_argument("--critic-action-gain", type=float, default=10.0)
     add_transport(online, "Seconds between weight pushes")
 
+    rl_token = add(
+        "train-rl-token",
+        cmd_train_rl_token,
+        "train an RL token on a frozen SmolVLA or DiT policy's embeddings of a dataset",
+    )
+    rl_token.add_argument("--policy-path", required=True, help="LeRobot pretrained_model directory")
+    rl_token.add_argument("--dataset", required=True, help="LeRobot dataset repo id")
+    rl_token.add_argument("--out", required=True)
+    rl_token.add_argument("--steps", type=int, default=5000)
+    rl_token.add_argument("--batch-size", type=int, default=32)
+    rl_token.add_argument("--lr", type=float, default=1e-4)
+    rl_token.add_argument("--seed", type=int, default=42)
+    norm = add(
+        "export-norm-stats",
+        cmd_export_norm_stats,
+        "write an OpenPI checkpoint's actor normalization to an .npz (for lerobot-rl servers)",
+    )
+    norm.add_argument("--checkpoint", required=True)
+    norm.add_argument("--config-name", default=MULTITASK_CONFIG)
+    norm.add_argument("--out", required=True)
     policy_server = add(
         "policy-server",
         cmd_policy_server,
@@ -925,10 +975,15 @@ def _parser() -> argparse.ArgumentParser:
     policy_server.add_argument("--config-name", default=MULTITASK_CONFIG)
     policy_server.add_argument(
         "--policy-type",
-        choices=("openpi", "lerobot"),
+        choices=("openpi", "lerobot", "lerobot-rl"),
         default="openpi",
         help="openpi: the RLT/DSRL base policy; lerobot: a LeRobot policy "
-        "(Diffusion, SmolVLA, ...) for --policy-type lerobot actors",
+        "(Diffusion, SmolVLA, ...) for --policy-type lerobot actors; lerobot-rl: a "
+        "SmolVLA or DiT base policy with an RL token, for RLT/DSRL actors",
+    )
+    policy_server.add_argument("--rl-token", default="", help="lerobot-rl: train-rl-token output")
+    policy_server.add_argument(
+        "--norm-stats", default="", help="lerobot-rl: export-norm-stats output of the π0.5 task"
     )
     policy_server.add_argument(
         "--checkpoint",

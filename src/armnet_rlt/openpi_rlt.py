@@ -155,6 +155,25 @@ def load_norm_stats(checkpoint_dir: str | Path, data_config: Any = None) -> dict
     return stats
 
 
+def export_norm_stats(checkpoint_dir: str | Path, config_name: str, out_file: str | Path) -> None:
+    """Write the normalization a policy server for this checkpoint sends to actors
+    (``norm/<name>/<field>`` arrays and a ``meta`` JSON string) to an ``.npz`` file."""
+    import json
+
+    from openpi.training.config import get_config
+
+    from armnet_rlt.remote_policy import pack_norm_stats
+
+    config = get_config(config_name)
+    data_config = config.data.create(config.assets_dirs, config.model)
+    meta = {
+        "use_quantile_norm": bool(getattr(data_config, "use_quantile_norm", True)),
+        "uses_delta_actions": uses_delta_actions(config, data_config),
+    }
+    arrays = pack_norm_stats(load_norm_stats(checkpoint_dir, data_config))
+    np.savez(out_file, meta=np.asarray(json.dumps(meta)), **arrays)
+
+
 def uses_delta_actions(config: Any, data_config: Any) -> bool:
     """Read delta semantics from the data-config factory that defines them."""
 

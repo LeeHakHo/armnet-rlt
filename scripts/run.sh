@@ -19,6 +19,11 @@
 #                          (default AutoRLBench/pi05_busybox_minmax_step5k_rltoken), a
 #                          LeRobot pretrained_model for dit (default: trained from the
 #                          demo dataset with --policy-type)
+#   --base <pi05|smolvla|dit>  rlt/dsrl: base policy (pi05). smolvla and dit are LeRobot
+#                          policies (--model, default the demo-trained one under
+#                          $DATA/dit) served with an RL token (--rl-token, default
+#                          $DATA/rl_token/<base>; rlt-local train-rl-token makes one)
+#   --rl-token DIR         rlt/dsrl with a LeRobot base: the RL token to serve
 #   --policy-type <type>   dit only: LeRobot policy to train from the demos
 #                          (multi_task_dit, diffusion, smolvla, ...; default multi_task_dit)
 #   --steps N              rlt/dsrl: learner step cap, which also sets the learning-rate
@@ -51,12 +56,13 @@ METHOD=${1:-}
 case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,44p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
-SKIP_EVAL=0 SEED=42 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
+SKIP_EVAL=0 SEED=42 BASE_KIND=pi05 RL_TOKEN="" RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episodes) EPISODES=$2 ;; --eval-every) EVAL_EVERY=$2 ;;
     --model) MODEL=$2 ;; --policy-type) POLICY_TYPE=$2 ;; --steps) STEPS=$2 ;;
     --std) STD=$2 ;; --trip-penalty) PENALTY=$2 ;; --run-id) RUN=$2 ;; --seed) SEED=$2 ;;
+    --base) BASE_KIND=$2 ;; --rl-token) RL_TOKEN=$2 ;;
     --resume) RUN=$2; RESUME=--resume ;;
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
     --reward-plugin) REWARD_PLUGIN=$2 ;;
@@ -71,6 +77,8 @@ done
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 actor_common
 [ -z "$RESUME" ] || [ "$METHOD" != dit ] || die "--resume is for rlt and dsrl runs"
+case "$BASE_KIND" in pi05|smolvla|dit) ;; *) die "--base must be pi05, smolvla or dit" ;; esac
+[ "$BASE_KIND" = pi05 ] || [ "$METHOD" != dit ] || die "--base is for rlt and dsrl runs"
 [ -z "$REWARD_PLUGIN" ] || [ "$METHOD" != dit ] || die "--reward-plugin is for rlt and dsrl runs"
 [ -z "$BOARD_NAME" ] || [ -n "$CELL" ] || die "--leaderboard needs CELL"
 [ -z "$BOARD_NAME" ] || [ "$SKIP_EVAL" = 0 ] || die "--leaderboard needs the evaluations; drop --skip-eval"
@@ -131,11 +139,33 @@ if [ "$METHOD" = dit ]; then
 else
   STEPS=${STEPS:-$([ "$METHOD" = rlt ] && echo 30000 || echo 400000)}
   PENALTY=${PENALTY:-$([ "$METHOD" = rlt ] && echo 5 || echo 2)}
-  BASE=$(resolve_model "$MODEL")
+  if [ "$BASE_KIND" = pi05 ]; then
+    BASE=$(resolve_model "$MODEL")
+  else
+    case "$BASE_KIND" in
+      dit) DEFAULT_BASE=$DATA/dit/demo-multi_task_dit-s300/checkpoints/000300/pretrained_model ;;
+      smolvla) DEFAULT_BASE=$DATA/dit/demo-smolvla-s20000/checkpoints/last/pretrained_model ;;
+    esac
+    BASE=$(resolve_model "${MODEL:-$DEFAULT_BASE}")
+    RL_TOKEN=${RL_TOKEN:-$DATA/rl_token/$BASE_KIND}
+    [ -f "$RL_TOKEN/rl_token.pt" ] || die "no RL token in $RL_TOKEN; train one with rlt-local train-rl-token"
+    NORM_STATS=$DATA/rl_token/pi05_busybox_norm_stats.npz
+    if [ ! -f "$NORM_STATS" ]; then
+      mkdir -p "$(dirname "$NORM_STATS")"
+      $OPENPI_BIN/rlt-local export-norm-stats --config-name "$CONFIG" --checkpoint "$(resolve_model "")" \
+        --out "$NORM_STATS" >> "$LOGS/policy-server.log" 2>&1 || die "could not export the π0.5 norm stats"
+    fi
+    # Read by eval_checkpoint for the evaluation server.
+    RL_SERVER=($LEROBOT_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --policy-type lerobot-rl
+      --checkpoint "$BASE" --rl-token "$RL_TOKEN" --norm-stats "$NORM_STATS" --prompt "$PROMPT")
+  fi
   if [ "$METHOD" = rlt ]; then
     ALGO=(--algorithm rlt --residual-actor --residual-scale 0.1 --critic-action-residual)
-    [ -f "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" ] \
-      || { log "no demo cache: RLT starts without demo pretraining"; ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0); }
+    # The demo cache holds π0.5 RL tokens; a LeRobot base starts without it.
+    if [ "$BASE_KIND" != pi05 ] || [ ! -f "$DATA/tasks/$CONFIG/demo/rlt_demo_cache.pt" ]; then
+      log "no demo cache for this base: RLT starts without demo pretraining"
+      ALGO+=(--pretrain-steps 0 --online-batch-fraction 1.0)
+    fi
     SERVER_STEERING=""
     ACTOR_ALGO=(--algorithm rlt)
   else
@@ -144,8 +174,12 @@ else
     ACTOR_ALGO=(--algorithm dsrl --dsrl-noise-bound 1.5 --dsrl-noise-steps 5)
   fi
   log "$METHOD run $RUN on base $BASE"
-  SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$BASE"
-    --prompt "$PROMPT" --seed "$SEED" $SERVER_STEERING $POLICY_TUNNEL)
+  if [ "$BASE_KIND" = pi05 ]; then
+    SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$BASE"
+      --prompt "$PROMPT" --seed "$SEED" $SERVER_STEERING $POLICY_TUNNEL)
+  else
+    SERVER=("${RL_SERVER[@]}" --seed "$SEED" $SERVER_STEERING $POLICY_TUNNEL)
+  fi
   EVERY=$([ "$EVAL_EVERY" -gt 0 ] && echo "$EVAL_EVERY" || echo "$EPISODES")
   $LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" --seed "$SEED" $RESUME \
     "${ALGO[@]}" --safety-trip-penalty "$PENALTY" --online-steps "$STEPS" --save-freq 10000 \
