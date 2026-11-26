@@ -72,6 +72,7 @@ def learner_config(
     critic_action_residual: bool = False,
     critic_action_gain: float = 10.0,
     safety_trip_penalty: float | None = None,
+    seed: int = 42,
 ) -> RLTConfig:
     cache_path, assets_dir, production_output = task_paths(config_name, data_root)
     network, jerk = network_for(embodiment, reference_action_len=30)
@@ -130,6 +131,7 @@ def learner_config(
         "bc_deviation_max": bc_deviation_max,
         "bc_deviation_weight": bc_deviation_weight,
         "safety_trip_penalty": safety_trip_penalty,
+        "seed": seed,
     }
     if discount is not None:
         kwargs["discount"] = discount

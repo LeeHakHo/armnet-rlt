@@ -24,6 +24,8 @@
 #   --steps N              rlt/dsrl: learner step cap, which also sets the learning-rate
 #                          schedule (rlt 30000, dsrl 400000)
 #   --std X                exploration std, rlt/dsrl (0.5)
+#   --seed N               training seed: learner, policy server sampling, actor exploration
+#                          and the training scene sequence (42)
 #   --trip-penalty X       reward of a safety-tripped episode, rlt/dsrl (rlt 5, dsrl 2)
 #   --run-id ID            run name (default <method>-<UTC time>)
 #   --resume ID            continue rlt/dsrl run ID from its newest checkpoint
@@ -47,12 +49,12 @@ METHOD=${1:-}
 case "$METHOD" in rlt|dsrl|dit) shift ;; -h|--help|"") sed -n '2,44p' "$0"; exit 0 ;;
   *) echo "method must be rlt, dsrl or dit" >&2; exit 2 ;; esac
 EPISODES=400 EVAL_EVERY=100 MODEL="" POLICY_TYPE=multi_task_dit STEPS="" STD=0.5 PENALTY=""
-SKIP_EVAL=0 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
+SKIP_EVAL=0 SEED=42 RUN="" RESUME="" LEARNER_ARGS="" ACTOR_ARGS="" BOARD_NAME="" BOARD_TAG="" BOARD_CODE="" BOARD_NOTES="" REWARD_PLUGIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episodes) EPISODES=$2 ;; --eval-every) EVAL_EVERY=$2 ;;
     --model) MODEL=$2 ;; --policy-type) POLICY_TYPE=$2 ;; --steps) STEPS=$2 ;;
-    --std) STD=$2 ;; --trip-penalty) PENALTY=$2 ;; --run-id) RUN=$2 ;;
+    --std) STD=$2 ;; --trip-penalty) PENALTY=$2 ;; --run-id) RUN=$2 ;; --seed) SEED=$2 ;;
     --resume) RUN=$2; RESUME=--resume ;;
     --learner-args) LEARNER_ARGS=$2 ;; --actor-args) ACTOR_ARGS=$2 ;;
     --reward-plugin) REWARD_PLUGIN=$2 ;;
@@ -112,9 +114,9 @@ if [ "$METHOD" = dit ]; then
   fi
   log "dit run $RUN from $POLICY"
   SERVER=($BIN/rlt-local policy-server $GPU_ARG --config-name eval --policy-type lerobot
-    --checkpoint "$POLICY" $STEERING $POLICY_TUNNEL)
+    --checkpoint "$POLICY" --seed "$SEED" $STEERING $POLICY_TUNNEL)
   # run.sh stops the learner after the last evaluation; the step cap is never reached.
-  $BIN/rlt-local lerobot-streaming-bc $GPU_ARG --run-id "$RUN" --policy-path "$POLICY" \
+  $BIN/rlt-local lerobot-streaming-bc $GPU_ARG --run-id "$RUN" --seed "$SEED" --policy-path "$POLICY" \
     --base-dataset "$DATASET" --base-batch-fraction 0.5 --min-shaped-reward 1.0 \
     --episodes-per-round $ROUND --steps-per-round 300 --online-steps 1000000000 \
     --idle-timeout-s 86400 $LEARNER_TUNNEL $WANDB_ARG $LEARNER_ARGS > "$LOGS/learner.log" 2>&1 &
@@ -140,9 +142,9 @@ else
   fi
   log "$METHOD run $RUN on base $BASE"
   SERVER=($OPENPI_BIN/rlt-local policy-server $GPU_ARG --config-name "$CONFIG" --checkpoint "$BASE"
-    --prompt "$PROMPT" $SERVER_STEERING $POLICY_TUNNEL)
+    --prompt "$PROMPT" --seed "$SEED" $SERVER_STEERING $POLICY_TUNNEL)
   EVERY=$([ "$EVAL_EVERY" -gt 0 ] && echo "$EVAL_EVERY" || echo "$EPISODES")
-  $LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" $RESUME \
+  $LEARNER_BIN/rlt-local online $GPU_ARG --config-name "$CONFIG" --run-id "$RUN" --seed "$SEED" $RESUME \
     "${ALGO[@]}" --safety-trip-penalty "$PENALTY" --online-steps "$STEPS" --save-freq 10000 \
     --max-episodes "$EPISODES" --checkpoint-every-episodes "$EVERY" \
     ${REWARD_PLUGIN:+--reward-plugin $REWARD_PLUGIN} \
@@ -155,6 +157,9 @@ else
   [ -z "$REWARD_PLUGIN" ] || SUBMIT+=(--episode-frames)
   OUT=$DATA/tasks/$CONFIG/rlt_checkpoints/$RUN
 fi
+SUBMIT+=(--seed "$SEED")
+# The training scene sequence; 42 is the variation default.
+[ "$SEED" = 42 ] || SUBMIT+=(--armnet.variation-seed "$SEED")
 
 # The training policy server; it is stopped while an evaluation serves its checkpoint.
 start_server() {

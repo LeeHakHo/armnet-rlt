@@ -513,6 +513,7 @@ def run(ctx: Context) -> dict[str, Any]:
         checkpoint_dir=checkpoint,
         config_name=config_name,
         language_instruction=instruction,
+        seed=int(args.get("seed", 42)),
         episode_timeout_s=float(args.get("episode_timeout_s", 30.0)),
         policy_fps=int(args.get("policy_fps", 20)),
         command_fps=int(args.get("command_fps", 20)),

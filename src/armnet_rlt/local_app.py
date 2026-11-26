@@ -329,7 +329,8 @@ def _openpi_backend(args: argparse.Namespace) -> tuple[Any, tuple[int, int]]:
     from armnet_rlt.openpi_rlt import OpenPIRLTPolicy, PolicyObservation
 
     policy = OpenPIRLTPolicy.from_checkpoint(
-        args.checkpoint, args.config_name, default_prompt=args.prompt
+        args.checkpoint, args.config_name, default_prompt=args.prompt,
+        noise_seed=args.seed,
     )
     height, width = IMAGE_RESOLUTION
     # Compile the sampler and the DSRL prefix/denoise path before serving.
@@ -359,6 +360,7 @@ def _lerobot_backend(args: argparse.Namespace) -> Any:
     from armnet_rlt.lerobot_server import LeRobotPolicyBackend
 
     device = "cuda" if args.gpu != "cpu" and torch.cuda.is_available() else "cpu"
+    torch.manual_seed(args.seed)
     policy, preprocessor, postprocessor = load_lerobot_policy(args.checkpoint, device)
     return LeRobotPolicyBackend(
         policy,
@@ -534,6 +536,7 @@ def cmd_lerobot_streaming_bc(args: argparse.Namespace) -> None:
             idle_min_episodes=args.idle_min_episodes,
             wandb_project=args.wandb_project or None,
             resume=args.resume,
+            seed=args.seed,
         )
 
 
@@ -582,6 +585,7 @@ def cmd_online(args: argparse.Namespace) -> None:
         critic_action_residual=args.critic_action_residual,
         critic_action_gain=args.critic_action_gain,
         safety_trip_penalty=args.safety_trip_penalty,
+        seed=args.seed,
     )
     with _serve(args, cfg, token):
         run_learner(
@@ -623,6 +627,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config-name", default=MULTITASK_CONFIG)
         command.add_argument("--run-id", default="")
         command.add_argument("--embodiment", default="so101")
+        command.add_argument("--seed", type=int, default=42, help="training seed")
         command.add_argument("--wandb-project", default="")
         command.add_argument(
             "--checkpoint-repo",
@@ -751,6 +756,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     lerobot_sbc.add_argument("--config-name", default="eval")
     lerobot_sbc.add_argument("--run-id", default="")
+    lerobot_sbc.add_argument("--seed", type=int, default=42, help="training seed")
     lerobot_sbc.add_argument("--wandb-project", default="")
     lerobot_sbc.add_argument(
         "--policy-path", default="", help="pretrained_model directory to start from"
@@ -931,6 +937,9 @@ def _parser() -> argparse.ArgumentParser:
         "directory with --policy-type lerobot",
     )
     policy_server.add_argument("--prompt", default=GREEN_BUTTON_PROMPT)
+    policy_server.add_argument(
+        "--seed", type=int, default=42, help="seed of the exploration noise and sampling"
+    )
     policy_server.add_argument(
         "--n-action-steps",
         type=int,

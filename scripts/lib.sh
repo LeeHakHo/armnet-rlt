@@ -23,6 +23,8 @@
 CALLER_PWD=$PWD
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# This checkout's code first, also for venvs installed from another worktree.
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 # .env fills only variables the environment does not already set.
 if [ -f .env ]; then
   while IFS= read -r line || [ -n "$line" ]; do

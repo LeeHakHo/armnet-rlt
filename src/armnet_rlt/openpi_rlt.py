@@ -202,6 +202,7 @@ class OpenPIRLTPolicy:
         *,
         default_prompt: str | None = None,
         rl_token_dim: int = RL_TOKEN_DIM,
+        noise_seed: int | None = None,
     ) -> "OpenPIRLTPolicy":
         """Load a trained Pi0RL policy and JIT the combined inference method."""
 
@@ -241,6 +242,7 @@ class OpenPIRLTPolicy:
             policy,
             sample,
             rl_token_dim=rl_token_dim,
+            noise_seed=noise_seed,
             norm_stats=norm_stats,
             use_quantile_norm=bool(
                 getattr(data_config, "use_quantile_norm", True)
