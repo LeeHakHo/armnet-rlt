@@ -402,7 +402,7 @@ class _LoRAWeights:
     def actor_state_bytes(self) -> dict[str, torch.Tensor]:
         arrays = self._trainer.split.arrays(self._trainer.lora)
         self.last_push_tensors = len(arrays)
-        return {name: torch.from_numpy(np.asarray(v, np.float32)) for name, v in arrays.items()}
+        return {name: torch.from_numpy(np.array(v, np.float32)) for name, v in arrays.items()}
 
 
 class Pi05LoRATrainer:
